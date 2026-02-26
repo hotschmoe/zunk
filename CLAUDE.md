@@ -128,6 +128,91 @@ we love you, Claude! do your best today
 
 ## Project-Specific Content
 
-<!-- Add your project's toolchain, architecture, workflows here -->
 <!-- This section will not be touched by haj.sh -->
+
+### What is zunk
+
+zunk is a build tool and runtime library for writing browser applications entirely in Zig, compiled to WebAssembly. It auto-generates all HTML and JavaScript -- the developer never writes either. One command (`zunk run`) compiles Zig to WASM, analyzes the binary's imports/exports, generates minimal JS bridge code, and serves the result.
+
+### Toolchain
+
+- **Language**: Zig (minimum 0.15.2, see `build.zig.zon`)
+- **Build**: `zig build` (native CLI), `zig build test` (tests), `zig build run` (run CLI)
+- **Target**: The zunk CLI is a native executable; user projects compile to `wasm32-freestanding`
+
+### Project Structure
+
+```
+src/
+  root.zig       -- library root (public API, the "zunk" module)
+  main.zig       -- CLI entry point (imports "zunk" module)
+ref/              -- reference material and prior art (read-only)
+```
+
+**Planned structure** (from README, not yet implemented):
+
+```
+src/
+  zunk.zig                -- root module
+  bind/bind.zig           -- Handle, CallbackFn, string exchange, comptime manifest
+  web/                    -- Layer 2 ergonomic Web API wrappers
+    canvas.zig, input.zig, audio.zig, app.zig
+  gen/                    -- build tool: WASM analysis + JS generation
+    wasm_analyze.zig      -- WASM binary parser
+    js_resolve.zig        -- 5-tier auto-resolution engine
+    js_gen.zig            -- JS + HTML code generator
+```
+
+### Architecture Overview
+
+```
+Zig source --> zig build (wasm32) --> .wasm binary
+                                        |
+                                   WASM Analyzer
+                                   (read imports, exports, types, names)
+                                        |
+                                   5-Tier Resolution Engine
+                                   T1: Exact match (known Web API name)
+                                   T2: Prefix match (namespace convention)
+                                   T3: Signature (types + name keywords)
+                                   T4: Param names (debug section hints)
+                                   T5: Stub (warning + build report)
+                                        |
+                                   JS Code Generator
+                                   (emit only what WASM actually imports)
+                                        |
+                                   dist/
+                                     index.html, app-[hash].js, app-[hash].wasm
+```
+
+### Key Design Decisions
+
+- **No JavaScript, no HTML** -- everything is generated from WASM analysis
+- **Polling-based input** -- shared memory struct, not event callbacks (game-friendly)
+- **Handle table** for opaque JS objects (integer ID <-> JS object Map)
+- **Strings**: ptr+len into WASM linear memory (Zig->JS), shared 64KB exchange buffer (JS->Zig)
+- **Adaptive output** -- only emit JS scaffolding for features the WASM actually uses
+
+### Three Usage Paths (all coexist)
+
+1. **Raw extern fns** -- declare `extern "env" fn` with naming conventions, zunk auto-resolves
+2. **Layer 2 modules** -- `@import("zunk").web.canvas` etc., typed Zig wrappers
+3. **bridge.js escape hatch** -- ship custom JS alongside your project for unsupported APIs
+
+### WASM Lifecycle Exports
+
+| Export    | Signature              | When Called                    |
+|-----------|------------------------|--------------------------------|
+| `init`    | `fn () void`          | Once after WASM + canvas ready |
+| `frame`   | `fn (dt: f32) void`   | Every requestAnimationFrame    |
+| `resize`  | `fn (w: u32, h: u32) void` | On window resize          |
+| `cleanup` | `fn () void`          | On beforeunload                |
+
+### Current Status
+
+Phase 1 (Foundation) -- project is freshly initialized. `src/root.zig` and `src/main.zig` are still zig-init boilerplate. The core modules (bind/, web/, gen/) described in the README are not yet implemented. `ref/` contains prior art and conversation dumps for reference.
+
+### Versioning
+
+Bump `.version` in `build.zig.zon` following SemVer rules at meaningful milestones (new features, breaking changes, bug fixes). CI enforces that every PR to `master` includes a version bump, and merging automatically creates a GitHub Release tagged with that version.
 
