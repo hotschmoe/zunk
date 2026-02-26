@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(zig *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git log *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git fetch *)",
+      "Bash(git checkout *)",
+      "Bash(git mv *)",
+      "Bash(git grep *)",
+      "Bash(git push)",
+      "Bash(bd *)",
+      "Bash(dir *)",
+      "Bash(ls *)",
+      "Bash(mkdir *)",
+      "Bash(cd *)",
+      "Bash(where.exe *)",
+      "Bash(powershell -Command *)",
+      "Bash(Select-String *)",
+      "Bash(Select-Object *)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:ziglang.org)"
+    ]
+  }
+}
