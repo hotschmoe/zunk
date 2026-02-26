@@ -81,7 +81,7 @@ pub fn generate(
     if (needs.strings) try emitStringHelper(w);
     if (needs.audio_state) try emitAudioState(w);
     if (needs.input_system) try emitInputSystem(w);
-    try emitFetchState(w, categories_used.contains(.fetch));
+    if (categories_used.contains(.fetch)) try w.writeAll("let zunkFetchBuf = null;\n\n");
 
     try w.writeAll("const env = {\n");
 
@@ -100,7 +100,6 @@ pub fn generate(
         try w.writeAll("\n\n");
     }
 
-    // --- WASM instantiation ---
     try w.print(
         \\// --- Load WASM ---
         \\const importObject = {{ env }};
@@ -310,12 +309,6 @@ fn emitInputSystem(w: anytype) !void {
         \\
         \\
     );
-}
-
-fn emitFetchState(w: anytype, needed: bool) !void {
-    if (needed) {
-        try w.writeAll("let zunkFetchBuf = null;\n\n");
-    }
 }
 
 fn generateHtml(

@@ -46,22 +46,13 @@ fn printUsage() void {
 }
 
 fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    var wasm_path: ?[]const u8 = null;
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--wasm") and i + 1 < args.len) {
-            wasm_path = args[i + 1];
-            i += 1;
-        }
-    }
-
-    if (wasm_path == null) {
+    const wasm_path = parseWasmPath(args) orelse {
         std.debug.print("error: --wasm <path> required (auto-compile not yet implemented)\n", .{});
         return;
-    }
+    };
 
-    const wasm = std.fs.cwd().readFileAlloc(allocator, wasm_path.?, 10 * 1024 * 1024) catch |err| {
-        std.debug.print("error: could not read '{s}': {}\n", .{ wasm_path.?, err });
+    const wasm = std.fs.cwd().readFileAlloc(allocator, wasm_path, 10 * 1024 * 1024) catch |err| {
+        std.debug.print("error: could not read '{s}': {}\n", .{ wasm_path, err });
         return;
     };
     defer allocator.free(wasm);
@@ -69,23 +60,33 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var analysis = try wa.analyze(allocator, wasm);
     defer analysis.deinit(allocator);
 
+    const wasm_basename = std.fs.path.basename(wasm_path);
+
     var result = try js_gen.generate(allocator, &analysis, .{
-        .wasm_filename = std.fs.path.basename(wasm_path.?),
+        .wasm_filename = wasm_basename,
     });
     defer result.deinit(allocator);
+
+    const dist_wasm_path = try std.fmt.allocPrint(allocator, "dist/{s}", .{wasm_basename});
+    defer allocator.free(dist_wasm_path);
 
     std.fs.cwd().makePath("dist") catch {};
     try std.fs.cwd().writeFile(.{ .sub_path = "dist/index.html", .data = result.html });
     try std.fs.cwd().writeFile(.{ .sub_path = "dist/app.js", .data = result.js });
-
-    // Copy the WASM binary into dist/
-    const wasm_basename = std.fs.path.basename(wasm_path.?);
-    const dist_wasm_path = try std.fmt.allocPrint(allocator, "dist/{s}", .{wasm_basename});
-    defer allocator.free(dist_wasm_path);
     try std.fs.cwd().writeFile(.{ .sub_path = dist_wasm_path, .data = wasm });
 
     std.debug.print("{s}", .{result.report});
     std.debug.print("\nBuild complete: dist/\n", .{});
+}
+
+fn parseWasmPath(args: []const []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--wasm") and i + 1 < args.len) {
+            return args[i + 1];
+        }
+    }
+    return null;
 }
 
 test {

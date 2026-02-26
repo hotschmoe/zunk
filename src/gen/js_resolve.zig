@@ -188,19 +188,19 @@ fn prefixMatch(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncType
 fn genCanvas(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
     _ = sig;
     const js_map = .{
-        .{ "get_2d", "const s = readStr(arguments[0], arguments[1]); const el = document.getElementById(s) || document.querySelector(s); return H.store(el.getContext('2d'));", true, true },
-        .{ "get_webgpu", "const s = readStr(arguments[0], arguments[1]); const el = document.getElementById(s) || document.querySelector(s); return H.store(el);", true, true },
-        .{ "set_size", "const c = H.get(arguments[0]).canvas || H.get(arguments[0]); c.width = arguments[1]; c.height = arguments[2];", true, false },
-        .{ "get_width", "return H.get(arguments[0]).width;", true, false },
-        .{ "get_height", "return H.get(arguments[0]).height;", true, false },
-        .{ "fullscreen", "H.get(arguments[0]).requestFullscreen();", true, false },
+        .{ "get_2d", "const s = readStr(arguments[0], arguments[1]); const el = document.getElementById(s) || document.querySelector(s); return H.store(el.getContext('2d'));" },
+        .{ "get_webgpu", "const s = readStr(arguments[0], arguments[1]); const el = document.getElementById(s) || document.querySelector(s); return H.store(el);" },
+        .{ "set_size", "const c = H.get(arguments[0]).canvas || H.get(arguments[0]); c.width = arguments[1]; c.height = arguments[2];" },
+        .{ "get_width", "return H.get(arguments[0]).width;" },
+        .{ "get_height", "return H.get(arguments[0]).height;" },
+        .{ "fullscreen", "H.get(arguments[0]).requestFullscreen();" },
     };
     inline for (js_map) |entry| {
         if (std.mem.eql(u8, method, entry[0])) {
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
-                .needs_handles = entry[2],
-                .needs_string_helper = entry[3],
+                .needs_handles = std.mem.indexOf(u8, entry[1], "H.") != null,
+                .needs_string_helper = std.mem.indexOf(u8, entry[1], "readStr") != null,
                 .confidence = .exact,
                 .category = .canvas2d,
                 .description = "Canvas: " ++ entry[0],
@@ -631,7 +631,6 @@ fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
     }
     return false;
 }
-
 
 test "exact match console_log" {
     const res = exactMatch(std.testing.allocator, "console_log").?;
