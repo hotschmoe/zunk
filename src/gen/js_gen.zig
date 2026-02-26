@@ -113,9 +113,7 @@ pub fn generate(
     , .{ opts.public_url, opts.wasm_filename });
 
     if (needs.strings) {
-        try w.writeAll("function readStr(ptr, len) {\n");
-        try w.writeAll("  return new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, len));\n");
-        try w.writeAll("}\n\n");
+        try w.writeAll("readStr = (ptr, len) => new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, len));\n\n");
     }
 
     if (needs.handles) {
@@ -298,7 +296,7 @@ fn emitInputSystem(w: anytype) !void {
         \\    for (let i = 0; i < 10; i++) { view.setFloat32(off + i*4, this.touches[i]?.clientY || 0, true); } off += 40;
         \\    for (let i = 0; i < 10; i++) { view.setInt32(off + i*4, this.touches[i]?.identifier || 0, true); } off += 40;
         \\    // Viewport
-        \\    off += 5 + 16 + 4; // skip gamepad for now
+        \\    off += 1 + 16 + 4; // skip gamepad for now
         \\    view.setUint32(off, window.innerWidth, true); off += 4;
         \\    view.setUint32(off, window.innerHeight, true); off += 4;
         \\    view.setFloat32(off, window.devicePixelRatio, true); off += 4;

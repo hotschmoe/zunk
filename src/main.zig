@@ -78,6 +78,12 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     try std.fs.cwd().writeFile(.{ .sub_path = "dist/index.html", .data = result.html });
     try std.fs.cwd().writeFile(.{ .sub_path = "dist/app.js", .data = result.js });
 
+    // Copy the WASM binary into dist/
+    const wasm_basename = std.fs.path.basename(wasm_path.?);
+    const dist_wasm_path = try std.fmt.allocPrint(allocator, "dist/{s}", .{wasm_basename});
+    defer allocator.free(dist_wasm_path);
+    try std.fs.cwd().writeFile(.{ .sub_path = dist_wasm_path, .data = wasm });
+
     std.debug.print("{s}", .{result.report});
     std.debug.print("\nBuild complete: dist/\n", .{});
 }

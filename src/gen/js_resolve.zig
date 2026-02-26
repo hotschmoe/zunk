@@ -188,9 +188,9 @@ fn prefixMatch(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncType
 fn genCanvas(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
     _ = sig;
     const js_map = .{
-        .{ "get_2d", "const el = document.querySelector(readStr(arguments[0], arguments[1])); return H.store(el.getContext('2d'));", true, true },
-        .{ "get_webgpu", "const el = document.querySelector(readStr(arguments[0], arguments[1])); return H.store(el);", true, true },
-        .{ "set_size", "const el = H.get(arguments[0]); el.width = arguments[1]; el.height = arguments[2];", true, false },
+        .{ "get_2d", "const s = readStr(arguments[0], arguments[1]); const el = document.getElementById(s) || document.querySelector(s); return H.store(el.getContext('2d'));", true, true },
+        .{ "get_webgpu", "const s = readStr(arguments[0], arguments[1]); const el = document.getElementById(s) || document.querySelector(s); return H.store(el);", true, true },
+        .{ "set_size", "const c = H.get(arguments[0]).canvas || H.get(arguments[0]); c.width = arguments[1]; c.height = arguments[2];", true, false },
         .{ "get_width", "return H.get(arguments[0]).width;", true, false },
         .{ "get_height", "return H.get(arguments[0]).height;", true, false },
         .{ "fullscreen", "H.get(arguments[0]).requestFullscreen();", true, false },
