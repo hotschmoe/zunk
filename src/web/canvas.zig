@@ -1,20 +1,4 @@
-/// zunk/web/canvas -- Canvas 2D, WebGPU surface, and DOM manipulation.
-///
-/// Provides ergonomic Zig wrappers around HTML Canvas APIs.
-/// All functions operate on handles obtained from getContext2D / getWebGPUSurface.
-///
-/// USAGE:
-///   const canvas = @import("zunk").web.canvas;
-///   var ctx = canvas.getContext2D("app");
-///   canvas.clearRect(ctx, 0, 0, 800, 600);
-///   canvas.setFillColor(ctx, .{ .r = 255, .g = 0, .b = 0 });
-///   canvas.fillRect(ctx, 100, 100, 50, 50);
-///
 const bind = @import("../bind/bind.zig");
-
-// ============================================================================
-// Low-level extern imports
-// ============================================================================
 
 extern "env" fn zunk_canvas_get_2d(sel_ptr: [*]const u8, sel_len: u32) i32;
 extern "env" fn zunk_canvas_get_webgpu(sel_ptr: [*]const u8, sel_len: u32) i32;
@@ -41,10 +25,6 @@ extern "env" fn zunk_c2d_rotate(ctx: i32, angle: f32) void;
 extern "env" fn zunk_c2d_scale(ctx: i32, x: f32, y: f32) void;
 extern "env" fn zunk_c2d_set_global_alpha(ctx: i32, alpha: f32) void;
 
-// ============================================================================
-// Types
-// ============================================================================
-
 pub const Ctx2D = bind.Handle;
 
 pub const Color = struct {
@@ -53,10 +33,6 @@ pub const Color = struct {
     b: u8 = 0,
     a: u8 = 255,
 };
-
-// ============================================================================
-// Context creation
-// ============================================================================
 
 pub fn getContext2D(selector: []const u8) Ctx2D {
     return bind.Handle.fromInt(zunk_canvas_get_2d(selector.ptr, @intCast(selector.len)));
@@ -69,10 +45,6 @@ pub fn getWebGPUSurface(selector: []const u8) bind.Handle {
 pub fn setSize(handle: bind.Handle, w: u32, h: u32) void {
     zunk_canvas_set_size(handle.toInt(), w, h);
 }
-
-// ============================================================================
-// Drawing operations
-// ============================================================================
 
 pub fn clearRect(ctx: Ctx2D, x: f32, y: f32, w: f32, h: f32) void {
     zunk_c2d_clear_rect(ctx.toInt(), x, y, w, h);
@@ -97,10 +69,6 @@ pub fn setStrokeColor(ctx: Ctx2D, color: Color) void {
 pub fn setLineWidth(ctx: Ctx2D, width: f32) void {
     zunk_c2d_line_width(ctx.toInt(), width);
 }
-
-// ============================================================================
-// Path operations
-// ============================================================================
 
 pub fn beginPath(ctx: Ctx2D) void {
     zunk_c2d_begin_path(ctx.toInt());
@@ -130,10 +98,6 @@ pub fn stroke(ctx: Ctx2D) void {
     zunk_c2d_stroke(ctx.toInt());
 }
 
-// ============================================================================
-// Text
-// ============================================================================
-
 pub fn fillText(ctx: Ctx2D, text: []const u8, x: f32, y: f32) void {
     zunk_c2d_fill_text(ctx.toInt(), text.ptr, @intCast(text.len), x, y);
 }
@@ -141,10 +105,6 @@ pub fn fillText(ctx: Ctx2D, text: []const u8, x: f32, y: f32) void {
 pub fn setFont(ctx: Ctx2D, font: []const u8) void {
     zunk_c2d_set_font(ctx.toInt(), font.ptr, @intCast(font.len));
 }
-
-// ============================================================================
-// Transform
-// ============================================================================
 
 pub fn save(ctx: Ctx2D) void {
     zunk_c2d_save(ctx.toInt());

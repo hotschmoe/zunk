@@ -1,30 +1,6 @@
-/// zunk/web/input -- Keyboard, mouse, touch, and gamepad input for Zig WASM.
-///
-/// Input works through a polling model: JS captures events and writes them
-/// into shared state that Zig reads each frame. This avoids the complexity
-/// of callback registration for most use cases.
-///
-/// For event-driven input, use the callback variants.
-///
-/// USAGE:
-///   const input = @import("zunk").web.input;
-///
-///   // Polling (in your frame loop):
-///   if (input.isKeyDown(.space)) player.jump();
-///   const mouse = input.getMouse();
-///   if (mouse.buttons.left) shoot(mouse.x, mouse.y);
-///
-///   // Event-driven:
-///   input.onKeyDown(myKeyHandler);
-///
+const std = @import("std");
 const bind = @import("../bind/bind.zig");
 
-// ============================================================================
-// Low-level extern imports
-// ============================================================================
-
-// JS writes input state into a shared memory region each frame.
-// These externs let us tell JS where that region is.
 extern "env" fn zunk_input_init(state_ptr: [*]u8, state_len: u32) void;
 extern "env" fn zunk_input_poll() void;
 extern "env" fn zunk_input_set_key_callback(callback_id: u32) void;
@@ -33,38 +9,28 @@ extern "env" fn zunk_input_set_touch_callback(callback_id: u32) void;
 extern "env" fn zunk_input_lock_pointer(canvas_handle: i32) void;
 extern "env" fn zunk_input_unlock_pointer() void;
 
-// ============================================================================
-// Shared input state (memory-mapped from JS)
-// ============================================================================
-
-/// Packed input state written by JS every frame.
-/// This struct layout MUST match what the generated JS writes.
+/// Layout must match the generated JS input flush routine.
 pub const InputState = extern struct {
-    // Keyboard: 256 bits = 32 bytes, one bit per key code
     keys_down: [32]u8 align(1),
-    keys_pressed: [32]u8 align(1), // pressed THIS frame (edge-triggered)
+    keys_pressed: [32]u8 align(1),
     keys_released: [32]u8 align(1),
 
-    // Mouse
     mouse_x: f32 align(1),
     mouse_y: f32 align(1),
-    mouse_dx: f32 align(1), // delta since last frame
+    mouse_dx: f32 align(1),
     mouse_dy: f32 align(1),
     mouse_wheel: f32 align(1),
-    mouse_buttons: u8 align(1), // bit 0=left, 1=right, 2=middle
+    mouse_buttons: u8 align(1),
 
-    // Touch (up to 10 touch points)
     touch_count: u8 align(1),
     touch_x: [10]f32 align(1),
     touch_y: [10]f32 align(1),
     touch_id: [10]i32 align(1),
 
-    // Gamepad (first connected gamepad)
     gamepad_connected: u8 align(1),
-    gamepad_axes: [4]f32 align(1), // left stick x,y + right stick x,y
-    gamepad_buttons: u32 align(1), // 32 buttons as bits
+    gamepad_axes: [4]f32 align(1),
+    gamepad_buttons: u32 align(1),
 
-    // Viewport
     viewport_width: u32 align(1),
     viewport_height: u32 align(1),
     device_pixel_ratio: f32 align(1),
@@ -73,19 +39,13 @@ pub const InputState = extern struct {
 
 var input_state: InputState = std.mem.zeroes(InputState);
 
-/// Initialize the input system. Call once at startup.
 pub fn init() void {
     zunk_input_init(@ptrCast(&input_state), @sizeOf(InputState));
 }
 
-/// Poll for new input state. Call once per frame before reading input.
 pub fn poll() void {
     zunk_input_poll();
 }
-
-// ============================================================================
-// Key codes (matching JS KeyboardEvent.code numeric values)
-// ============================================================================
 
 pub const Key = enum(u8) {
     backspace = 8,
@@ -151,34 +111,23 @@ pub const Key = enum(u8) {
     _,
 };
 
-// ============================================================================
-// Keyboard queries
-// ============================================================================
-
 fn testBit(bitmap: [32]u8, code: u8) bool {
     const byte_idx = code >> 3;
     const bit_idx: u3 = @intCast(code & 7);
     return (bitmap[byte_idx] & (@as(u8, 1) << bit_idx)) != 0;
 }
 
-/// Is the key currently held down?
 pub fn isKeyDown(key: Key) bool {
     return testBit(input_state.keys_down, @intFromEnum(key));
 }
 
-/// Was the key pressed this frame? (edge-triggered)
 pub fn isKeyPressed(key: Key) bool {
     return testBit(input_state.keys_pressed, @intFromEnum(key));
 }
 
-/// Was the key released this frame?
 pub fn isKeyReleased(key: Key) bool {
     return testBit(input_state.keys_released, @intFromEnum(key));
 }
-
-// ============================================================================
-// Mouse queries
-// ============================================================================
 
 pub const MouseButtons = struct {
     left: bool,
@@ -210,7 +159,6 @@ pub fn getMouse() Mouse {
     };
 }
 
-/// Lock the mouse pointer for FPS-style input
 pub fn lockPointer(canvas: bind.Handle) void {
     zunk_input_lock_pointer(canvas.toInt());
 }
@@ -218,10 +166,6 @@ pub fn lockPointer(canvas: bind.Handle) void {
 pub fn unlockPointer() void {
     zunk_input_unlock_pointer();
 }
-
-// ============================================================================
-// Touch queries
-// ============================================================================
 
 pub const TouchPoint = struct {
     id: i32,
@@ -241,10 +185,6 @@ pub fn getTouch(index: u8) ?TouchPoint {
         .y = input_state.touch_y[index],
     };
 }
-
-// ============================================================================
-// Gamepad queries
-// ============================================================================
 
 pub const Gamepad = struct {
     connected: bool,
@@ -270,10 +210,6 @@ pub fn getGamepad() Gamepad {
     };
 }
 
-// ============================================================================
-// Viewport
-// ============================================================================
-
 pub fn getViewportSize() struct { w: u32, h: u32 } {
     return .{ .w = input_state.viewport_width, .h = input_state.viewport_height };
 }
@@ -286,10 +222,6 @@ pub fn hasFocus() bool {
     return input_state.has_focus != 0;
 }
 
-// ============================================================================
-// Event-driven callbacks
-// ============================================================================
-
 pub fn onKeyDown(cb: bind.CallbackFn) void {
     zunk_input_set_key_callback(bind.registerCallback(cb));
 }
@@ -301,5 +233,3 @@ pub fn onMouseMove(cb: bind.CallbackFn) void {
 pub fn onTouch(cb: bind.CallbackFn) void {
     zunk_input_set_touch_callback(bind.registerCallback(cb));
 }
-
-const std = @import("std");

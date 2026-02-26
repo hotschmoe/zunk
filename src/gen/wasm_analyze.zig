@@ -1,27 +1,10 @@
-/// wasm_analyze.zig -- Parse a compiled .wasm binary to extract binding information.
-///
-/// Reads:
-///   - Import section (S2): function imports with module/name and type signatures
-///   - Export section (S7): exported functions the developer wrote
-///   - Type section (S1): function type signatures (param types + return types)
-///   - Name section (custom "name"): parameter names, function names (debug builds)
-///   - Custom "zunk_bindings" section: explicit binding manifest (if present)
-///
-/// This gives zunk everything it needs to auto-generate JavaScript without
-/// the developer writing ANY binding descriptors.
-
 const std = @import("std");
-
-// ============================================================================
-// Public types
-// ============================================================================
 
 pub const WasmValType = enum(u8) {
     i32 = 0x7F,
     i64 = 0x7E,
     f32 = 0x7D,
     f64 = 0x7C,
-    // Extended types (not commonly seen in imports)
     funcref = 0x70,
     externref = 0x6F,
 };
@@ -32,12 +15,10 @@ pub const FuncType = struct {
 };
 
 pub const Import = struct {
-    module: []const u8, // e.g., "env"
-    name: []const u8, // e.g., "createElement"
+    module: []const u8,
+    name: []const u8,
     type_idx: u32,
-    /// Resolved function signature (populated after type section is parsed)
     func_type: ?FuncType = null,
-    /// Parameter names from the name section (may be empty)
     param_names: []const []const u8 = &.{},
 };
 
@@ -58,9 +39,7 @@ pub const Analysis = struct {
     imports: []Import,
     exports: []Export,
     func_types: []FuncType,
-    /// If a "zunk_bindings" custom section was found, raw bytes
     explicit_manifest: ?[]const u8,
-    /// Whether the WASM has a name section (debug build)
     has_name_section: bool,
 
     pub fn deinit(self: *Analysis, allocator: std.mem.Allocator) void {
@@ -81,21 +60,12 @@ pub const Analysis = struct {
         self.* = undefined;
     }
 
-    /// Get the resolved signature for an import
     pub fn getImportSignature(self: *const Analysis, imp: *const Import) ?FuncType {
         if (imp.func_type) |ft| return ft;
         if (imp.type_idx < self.func_types.len) return self.func_types[imp.type_idx];
         return null;
     }
 
-    /// Find all imports from a given module (typically "env")
-    pub fn importsFromModule(self: *const Analysis, module: []const u8) []const Import {
-        // Can't return a filtered slice without allocation, so caller iterates
-        _ = module;
-        return self.imports;
-    }
-
-    /// Check if the WASM exports a specific function
     pub fn hasExport(self: *const Analysis, name: []const u8) bool {
         for (self.exports) |exp| {
             if (exp.kind == .func and std.mem.eql(u8, exp.name, name)) return true;
@@ -104,18 +74,10 @@ pub const Analysis = struct {
     }
 };
 
-// ============================================================================
-// WASM section IDs
-// ============================================================================
-
 const SECTION_TYPE: u8 = 1;
 const SECTION_IMPORT: u8 = 2;
 const SECTION_EXPORT: u8 = 7;
 const SECTION_CUSTOM: u8 = 0;
-
-// ============================================================================
-// Main analysis function
-// ============================================================================
 
 pub fn analyze(allocator: std.mem.Allocator, wasm: []const u8) !Analysis {
     var result = Analysis{
@@ -128,12 +90,11 @@ pub fn analyze(allocator: std.mem.Allocator, wasm: []const u8) !Analysis {
 
     if (wasm.len < 8) return result;
 
-    // Verify WASM magic: \0asm
     if (!std.mem.eql(u8, wasm[0..4], &[_]u8{ 0x00, 0x61, 0x73, 0x6D })) {
         return error.InvalidWasmMagic;
     }
 
-    var pos: usize = 8; // Skip magic + version
+    var pos: usize = 8;
 
     var imports_list: std.ArrayList(Import) = .empty;
     defer imports_list.deinit(allocator);
@@ -159,7 +120,6 @@ pub fn analyze(allocator: std.mem.Allocator, wasm: []const u8) !Analysis {
                 try parseExportSection(allocator, wasm, &pos, section_end, &exports_list);
             },
             SECTION_CUSTOM => {
-                // Read custom section name
                 const name_len = readLeb128(wasm, &pos) orelse break;
                 if (pos + name_len <= section_end) {
                     const section_name = wasm[pos .. pos + name_len];
@@ -167,10 +127,8 @@ pub fn analyze(allocator: std.mem.Allocator, wasm: []const u8) !Analysis {
 
                     if (std.mem.eql(u8, section_name, "name")) {
                         result.has_name_section = true;
-                        // Parse name section for parameter names
                         parseNameSection(allocator, wasm, &pos, section_end, imports_list.items) catch {};
                     } else if (std.mem.eql(u8, section_name, "zunk_bindings")) {
-                        // Explicit binding manifest from comptime
                         if (section_end > pos) {
                             result.explicit_manifest = wasm[pos..section_end];
                         }
@@ -184,7 +142,6 @@ pub fn analyze(allocator: std.mem.Allocator, wasm: []const u8) !Analysis {
         }
     }
 
-    // Resolve type indices for imports
     for (imports_list.items) |*imp| {
         if (imp.type_idx < types_list.items.len) {
             imp.func_type = types_list.items[imp.type_idx];
@@ -198,10 +155,6 @@ pub fn analyze(allocator: std.mem.Allocator, wasm: []const u8) !Analysis {
     return result;
 }
 
-// ============================================================================
-// Section parsers
-// ============================================================================
-
 fn parseTypeSection(
     allocator: std.mem.Allocator,
     wasm: []const u8,
@@ -212,7 +165,6 @@ fn parseTypeSection(
     const count = readLeb128(wasm, pos) orelse return;
     var i: usize = 0;
     while (i < count and pos.* < end) : (i += 1) {
-        // Each type starts with 0x60 (func type marker)
         if (pos.* >= wasm.len or wasm[pos.*] != 0x60) {
             pos.* = end;
             return;
@@ -256,13 +208,11 @@ fn parseImportSection(
     const count = readLeb128(wasm, pos) orelse return;
     var i: usize = 0;
     while (i < count and pos.* < end) : (i += 1) {
-        // Module name
         const mod_len = readLeb128(wasm, pos) orelse return;
         if (pos.* + mod_len > wasm.len) return;
         const module = try allocator.dupe(u8, wasm[pos.* .. pos.* + mod_len]);
         pos.* += mod_len;
 
-        // Import name
         const name_len = readLeb128(wasm, pos) orelse {
             allocator.free(module);
             return;
@@ -274,7 +224,6 @@ fn parseImportSection(
         const name = try allocator.dupe(u8, wasm[pos.* .. pos.* + name_len]);
         pos.* += name_len;
 
-        // Import kind
         if (pos.* >= wasm.len) {
             allocator.free(module);
             allocator.free(name);
@@ -284,7 +233,6 @@ fn parseImportSection(
         pos.* += 1;
 
         if (kind == 0) {
-            // Function import -- read type index
             const type_idx = readLeb128(wasm, pos) orelse {
                 allocator.free(module);
                 allocator.free(name);
@@ -296,20 +244,18 @@ fn parseImportSection(
                 .type_idx = @intCast(type_idx),
             });
         } else {
-            // Table, memory, or global import -- skip
             allocator.free(module);
             allocator.free(name);
-            // Skip the descriptor based on kind
             switch (kind) {
-                1 => { // table
-                    pos.* += 1; // reftype
+                1 => {
+                    pos.* += 1;
                     skipLimits(wasm, pos);
                 },
-                2 => { // memory
+                2 => {
                     skipLimits(wasm, pos);
                 },
-                3 => { // global
-                    pos.* += 2; // valtype + mutability
+                3 => {
+                    pos.* += 2;
                 },
                 else => {},
             }
@@ -359,10 +305,6 @@ fn parseNameSection(
     end: usize,
     imports: []Import,
 ) !void {
-    // The name section has subsections:
-    //   0 = module name
-    //   1 = function names
-    //   2 = local names (includes parameter names)
     while (pos.* < end) {
         if (pos.* >= wasm.len) return;
         const subsection_id = wasm[pos.*];
@@ -371,7 +313,6 @@ fn parseNameSection(
         const subsection_end = pos.* + subsection_size;
 
         if (subsection_id == 2) {
-            // Local names -- this has parameter names
             const func_count = readLeb128(wasm, pos) orelse return;
             var fi: usize = 0;
             while (fi < func_count and pos.* < subsection_end) : (fi += 1) {
@@ -383,7 +324,7 @@ fn parseNameSection(
 
                 var li: usize = 0;
                 while (li < local_count and pos.* < subsection_end) : (li += 1) {
-                    _ = readLeb128(wasm, pos) orelse break; // local index
+                    _ = readLeb128(wasm, pos) orelse break;
                     const nl = readLeb128(wasm, pos) orelse break;
                     if (pos.* + nl <= wasm.len) {
                         try names.append(allocator, try allocator.dupe(u8, wasm[pos.* .. pos.* + nl]));
@@ -391,7 +332,6 @@ fn parseNameSection(
                     }
                 }
 
-                // Match to an import by function index
                 if (func_idx < imports.len) {
                     imports[func_idx].param_names = try names.toOwnedSlice(allocator);
                 } else {
@@ -403,10 +343,6 @@ fn parseNameSection(
         pos.* = subsection_end;
     }
 }
-
-// ============================================================================
-// LEB128 helpers
-// ============================================================================
 
 fn readLeb128(data: []const u8, pos: *usize) ?usize {
     var result: usize = 0;
@@ -426,21 +362,16 @@ fn skipLimits(wasm: []const u8, pos: *usize) void {
     if (pos.* >= wasm.len) return;
     const flags = wasm[pos.*];
     pos.* += 1;
-    _ = readLeb128(wasm, pos); // min
+    _ = readLeb128(wasm, pos);
     if (flags & 1 != 0) {
-        _ = readLeb128(wasm, pos); // max
+        _ = readLeb128(wasm, pos);
     }
 }
 
-// ============================================================================
-// Tests
-// ============================================================================
-
 test "analyze minimal wasm" {
-    // Minimal valid WASM module (magic + version + empty)
     const minimal = [_]u8{
-        0x00, 0x61, 0x73, 0x6D, // magic
-        0x01, 0x00, 0x00, 0x00, // version 1
+        0x00, 0x61, 0x73, 0x6D,
+        0x01, 0x00, 0x00, 0x00,
     };
     var result = try analyze(std.testing.allocator, &minimal);
     defer result.deinit(std.testing.allocator);

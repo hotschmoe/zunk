@@ -46,7 +46,6 @@ fn printUsage() void {
 }
 
 fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    // Look for --wasm <path> argument
     var wasm_path: ?[]const u8 = null;
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -61,29 +60,24 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
         return;
     }
 
-    // Read the WASM binary
     const wasm = std.fs.cwd().readFileAlloc(allocator, wasm_path.?, 10 * 1024 * 1024) catch |err| {
         std.debug.print("error: could not read '{s}': {}\n", .{ wasm_path.?, err });
         return;
     };
     defer allocator.free(wasm);
 
-    // Analyze
     var analysis = try wa.analyze(allocator, wasm);
     defer analysis.deinit(allocator);
 
-    // Generate
     var result = try js_gen.generate(allocator, &analysis, .{
         .wasm_filename = std.fs.path.basename(wasm_path.?),
     });
     defer result.deinit(allocator);
 
-    // Write output
     std.fs.cwd().makePath("dist") catch {};
     try std.fs.cwd().writeFile(.{ .sub_path = "dist/index.html", .data = result.html });
     try std.fs.cwd().writeFile(.{ .sub_path = "dist/app.js", .data = result.js });
 
-    // Print report
     std.debug.print("{s}", .{result.report});
     std.debug.print("\nBuild complete: dist/\n", .{});
 }

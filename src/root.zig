@@ -44,40 +44,28 @@
 ///   - `export fn cleanup() void` -- Called on page unload (optional)
 ///
 
-/// Core binding system -- type descriptors, handles, string exchange, callbacks.
 pub const bind = @import("bind/bind.zig");
 
-/// Web API modules
 pub const web = struct {
-    /// Canvas 2D, WebGPU surface, and DOM manipulation
     pub const canvas = @import("web/canvas.zig");
-    /// Keyboard, mouse, touch, gamepad input (polling + event-driven)
     pub const input = @import("web/input.zig");
-    /// Web Audio API -- sound playback, spatial audio, AudioWorklet
     pub const audio = @import("web/audio.zig");
-    /// App lifecycle, timing, window control, fetch
     pub const app = @import("web/app.zig");
 };
 
-/// Re-export commonly used types
 pub const Handle = bind.Handle;
 pub const CallbackFn = bind.CallbackFn;
-
-/// Register a Zig function as a callback that JS can invoke.
 pub const registerCallback = bind.registerCallback;
-
-/// String exchange buffer utilities
 pub const readExchangeString = bind.readExchangeString;
 pub const writeExchangeString = bind.writeExchangeString;
 
-// Re-export the binding manifest exports so they end up in the WASM binary
+// Force these exports into the WASM binary.
 comptime {
     _ = &bind.__zunk_string_buf_ptr;
     _ = &bind.__zunk_string_buf_len;
     _ = &bind.__zunk_invoke_callback;
 }
 
-// Pull in gen modules for CLI build tool access
 pub const gen = struct {
     pub const wasm_analyze = @import("gen/wasm_analyze.zig");
     pub const js_resolve = @import("gen/js_resolve.zig");

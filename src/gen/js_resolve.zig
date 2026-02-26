@@ -1,23 +1,5 @@
-/// js_resolve.zig -- Automatic JavaScript binding resolver.
-///
-/// Given a WASM import (name + type signature + optional param names),
-/// determines what JavaScript to generate. Uses a multi-tier strategy:
-///
-///   Tier 1: EXACT MATCH -- import name matches a known Web API pattern
-///   Tier 2: PREFIX MATCH -- name starts with a known namespace (canvas_, audio_, etc.)
-///   Tier 3: SIGNATURE INFERENCE -- (ptr,len) pairs -> string, return i32 -> handle, etc.
-///   Tier 4: PARAM NAME INFERENCE -- param names like "selector", "url", "volume" give hints
-///   Tier 5: STUB -- generate a warning stub, developer fills it in or ships a bridge.js
-///
-/// The knowledge base covers: DOM, Canvas 2D, WebGPU, Web Audio, Input Events,
-/// Fetch, Clipboard, Performance, Storage, WebSocket, and more.
-
 const std = @import("std");
 const wa = @import("wasm_analyze.zig");
-
-// ============================================================================
-// Resolution result
-// ============================================================================
 
 pub const Resolution = struct {
     /// The JavaScript function body to generate
@@ -78,10 +60,6 @@ pub const Category = enum {
     unknown,
 };
 
-// ============================================================================
-// Main resolver
-// ============================================================================
-
 pub fn resolve(
     allocator: std.mem.Allocator,
     import: *const wa.Import,
@@ -89,9 +67,6 @@ pub fn resolve(
 ) !Resolution {
     const name = import.name;
 
-    // ---------------------------------------------------------------
-    // Tier 0: Skip internal WASM imports
-    // ---------------------------------------------------------------
     if (std.mem.startsWith(u8, name, "__")) {
         return .{
             .js_body = try allocator.dupe(u8, "// internal"),
@@ -101,37 +76,14 @@ pub fn resolve(
         };
     }
 
-    // ---------------------------------------------------------------
-    // Tier 1: EXACT MATCH -- known function names
-    // ---------------------------------------------------------------
     if (exactMatch(allocator, name)) |res| return res;
-
-    // ---------------------------------------------------------------
-    // Tier 2: PREFIX MATCH -- namespace-based resolution
-    // ---------------------------------------------------------------
     if (try prefixMatch(allocator, name, signature)) |res| return res;
-
-    // ---------------------------------------------------------------
-    // Tier 3: SIGNATURE INFERENCE -- deduce from param/return types
-    // ---------------------------------------------------------------
     if (try signatureInference(allocator, name, signature, import.param_names)) |res| return res;
-
-    // ---------------------------------------------------------------
-    // Tier 4: PARAM NAME INFERENCE -- use debug names as hints
-    // ---------------------------------------------------------------
     if (import.param_names.len > 0) {
         if (try paramNameInference(allocator, name, signature, import.param_names)) |res| return res;
     }
-
-    // ---------------------------------------------------------------
-    // Tier 5: STUB -- generate a warning placeholder
-    // ---------------------------------------------------------------
     return generateStub(allocator, name, signature);
 }
-
-// ============================================================================
-// Tier 1: Exact match database
-// ============================================================================
 
 const ExactEntry = struct {
     name: []const u8,
@@ -144,11 +96,7 @@ const ExactEntry = struct {
     desc: []const u8,
 };
 
-/// Database of known Web API function names -> JS implementations.
-/// These are exact matches -- if the Zig extern fn name matches, we know
-/// exactly what JS to emit.
 const exact_db = [_]ExactEntry{
-    // --- Console ---
     .{ .name = "console_log", .js = "const s = readStr(arguments[0], arguments[1]); console.log(s);", .needs_strings = true, .category = .console, .desc = "console.log with string" },
     .{ .name = "console_error", .js = "const s = readStr(arguments[0], arguments[1]); console.error(s);", .needs_strings = true, .category = .console, .desc = "console.error with string" },
     .{ .name = "console_warn", .js = "const s = readStr(arguments[0], arguments[1]); console.warn(s);", .needs_strings = true, .category = .console, .desc = "console.warn with string" },
@@ -156,14 +104,12 @@ const exact_db = [_]ExactEntry{
     .{ .name = "log_f32", .js = "console.log('[f32]', arguments[0]);", .category = .console, .desc = "Log an f32 value" },
     .{ .name = "log_f64", .js = "console.log('[f64]', arguments[0]);", .category = .console, .desc = "Log an f64 value" },
 
-    // --- Performance / Timing ---
     .{ .name = "performance_now", .js = "return performance.now();", .category = .performance, .desc = "High-resolution timestamp" },
     .{ .name = "random", .js = "return Math.random();", .category = .performance, .desc = "Math.random()" },
     .{ .name = "random_int", .js = "return (Math.random() * 0x7FFFFFFF) | 0;", .category = .performance, .desc = "Random i32" },
     .{ .name = "now", .js = "return Date.now();", .category = .performance, .desc = "Unix timestamp ms" },
     .{ .name = "date_now", .js = "return Date.now();", .category = .performance, .desc = "Date.now()" },
 
-    // --- Timer ---
     .{ .name = "setTimeout", .js = "return setTimeout(() => exports.__zunk_invoke_callback(arguments[0], 0, 0, 0, 0), arguments[1]);", .needs_callbacks = true, .category = .timer, .desc = "setTimeout" },
     .{ .name = "setInterval", .js = "return setInterval(() => exports.__zunk_invoke_callback(arguments[0], 0, 0, 0, 0), arguments[1]);", .needs_callbacks = true, .category = .timer, .desc = "setInterval" },
     .{ .name = "clearTimeout", .js = "clearTimeout(arguments[0]);", .category = .timer, .desc = "clearTimeout" },
@@ -171,13 +117,10 @@ const exact_db = [_]ExactEntry{
     .{ .name = "requestAnimationFrame", .js = "return requestAnimationFrame((t) => exports.__zunk_invoke_callback(arguments[0], t, 0, 0, 0));", .needs_callbacks = true, .category = .timer, .desc = "requestAnimationFrame" },
     .{ .name = "cancelAnimationFrame", .js = "cancelAnimationFrame(arguments[0]);", .category = .timer, .desc = "cancelAnimationFrame" },
 
-    // --- Clipboard ---
     .{ .name = "clipboard_write", .js = "navigator.clipboard.writeText(readStr(arguments[0], arguments[1]));", .needs_strings = true, .category = .clipboard, .desc = "Write to clipboard" },
 
-    // --- Alerts / Prompts ---
     .{ .name = "alert", .js = "window.alert(readStr(arguments[0], arguments[1]));", .needs_strings = true, .category = .dom, .desc = "window.alert" },
 
-    // --- Storage ---
     .{ .name = "localStorage_set", .js = "localStorage.setItem(readStr(arguments[0], arguments[1]), readStr(arguments[2], arguments[3]));", .needs_strings = true, .category = .storage, .desc = "localStorage.setItem" },
     .{ .name = "localStorage_remove", .js = "localStorage.removeItem(readStr(arguments[0], arguments[1]));", .needs_strings = true, .category = .storage, .desc = "localStorage.removeItem" },
 };
@@ -200,14 +143,9 @@ fn exactMatch(allocator: std.mem.Allocator, name: []const u8) ?Resolution {
     return null;
 }
 
-// ============================================================================
-// Tier 2: Prefix/namespace match
-// ============================================================================
-
 const PrefixRule = struct {
     prefix: []const u8,
     category: Category,
-    /// Function that generates JS body from the method name + signature
     generator: *const fn (
         allocator: std.mem.Allocator,
         method_name: []const u8,
@@ -216,7 +154,6 @@ const PrefixRule = struct {
 };
 
 const prefix_rules = [_]PrefixRule{
-    // --- zunk_ namespaced (from the Layer 2 web modules) ---
     .{ .prefix = "zunk_canvas_", .category = .canvas2d, .generator = &genCanvas },
     .{ .prefix = "zunk_c2d_", .category = .canvas2d, .generator = &genCanvas2D },
     .{ .prefix = "zunk_dom_", .category = .dom, .generator = &genDom },
@@ -225,7 +162,6 @@ const prefix_rules = [_]PrefixRule{
     .{ .prefix = "zunk_app_", .category = .lifecycle, .generator = &genApp },
     .{ .prefix = "zunk_fetch", .category = .fetch, .generator = &genFetch },
     .{ .prefix = "zunk_gpu_", .category = .webgpu, .generator = &genWebGPU },
-    // --- Raw Web API names (developer writes extern fn directly) ---
     .{ .prefix = "canvas_", .category = .canvas2d, .generator = &genCanvas },
     .{ .prefix = "ctx2d_", .category = .canvas2d, .generator = &genCanvas2D },
     .{ .prefix = "dom_", .category = .dom, .generator = &genDom },
@@ -248,10 +184,6 @@ fn prefixMatch(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncType
     }
     return null;
 }
-
-// ============================================================================
-// Namespace generators -- produce JS for each Web API domain
-// ============================================================================
 
 fn genCanvas(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
     _ = sig;
@@ -280,7 +212,6 @@ fn genCanvas(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
 
 fn genCanvas2D(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
     _ = sig;
-    // Canvas2D methods all take a context handle as first arg
     const js_map = .{
         .{ "fill_rect", "H.get(arguments[0]).fillRect(arguments[1], arguments[2], arguments[3], arguments[4]);" },
         .{ "stroke_rect", "H.get(arguments[0]).strokeRect(arguments[1], arguments[2], arguments[3], arguments[4]);" },
@@ -449,7 +380,6 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
 
 fn genFetch(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
     _ = sig;
-    // For the bare "zunk_fetch" or "fetch_*" patterns
     if (method.len == 0 or std.mem.eql(u8, method, "get") or std.mem.eql(u8, method, "request")) {
         return .{
             .js_body = allocator.dupe(u8, "const url=readStr(arguments[0],arguments[1]); fetch(url).then(r=>r.arrayBuffer()).then(buf=>{zunkFetchBuf=new Uint8Array(buf); exports.__zunk_invoke_callback(arguments[2],200,zunkFetchBuf.length,0,0);}).catch(()=>{exports.__zunk_invoke_callback(arguments[2],-1,0,0,0);});") catch return null,
@@ -523,10 +453,6 @@ fn genStorage(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncTyp
     return null;
 }
 
-// ============================================================================
-// Tier 3: Signature-based inference
-// ============================================================================
-
 fn signatureInference(
     allocator: std.mem.Allocator,
     name: []const u8,
@@ -536,8 +462,6 @@ fn signatureInference(
     _ = param_names;
     const ft = sig orelse return null;
 
-    // Pattern: (i32, i32) -> void with name containing "log" or "print" or "write"
-    // Very likely: string output function
     if (ft.params.len == 2 and
         ft.params[0] == .i32 and ft.params[1] == .i32 and
         ft.returns.len == 0)
@@ -556,8 +480,6 @@ fn signatureInference(
         }
     }
 
-    // Pattern: (i32, i32) -> i32 with name containing "query", "get", "find", "select"
-    // Likely: DOM query returning a handle
     if (ft.params.len == 2 and
         ft.params[0] == .i32 and ft.params[1] == .i32 and
         ft.returns.len == 1 and ft.returns[0] == .i32)
@@ -577,7 +499,6 @@ fn signatureInference(
         }
     }
 
-    // Pattern: () -> f64 with name containing "time", "now", "perf"
     if (ft.params.len == 0 and ft.returns.len == 1 and ft.returns[0] == .f64) {
         if (containsAny(name, &.{ "time", "now", "perf", "timestamp", "clock" })) {
             return .{
@@ -589,7 +510,6 @@ fn signatureInference(
         }
     }
 
-    // Pattern: () -> f64 with name containing "random"
     if (ft.params.len == 0 and ft.returns.len == 1 and
         (ft.returns[0] == .f64 or ft.returns[0] == .f32))
     {
@@ -603,7 +523,6 @@ fn signatureInference(
         }
     }
 
-    // Pattern: (i32) -> void with name containing "free", "release", "destroy", "drop"
     if (ft.params.len == 1 and ft.params[0] == .i32 and ft.returns.len == 0) {
         if (containsAny(name, &.{ "free", "release", "destroy", "drop", "dispose", "close" })) {
             return .{
@@ -619,10 +538,6 @@ fn signatureInference(
     return null;
 }
 
-// ============================================================================
-// Tier 4: Parameter name inference
-// ============================================================================
-
 fn paramNameInference(
     allocator: std.mem.Allocator,
     name: []const u8,
@@ -631,12 +546,11 @@ fn paramNameInference(
 ) !?Resolution {
     _ = sig;
 
-    // If we see (selector_ptr, selector_len, text_ptr, text_len) -> likely a DOM setter
     if (param_names.len >= 4) {
-        if (hasParamLike(param_names[0], &.{ "sel", "selector", "query", "el" }) and
-            hasParamLike(param_names[2], &.{ "text", "txt", "html", "content", "val", "value" }))
+        if (containsAny(param_names[0], &.{ "sel", "selector", "query", "el" }) and
+            containsAny(param_names[2], &.{ "text", "txt", "html", "content", "val", "value" }))
         {
-            const is_html = hasParamLike(param_names[2], &.{"html"});
+            const is_html = containsAny(param_names[2], &.{"html"});
             const prop = if (is_html) "innerHTML" else "textContent";
             return .{
                 .js_body = try std.fmt.allocPrint(allocator,
@@ -651,9 +565,8 @@ fn paramNameInference(
         }
     }
 
-    // If we see (url_ptr, url_len, ...) -> likely a network/fetch call
     if (param_names.len >= 2) {
-        if (hasParamLike(param_names[0], &.{ "url", "uri", "href", "path", "endpoint" })) {
+        if (containsAny(param_names[0], &.{ "url", "uri", "href", "path", "endpoint" })) {
             if (containsAny(name, &.{ "fetch", "request", "get", "load", "http" })) {
                 return .{
                     .js_body = try std.fmt.allocPrint(allocator,
@@ -671,10 +584,6 @@ fn paramNameInference(
 
     return null;
 }
-
-// ============================================================================
-// Tier 5: Stub generation
-// ============================================================================
 
 fn generateStub(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncType) !Resolution {
     var body: std.ArrayList(u8) = .empty;
@@ -702,7 +611,6 @@ fn generateStub(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncTyp
 
     try w.print("', arguments);", .{});
 
-    // If it returns a value, return 0
     if (sig) |ft| {
         if (ft.returns.len > 0) {
             try w.print(" return 0;", .{});
@@ -717,10 +625,6 @@ fn generateStub(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncTyp
     };
 }
 
-// ============================================================================
-// Utility
-// ============================================================================
-
 fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
     for (needles) |needle| {
         if (std.mem.indexOf(u8, haystack, needle) != null) return true;
@@ -728,16 +632,6 @@ fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
     return false;
 }
 
-fn hasParamLike(param_name: []const u8, hints: []const []const u8) bool {
-    for (hints) |hint| {
-        if (std.mem.indexOf(u8, param_name, hint) != null) return true;
-    }
-    return false;
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
 
 test "exact match console_log" {
     const res = exactMatch(std.testing.allocator, "console_log").?;
