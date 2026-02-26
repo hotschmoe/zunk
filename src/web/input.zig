@@ -153,8 +153,8 @@ pub fn getMouse() Mouse {
         .wheel = input_state.mouse_wheel,
         .buttons = .{
             .left = (input_state.mouse_buttons & 1) != 0,
-            .right = (input_state.mouse_buttons & 2) != 0,
-            .middle = (input_state.mouse_buttons & 4) != 0,
+            .middle = (input_state.mouse_buttons & 2) != 0,
+            .right = (input_state.mouse_buttons & 4) != 0,
         },
     };
 }
