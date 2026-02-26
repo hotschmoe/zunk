@@ -295,42 +295,12 @@ trunk is the direct inspiration for zunk's build tool. It uses an HTML-driven as
 
 ---
 
-## Roadmap
+## Status
 
-### Phase 1 — Foundation (current)
-- [x] WASM binary analyzer (import/export/type/name sections)
-- [x] 5-tier auto-resolution engine with Web API knowledge base
-- [x] JS code generator (adaptive, minimal output)
-- [x] HTML generator (auto-detects canvas, fullscreen, etc.)
-- [x] Layer 2 web modules (canvas, input, audio, app)
-- [x] Binding system (Handle, CallbackFn, string exchange, comptime manifest)
-- [x] Architecture documentation
-- [ ] Integrate gen/ modules into the zunk build tool CLI
-- [ ] End-to-end test: compile example → analyze → generate → serve
+The core architecture is implemented and functional (~2,400 lines of Zig). The WASM analyzer, 5-tier resolution engine, JS/HTML code generator, binding system, and Layer 2 web modules are all working. What remains is completing the build tool CLI (auto-compilation, dev server, deploy) and end-to-end validation.
 
-### Phase 2 — Build Tool
-- [ ] `zunk run` — compile + generate + serve + live reload
-- [ ] `zunk deploy` — compile + generate + content hash + dist/
-- [ ] `zunk init` — scaffold a new project
-- [ ] `Zunk.toml` configuration (optional)
-- [ ] `bridge.js` auto-discovery and merging
-- [ ] File watcher with debounced rebuild
-- [ ] Asset pipeline (CSS, images, fonts → hashed copy to dist)
-
-### Phase 3 — Ecosystem
-- [ ] WebGPU integration testing with native Zig GPU libraries
-- [ ] Expand knowledge base (WebXR, WebRTC, Web Workers, etc.)
-- [ ] Library convention for shipping `bridge.js` alongside Zig packages
-- [ ] Source maps for debugging WASM in browser devtools
-- [ ] WASM size optimization passes (strip debug, optimize)
-- [ ] Hot module replacement (HMR) for faster dev iteration
-
-### Phase 4 — Polish
-- [ ] `zunk doctor` — diagnose build issues, check zig version, etc.
-- [ ] Error overlay in browser (show build errors in the page)
-- [ ] Proxy support for API backends during development
-- [ ] Build caching (skip recompile if sources unchanged)
-- [ ] Multi-page app support
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deep dive on design decisions.
 
 ---
 
@@ -350,12 +320,12 @@ trunk is the direct inspiration for zunk's build tool. It uses an HTML-driven as
 
 ## Contributing
 
-This project is early. The core architecture is designed but the build tool integration needs work. The highest-impact contributions right now:
+The core modules are implemented. The highest-impact contributions right now:
 
-1. **Wiring up the CLI** — connecting the gen/ modules to the zunk build/serve/deploy commands
-2. **Expanding the knowledge base** — adding more Web API patterns to `js_resolve.zig`
-3. **Testing** — compiling real Zig WASM projects through the analyzer and verifying the generated JS works
-4. **WebGPU bridge** — the current WebGPU entries in the knowledge base are stubs for complex operations like pipeline creation
+1. **Auto-compilation** — making the CLI invoke `zig build` to compile user Zig source to WASM
+2. **End-to-end validation** — compiling real projects through the full pipeline and verifying the generated JS runs correctly in a browser
+3. **Dev server** — HTTP server + file watcher for the `zunk run` workflow
+4. **WebGPU bindings** — the resolution engine has WebGPU prefix rules but generators need real implementations
 
 ---
 
