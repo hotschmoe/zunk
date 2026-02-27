@@ -14,13 +14,17 @@ vehicle for maturing zunk's WebGPU capabilities and Layer 2 API.
 - `bind.Handle` -- unified JS object handle (i32 <-> JS Map)
 - `web/canvas.zig` -- Canvas 2D (via `zunk_c2d_*` / `zunk_canvas_*` extern fns)
 - `web/input.zig` -- polling-based input (shared memory struct, 236 lines)
-- `web/audio.zig` -- Web Audio API wrapper
+- `web/audio.zig` -- Web Audio API wrapper + `decodeAsset()` bridge
+- `web/asset.zig` -- generic URL-based asset loading (fetch/isReady/getLen/getBytes)
 - `web/app.zig` -- lifecycle + logging
-- `gen/js_resolve.zig` -- 5-tier resolver; WebGPU has 6 stubby entries in `genWebGPU`
+- `gen/js_resolve.zig` -- 5-tier resolver; `.asset` category implemented; WebGPU has 6 stubby entries in `genWebGPU`
 - `gen/js_gen.zig` -- full JS/HTML generator with handle table, input system, render loop
 - `gen/serve.zig` -- dev server with live reload
 - `gen/wasm_analyze.zig` -- WASM binary parser
+- `main.zig` -- CLI with convention-based asset copying (`src/assets/` -> `dist/assets/`)
 - `examples/input-demo/` -- working Canvas 2D example
+- `examples/audio-demo-1-assets-bundled/` -- audio with @embedFile
+- `examples/audio-demo-2-assets-cached/` -- audio with asset.fetch + decodeAsset
 
 ### What the ref particle life has
 - ~90 WebGPU FFI functions across `js_webgpu_*` / `env_webgpu_*` naming
@@ -46,7 +50,9 @@ Render pipelines       none           create (standard + HDR), draw, render pass
 Textures               none           create, createView, destroy, HDR format
 Command encoders       none           create, beginComputePass, beginRenderPass, finish, submit
 Present/frame          none           render to screen texture, present
-Asset loading          none           image fetch + GPU texture upload (blue noise)
+Asset fetching         DONE           zunk.web.asset (generic fetch + polling)
+Asset -> GPU texture   none           image decode + GPU texture upload (blue noise)
+Asset copying          DONE           src/assets/ -> dist/assets/ convention
 Input                  full           reuse existing system
 ```
 
@@ -133,16 +139,54 @@ pan, zoom). Configuration hardcoded with reasonable defaults.
 Phase 2 (future, not in this plan): zunk UI module or bridge.js for sliders/buttons.
 
 ### D8: Blue noise texture
-Add a `gpu.loadImageTexture(url)` FFI that triggers async JS fetch + image decode
-+ GPU texture upload and returns the texture view handle. The resolver generates
-the necessary JS. This is the only new "async" FFI pattern -- it uses a callback
-to notify Zig when the texture is ready.
+**Updated:** Generic asset fetching now exists via `zunk.web.asset`. The blue
+noise PNG follows the same two-stage pattern as audio:
 
-Alternative (simpler): hardcode blue noise data as a comptime byte array and upload
-via buffer write. This avoids async entirely but adds ~65KB to the WASM binary.
+```zig
+const asset = zunk.web.asset;
 
-Recommendation: Start with the callback approach since it exercises a useful
-general-purpose pattern (async asset loading).
+// In init:
+noise_asset = asset.fetch("assets/blue-noise.png");
+
+// In frame (before simulation starts):
+if (!noise_ready) {
+    if (asset.isReady(noise_asset)) {
+        noise_texture = gpu.createTextureFromAsset(noise_asset);
+        // or: gpu.uploadImageToTexture(noise_asset) if we want a combined call
+    }
+    if (gpu.isTextureReady(noise_texture)) {
+        noise_ready = true;
+    }
+}
+```
+
+What remains GPU-specific: a `gpu.createTextureFromAsset(asset_handle)` function
+that takes a fetched ArrayBuffer, decodes it as an image via `createImageBitmap`,
+creates a GPU texture, and uploads via `copyExternalImageToTexture`. This is the
+GPU analog of `audio.decodeAsset()`.
+
+The JS resolver entry for `create_texture_from_asset`:
+```javascript
+const buf = H.get(arguments[0]);
+if (!(buf instanceof ArrayBuffer)) return 0;
+const h = H.nextId();
+createImageBitmap(new Blob([buf]), {colorSpaceConversion:'none'})
+.then(bmp => {
+  const tex = H.get(1).createTexture({
+    format:'rgba8unorm',
+    size:[bmp.width,bmp.height],
+    usage: 0x06,  // COPY_DST | TEXTURE_BINDING
+  });
+  H.get(1).queue.copyExternalImageToTexture(
+    {source:bmp},{texture:tex},{width:bmp.width,height:bmp.height});
+  H.set(h, tex);
+});
+return h;
+```
+
+No callbacks needed -- uses the same polling pattern as all other async ops.
+The convention-based asset copying (`src/assets/` -> `dist/assets/`) handles
+getting blue-noise.png into the output directory automatically.
 
 ---
 
@@ -194,8 +238,9 @@ Render Pipelines
   zunk_gpu_render_pass_end(pass: i32) -> void
   zunk_gpu_present() -> void
 
-Asset Loading
-  zunk_gpu_load_image_texture(url_ptr: [*]const u8, url_len: u32, callback: i32) -> void
+Image Texture from Asset
+  zunk_gpu_create_texture_from_asset(asset_handle: i32) -> i32
+  zunk_gpu_is_texture_ready(handle: i32) -> i32
 ```
 
 Public Zig API (thin wrappers):
@@ -469,42 +514,54 @@ and WebGPU often needs them too).
 
 ---
 
-### Phase 4: Asset Loading (Blue Noise Texture)
+### Phase 4: GPU Texture from Asset (Blue Noise)
 
-**Approach: Async callback pattern**
+**Updated:** Generic asset fetching is done (`zunk.web.asset`). Convention-based
+asset copying (`src/assets/` -> `dist/assets/`) is done. What remains is the
+GPU-specific decoder that takes a fetched ArrayBuffer and creates a GPU texture.
 
-Add a `zunk_gpu_load_image_texture` FFI that:
-1. JS side: fetches image URL, decodes to bitmap, creates GPU texture, stores
-   handles, calls back into WASM with texture + view handles
-2. Zig side: registers a callback, receives texture_handle and view_handle
-   when loading completes
-
-**JS resolver entry for `load_image_texture`:**
-```javascript
-const url = readStr(arguments[0], arguments[1]);
-const cbId = arguments[2];
-fetch(url).then(r => r.blob()).then(b => createImageBitmap(b, {colorSpaceConversion:'none'}))
-.then(bmp => {
-  const tex = H.get(1).createTexture({
-    format:'rgba8unorm',
-    size:[bmp.width,bmp.height],
-    usage: 0x06,  // COPY_DST | TEXTURE_BINDING
-  });
-  H.get(1).queue.copyExternalImageToTexture({source:bmp},{texture:tex},{width:bmp.width,height:bmp.height});
-  const view = tex.createView();
-  const tH = H.store(tex);
-  const vH = H.store(view);
-  exports.__zunk_invoke_callback(cbId, tH, vH, 0, 0);
-});
-```
+This is a small addition to `gpu.zig` (2 externs, 2 public functions):
 
 **Zig API:**
 ```zig
-pub fn loadImageTexture(url: []const u8, callback: bind.CallbackFn) void { ... }
+pub fn createTextureFromAsset(asset_handle: asset.Handle) Texture {
+    return bind.Handle.fromInt(zunk_gpu_create_texture_from_asset(asset_handle.toInt()));
+}
+
+pub fn isTextureReady(handle: Texture) bool {
+    return zunk_gpu_is_texture_ready(handle.toInt()) != 0;
+}
 ```
 
-The particle life simulation calls this during init to load `blue-noise.png`
-and stores the returned TextureView handle for use in the compose shader.
+**JS resolver entries added to `genWebGPU`:**
+```
+"create_texture_from_asset" ->
+  Blob decode + createImageBitmap + createTexture + copyExternalImageToTexture
+  (see D8 for full JS body)
+
+"is_texture_ready" ->
+  "const t=H.get(arguments[0]); return t instanceof GPUTexture ? 1 : 0;"
+```
+
+**Usage in particle life:**
+```zig
+const asset = zunk.web.asset;
+const gpu = zunk.web.gpu;
+
+// In init:
+noise_asset = asset.fetch("assets/blue-noise.png");
+
+// In frame (loading phase):
+if (asset.isReady(noise_asset)) {
+    noise_texture = gpu.createTextureFromAsset(noise_asset);
+}
+if (gpu.isTextureReady(noise_texture)) {
+    noise_view = gpu.createTextureView(noise_texture);
+    // proceed with simulation setup
+}
+```
+
+No callbacks, no special async patterns. Same polling model as audio.
 
 ---
 
@@ -537,7 +594,7 @@ Port from ref's `src/main.zig`. Key changes:
 - Replace custom exports (`setDevice`, `setBlueNoiseTexture`) with standard
   zunk lifecycle exports (`init`, `frame`, `resize`)
 - Device handle obtained via `gpu.getDevice()` instead of explicit `setDevice` export
-- Blue noise loaded via `gpu.loadImageTexture()` during init
+- Blue noise loaded via `asset.fetch()` + `gpu.createTextureFromAsset()` during init/frame
 - Remove `setParticleCount`, `setSpeciesCount`, etc. (no UI in Phase 1 --
   hardcoded defaults)
 
@@ -669,15 +726,10 @@ pub fn build(b: *std.Build) void {
 ```
 
 **Asset handling:**
-The `blue-noise.png` file needs to be copied to the output directory.
-Options:
-1. Add asset copy support to `zunk.installApp()` -- specify static files to include
-2. Manual build step in the example's build.zig
-3. Embed as comptime bytes
-
-Recommendation: Option 1 -- add an `assets` field to `InstallAppOptions` that
-lists files to copy alongside the WASM/JS/HTML output. This benefits all future
-projects.
+Already solved. The build tool automatically copies `src/assets/` to
+`dist/assets/` during build. Place `blue-noise.png` in
+`examples/particle-life/src/assets/` and reference it as
+`"assets/blue-noise.png"` in Zig code. No build.zig changes needed.
 
 ---
 
@@ -688,20 +740,20 @@ Phase 1 (gpu.zig)
     |
     +--> Phase 2 (resolver) --+--> Phase 3 (generator)
     |                         |
-    |                         +--> Phase 4 (asset loading)
+    |                         +--> Phase 4 (gpu texture from asset -- small, 2 externs)
     |
     +--> Phase 5 (particle life example)
               |
               +--> depends on Phases 2, 3, 4
               |
-              +--> Phase 6 (build system)
+              +--> Phase 6 (build system -- asset copying already done)
 ```
 
 Phase 1 and 2 can be developed in parallel (Zig API + JS resolver).
 Phase 3 depends on Phase 2 (generator uses resolver outputs).
-Phase 4 depends on Phase 3 (asset loading needs generator support).
+Phase 4 is now small (2 externs + 2 JS resolver entries); depends on Phase 2.
 Phase 5 depends on all previous phases.
-Phase 6 can start alongside Phase 5.
+Phase 6 is simplified -- asset copying is already implemented.
 
 ---
 
@@ -736,7 +788,7 @@ Phase 6 can start alongside Phase 5.
 |------|-----------|--------|------------|
 | Struct packing mismatch (Zig extern struct vs JS DataView) | Medium | High | Byte-level unit tests for all struct layouts |
 | WebGPU API differences across browsers | Low | Medium | Test on Chrome (primary), Firefox |
-| Async texture loading race condition | Medium | Medium | Guard with "texture ready" flag before using in shader |
+| Async texture loading race condition | Low | Medium | Polling pattern (asset.isReady + gpu.isTextureReady) prevents races by design |
 | Generated JS too large | Low | Low | Only emit WebGPU init when category detected |
 | WASM stack overflow (large local arrays in simulation) | Medium | High | Set explicit stack size in build.zig (ref project had this) |
 
@@ -749,7 +801,7 @@ Phase 6 can start alongside Phase 5.
 | 1. gpu.zig | 1 new, 1 modified (root.zig) | ~300 |
 | 2. Resolver | 1 modified (js_resolve.zig) | ~200 (replace ~20, add ~180) |
 | 3. Generator | 1 modified (js_gen.zig) | ~60 |
-| 4. Asset loading | 2 modified (gpu.zig, js_resolve.zig) | ~30 |
+| 4. GPU texture from asset | 2 modified (gpu.zig, js_resolve.zig) | ~15 |
 | 5. Particle life | 6 new files | ~1200 (ported from ~1400 in ref) |
 | 6. Build system | 2 new files | ~60 |
 | **Total** | ~10 new, ~4 modified | ~1850 |
