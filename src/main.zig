@@ -94,6 +94,8 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
 
     var result = try js_gen.generate(allocator, &analysis, .{
         .wasm_filename = wasm_basename,
+        .autoreload = do_serve,
+        .autoreload_port = parsed.port,
     });
     defer result.deinit(allocator);
 
@@ -108,7 +110,7 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
     std.debug.print("{s}\nBuild complete: {s}/\n", .{ result.report, parsed.output_dir });
 
     if (do_serve) {
-        try serve_mod.serve(allocator, parsed.output_dir, parsed.port);
+        try serve_mod.serve(allocator, parsed.output_dir, parsed.port, true);
     }
 }
 
