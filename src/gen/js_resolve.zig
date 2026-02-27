@@ -48,6 +48,8 @@ pub const Category = enum {
     // Network
     fetch,
     websocket,
+    // Assets
+    asset,
     // Storage
     storage,
     clipboard,
@@ -160,6 +162,7 @@ const prefix_rules = [_]PrefixRule{
     .{ .prefix = "zunk_input_", .category = .input, .generator = &genInput },
     .{ .prefix = "zunk_audio_", .category = .audio, .generator = &genAudio },
     .{ .prefix = "zunk_app_", .category = .lifecycle, .generator = &genApp },
+    .{ .prefix = "zunk_asset_", .category = .asset, .generator = &genAsset },
     .{ .prefix = "zunk_fetch", .category = .fetch, .generator = &genFetch },
     .{ .prefix = "zunk_gpu_", .category = .webgpu, .generator = &genWebGPU },
     .{ .prefix = "canvas_", .category = .canvas2d, .generator = &genCanvas },
@@ -170,6 +173,7 @@ const prefix_rules = [_]PrefixRule{
     .{ .prefix = "gpu_", .category = .webgpu, .generator = &genWebGPU },
     .{ .prefix = "ws_", .category = .websocket, .generator = &genWebSocket },
     .{ .prefix = "fetch_", .category = .fetch, .generator = &genFetch },
+    .{ .prefix = "asset_", .category = .asset, .generator = &genAsset },
     .{ .prefix = "storage_", .category = .storage, .generator = &genStorage },
 };
 
@@ -316,6 +320,7 @@ fn genAudio(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType)
         .{ "load_memory", "const bytes = new Uint8Array(memory.buffer, arguments[0], arguments[1]).slice(); const h = H.nextId(); H.get(zunkAudioCtx).decodeAudioData(bytes.buffer).then(buf=>{H.set(h,buf);}); return h;", false, true },
         .{ "is_ready", "return H.get(arguments[0]) !== undefined ? 1 : 0;", false, false },
         .{ "play", "const buf = H.get(arguments[0]); if(!buf) return; const ctx = H.get(zunkAudioCtx); const src = ctx.createBufferSource(); src.buffer = buf; if(zunkGain){src.connect(zunkGain);}else{src.connect(ctx.destination);} src.start();", false, false },
+        .{ "decode_asset", "const buf = H.get(arguments[0]); if(!(buf instanceof ArrayBuffer)) return 0; const h = H.nextId(); H.get(zunkAudioCtx).decodeAudioData(buf.slice()).then(decoded=>{H.set(h,decoded);}); return h;", false, false },
         .{ "set_master_volume", "const ctx = H.get(zunkAudioCtx); if(!zunkGain){zunkGain=ctx.createGain();zunkGain.connect(ctx.destination);} zunkGain.gain.value = arguments[0];", false, false },
     };
     inline for (js_map) |entry| {
@@ -353,6 +358,29 @@ fn genApp(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?
                 .needs_string_helper = std.mem.indexOf(u8, entry[1], "readStr") != null,
                 .confidence = .exact,
                 .category = .lifecycle,
+            };
+        }
+    }
+    return null;
+}
+
+fn genAsset(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
+    _ = sig;
+    const Entry = struct { []const u8, []const u8, bool };
+    const js_map = [_]Entry{
+        .{ "fetch", "const url = readStr(arguments[0], arguments[1]); const h = H.nextId(); fetch(url).then(r=>r.arrayBuffer()).then(buf=>{H.set(h,buf);}); return h;", true },
+        .{ "is_ready", "return H.get(arguments[0]) instanceof ArrayBuffer ? 1 : 0;", false },
+        .{ "get_len", "const b=H.get(arguments[0]); return b instanceof ArrayBuffer ? b.byteLength : 0;", false },
+        .{ "get_ptr", "const b=H.get(arguments[0]); if(!(b instanceof ArrayBuffer)) return 0; const src=new Uint8Array(b); new Uint8Array(memory.buffer,arguments[1],src.length).set(src); return src.length;", false },
+    };
+    inline for (js_map) |entry| {
+        if (std.mem.eql(u8, method, entry[0])) {
+            return .{
+                .js_body = allocator.dupe(u8, entry[1]) catch return null,
+                .needs_handles = true,
+                .needs_string_helper = entry[2],
+                .confidence = .exact,
+                .category = .asset,
             };
         }
     }

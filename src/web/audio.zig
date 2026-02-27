@@ -7,6 +7,7 @@ extern "env" fn zunk_audio_load(url_ptr: [*]const u8, url_len: u32) i32;
 extern "env" fn zunk_audio_load_memory(data_ptr: [*]const u8, data_len: u32) i32;
 extern "env" fn zunk_audio_is_ready(buffer_handle: i32) i32;
 extern "env" fn zunk_audio_play(buffer_handle: i32) void;
+extern "env" fn zunk_audio_decode_asset(asset_handle: i32) i32;
 extern "env" fn zunk_audio_set_master_volume(volume: f32) void;
 
 pub const AudioCtx = bind.Handle;
@@ -43,6 +44,13 @@ pub fn isReady(buffer: AudioBuffer) bool {
 
 pub fn play(buffer: AudioBuffer) void {
     zunk_audio_play(buffer.toInt());
+}
+
+/// Decode raw asset bytes (from zunk.web.asset) as audio. Returns a buffer
+/// handle immediately; the browser decodes asynchronously. Use isReady()
+/// to check when the buffer can be played.
+pub fn decodeAsset(asset_handle: bind.Handle) AudioBuffer {
+    return bind.Handle.fromInt(zunk_audio_decode_asset(asset_handle.toInt()));
 }
 
 pub fn setMasterVolume(volume: f32) void {

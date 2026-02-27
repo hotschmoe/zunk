@@ -2,20 +2,18 @@ const zunk = @import("zunk");
 const canvas = zunk.web.canvas;
 const input = zunk.web.input;
 const audio = zunk.web.audio;
+const asset = zunk.web.asset;
 const app = zunk.web.app;
 
 const math = @import("std").math;
 
 const tau = math.pi * 2.0;
 
-// Asset: loaded at runtime from an external URL (not embedded in WASM).
-// This demonstrates zunk's cached asset loading path.
-// TODO: replace with actual zunk asset API once designed
-// sfx_buffer = audio.loadFromUrl("assets/explode.ogg");
-
 var ctx: canvas.Ctx2D = undefined;
+var explode_asset: asset.Handle = undefined;
 var sfx_buffer: audio.AudioBuffer = undefined;
 var sfx_ready: bool = false;
+var asset_decoded: bool = false;
 var audio_started: bool = false;
 var volume: f32 = 0.8;
 
@@ -46,11 +44,8 @@ export fn init() void {
     ctx = canvas.getContext2D("app");
     app.setTitle("zunk audio demo (cached assets)");
 
-    // Create the audio context and fetch the sound from a URL.
-    // The browser fetches + decodes asynchronously; we poll isReady() each frame.
     _ = audio.init(44100);
-    // TODO: this is the API we need to design and implement
-    // sfx_buffer = audio.loadFromUrl("assets/explode.ogg");
+    explode_asset = asset.fetch("assets/explode.ogg");
     audio.setMasterVolume(volume);
 }
 
@@ -58,7 +53,14 @@ export fn frame(dt: f32) void {
     input.poll();
 
     if (!sfx_ready) {
-        sfx_ready = audio.isReady(sfx_buffer);
+        if (!asset_decoded) {
+            if (asset.isReady(explode_asset)) {
+                sfx_buffer = audio.decodeAsset(explode_asset);
+                asset_decoded = true;
+            }
+        } else {
+            sfx_ready = audio.isReady(sfx_buffer);
+        }
     }
 
     const mouse = input.getMouse();

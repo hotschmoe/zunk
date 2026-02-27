@@ -138,6 +138,8 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
     try out_dir.writeFile(.{ .sub_path = "app.js", .data = result.js });
     try out_dir.writeFile(.{ .sub_path = wasm_basename, .data = wasm });
 
+    copyAssets(allocator, out_dir, console);
+
     try console.print("");
     const report_panel = rich.Panel.fromText(allocator, result.report)
         .withTitle("Build Report")
@@ -159,6 +161,36 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
             .proxy_prefix = proxy.prefix,
             .proxy_target = proxy.target,
         }, console);
+    }
+}
+
+fn copyAssets(allocator: std.mem.Allocator, out_dir: std.fs.Dir, console: *rich.Console) void {
+    var src_assets = std.fs.cwd().openDir("src/assets", .{ .iterate = true }) catch return;
+    defer src_assets.close();
+
+    out_dir.makePath("assets") catch return;
+    var dest_assets = out_dir.openDir("assets", .{}) catch return;
+    defer dest_assets.close();
+
+    var walker = src_assets.walk(allocator) catch return;
+    defer walker.deinit();
+
+    var count: usize = 0;
+    while (walker.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        const data = src_assets.readFileAlloc(allocator, entry.path, 50 * 1024 * 1024) catch continue;
+        defer allocator.free(data);
+        if (std.fs.path.dirname(entry.path)) |dir| {
+            dest_assets.makePath(dir) catch continue;
+        }
+        dest_assets.writeFile(.{ .sub_path = entry.path, .data = data }) catch continue;
+        count += 1;
+    }
+
+    if (count > 0) {
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Copied {d} asset(s) to output", .{count}) catch return;
+        console.printStyled(msg, rich.Style.empty.foreground(rich.Color.cyan)) catch {};
     }
 }
 
