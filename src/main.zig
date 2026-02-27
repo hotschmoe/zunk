@@ -89,6 +89,20 @@ fn parseBuildArgs(args: []const []const u8) BuildArgs {
     return result;
 }
 
+const ProxyConfig = struct {
+    prefix: ?[]const u8 = null,
+    target: ?[]const u8 = null,
+};
+
+fn parseProxy(arg: ?[]const u8) ProxyConfig {
+    const proxy_arg = arg orelse return .{};
+    const eq_pos = std.mem.indexOfScalar(u8, proxy_arg, '=') orelse return .{};
+    return .{
+        .prefix = proxy_arg[0..eq_pos],
+        .target = proxy_arg[eq_pos + 1 ..],
+    };
+}
+
 fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve: bool, console: *rich.Console) !void {
     const parsed = parseBuildArgs(args);
     const wasm_path = parsed.wasm_path orelse {
@@ -137,20 +151,13 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
     if (do_serve) {
         try console.print("");
 
-        var proxy_prefix: ?[]const u8 = null;
-        var proxy_target: ?[]const u8 = null;
-        if (parsed.proxy) |proxy_arg| {
-            if (std.mem.indexOf(u8, proxy_arg, "=")) |eq_pos| {
-                proxy_prefix = proxy_arg[0..eq_pos];
-                proxy_target = proxy_arg[eq_pos + 1 ..];
-            }
-        }
+        const proxy = parseProxy(parsed.proxy);
 
         try dev_server.serve(allocator, parsed.output_dir, parsed.port, .{
             .autoreload = true,
             .watch_sources = parsed.watch,
-            .proxy_prefix = proxy_prefix,
-            .proxy_target = proxy_target,
+            .proxy_prefix = proxy.prefix,
+            .proxy_target = proxy.target,
         }, console);
     }
 }
