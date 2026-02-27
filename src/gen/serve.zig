@@ -4,6 +4,8 @@ const rich = @import("rich_zig");
 const native_os = @import("builtin").os.tag;
 const windows = std.os.windows;
 
+const default_favicon = @embedFile("favicon.ico");
+
 const Handle = std.net.Stream.Handle;
 
 const WsRegistry = struct {
@@ -128,6 +130,10 @@ fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_
     const rel_path = if (std.mem.eql(u8, path, "/")) "index.html" else path[1..];
 
     const file_data = root_dir.readFileAlloc(allocator, rel_path, 50 * 1024 * 1024) catch {
+        if (std.mem.eql(u8, rel_path, "favicon.ico")) {
+            try sendResponse(stream, "200 OK", "image/x-icon", default_favicon);
+            return;
+        }
         try sendResponse(stream, "404 Not Found", "text/plain", "Not Found");
         return;
     };
