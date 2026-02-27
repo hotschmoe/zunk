@@ -1,9 +1,8 @@
 const std = @import("std");
-const zunk = @import("zunk");
 
-const wa = zunk.gen.wasm_analyze;
-const js_gen = zunk.gen.js_gen;
-const dev_server = zunk.gen.serve;
+const wa = @import("gen/wasm_analyze.zig");
+const js_gen = @import("gen/js_gen.zig");
+const dev_server = @import("gen/serve.zig");
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;

@@ -4,6 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const webzocket = b.dependency("webzocket", .{}).module("webzocket");
+
     const mod = b.addModule("zunk", .{
         .root_source_file = b.path("src/root.zig"),
     });
@@ -16,6 +18,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "zunk", .module = mod },
+                .{ .name = "webzocket", .module = webzocket },
             },
         }),
     });

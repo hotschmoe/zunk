@@ -1,4 +1,5 @@
 const std = @import("std");
+const webzocket = @import("webzocket");
 const native_os = @import("builtin").os.tag;
 const windows = std.os.windows;
 
@@ -138,35 +139,17 @@ fn findHeader(request: []const u8, name: []const u8) ?[]const u8 {
 
 fn wsHandshake(handle: Handle, request: []const u8) !void {
     const key = findHeader(request, "Sec-WebSocket-Key") orelse return error.MissingHeader;
-
-    var h = std.crypto.hash.Sha1.init(.{});
-    h.update(key);
-    h.update("258EAFA5-E914-47DA-95CA-5AB9DC85B141");
-    var digest: [20]u8 = undefined;
-    h.final(&digest);
-
-    var accept_buf: [28]u8 = undefined;
-    const accept = std.base64.standard.Encoder.encode(&accept_buf, &digest);
-
-    var resp_buf: [256]u8 = undefined;
-    const resp = std.fmt.bufPrint(&resp_buf,
-        "HTTP/1.1 101 Switching Protocols\r\n" ++
-            "Upgrade: websocket\r\n" ++
-            "Connection: Upgrade\r\n" ++
-            "Sec-WebSocket-Accept: {s}\r\n\r\n",
-        .{accept},
-    ) catch return error.BufferOverflow;
-
-    try socketWrite(handle, resp);
+    var reply_buf: [256]u8 = undefined;
+    const reply = try webzocket.Handshake.createReply(key, null, false, &reply_buf);
+    try socketWrite(handle, reply);
 }
 
 fn wsWriteText(handle: Handle, msg: []const u8) !void {
     std.debug.assert(msg.len <= 125);
-    var frame: [127]u8 = undefined;
-    frame[0] = 0x81;
-    frame[1] = @intCast(msg.len);
-    @memcpy(frame[2..][0..msg.len], msg);
-    try socketWrite(handle, frame[0 .. 2 + msg.len]);
+    var buf: [2 + 125]u8 = undefined;
+    const header = webzocket.proto.writeFrameHeader(&buf, .text, msg.len, false);
+    @memcpy(buf[header.len..][0..msg.len], msg);
+    try socketWrite(handle, buf[0 .. header.len + msg.len]);
 }
 
 fn wsReadLoop(handle: Handle) void {
@@ -174,7 +157,7 @@ fn wsReadLoop(handle: Handle) void {
     while (true) {
         const n = socketRead(handle, &buf) catch return;
         if (n == 0) return;
-        if ((buf[0] & 0x0F) == 0x8) return;
+        if (buf[0] == @intFromEnum(webzocket.OpCode.close)) return;
     }
 }
 
