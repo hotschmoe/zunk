@@ -276,6 +276,7 @@ fn sendResponse(stream: std.net.Stream, status: []const u8, content_type: []cons
         "HTTP/1.1 {s}\r\n" ++
             "Content-Type: {s}\r\n" ++
             "Content-Length: {d}\r\n" ++
+            "Cache-Control: no-store\r\n" ++
             "Cross-Origin-Opener-Policy: same-origin\r\n" ++
             "Cross-Origin-Embedder-Policy: require-corp\r\n" ++
             "Connection: close\r\n\r\n",

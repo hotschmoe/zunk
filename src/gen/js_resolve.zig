@@ -315,8 +315,8 @@ fn genAudio(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType)
         .{ "load", "const url = readStr(arguments[0], arguments[1]); const h = H.nextId(); fetch(url).then(r=>r.arrayBuffer()).then(b=>H.get(zunkAudioCtx).decodeAudioData(b)).then(buf=>{H.set(h,buf);}); return h;", true, false },
         .{ "load_memory", "const bytes = new Uint8Array(memory.buffer, arguments[0], arguments[1]).slice(); const h = H.nextId(); H.get(zunkAudioCtx).decodeAudioData(bytes.buffer).then(buf=>{H.set(h,buf);}); return h;", false, true },
         .{ "is_ready", "return H.get(arguments[0]) !== undefined ? 1 : 0;", false, false },
-        .{ "play", "const buf = H.get(arguments[0]); if(!buf) return; const ctx = H.get(zunkAudioCtx); const src = ctx.createBufferSource(); src.buffer = buf; src.connect(ctx.destination); src.start();", false, false },
-        .{ "set_master_volume", "if(!zunkGain){zunkGain=H.get(zunkAudioCtx).createGain();zunkGain.connect(H.get(zunkAudioCtx).destination);} zunkGain.gain.value = arguments[0];", false, false },
+        .{ "play", "const buf = H.get(arguments[0]); if(!buf) return; const ctx = H.get(zunkAudioCtx); const src = ctx.createBufferSource(); src.buffer = buf; if(zunkGain){src.connect(zunkGain);}else{src.connect(ctx.destination);} src.start();", false, false },
+        .{ "set_master_volume", "const ctx = H.get(zunkAudioCtx); if(!zunkGain){zunkGain=ctx.createGain();zunkGain.connect(ctx.destination);} zunkGain.gain.value = arguments[0];", false, false },
     };
     inline for (js_map) |entry| {
         if (std.mem.eql(u8, method, entry[0])) {
