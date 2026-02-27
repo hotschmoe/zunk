@@ -166,19 +166,7 @@ fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_
 
     logDim("{s} -> {s}", .{ path, rel_path }, console);
 
-    const content_type = mimeType(rel_path);
-    const ae = findHeader(request, "Accept-Encoding") orelse "";
-    const accepts_gzip = std.mem.indexOf(u8, ae, "gzip") != null;
-
-    if (accepts_gzip and file_data.len > 1024 and isCompressible(content_type)) {
-        if (gzipCompress(allocator, file_data)) |compressed| {
-            defer allocator.free(compressed);
-            try sendCompressedResponse(stream, "200 OK", content_type, compressed);
-            return;
-        }
-    }
-
-    try sendResponse(stream, "200 OK", content_type, file_data);
+    try sendResponse(stream, "200 OK", mimeType(rel_path), file_data);
 }
 
 fn isWsUpgrade(request: []const u8) bool {
@@ -490,66 +478,18 @@ fn proxyRequest(allocator: std.mem.Allocator, client_stream: std.net.Stream, req
     }
 }
 
-fn isCompressible(content_type: []const u8) bool {
-    const compressible = [_][]const u8{
-        "text/html",
-        "application/javascript",
-        "text/css",
-        "application/json",
-        "text/wgsl",
-        "application/wasm",
-        "image/svg+xml",
-    };
-    for (compressible) |ct| {
-        if (std.mem.eql(u8, content_type, ct)) return true;
-    }
-    return false;
-}
-
-fn gzipCompress(allocator: std.mem.Allocator, input: []const u8) ?[]u8 {
-    const flate = std.compress.flate;
-    var output = std.Io.Writer.Allocating.init(allocator);
-    const compress_buf = allocator.alloc(u8, 65536) catch return null;
-    defer allocator.free(compress_buf);
-    var compressor = allocator.create(flate.Compress) catch return null;
-    defer allocator.destroy(compressor);
-    compressor.* = flate.Compress.init(&output.writer, compress_buf, .{
-        .level = .fast,
-        .container = .gzip,
-    });
-    compressor.writer.writeAll(input) catch return null;
-    compressor.end() catch return null;
-    var list = output.toArrayList();
-    return list.toOwnedSlice(allocator) catch null;
-}
-
 fn sendResponse(stream: std.net.Stream, status: []const u8, content_type: []const u8, body: []const u8) !void {
-    try sendResponseImpl(stream, status, content_type, body, false);
-}
-
-fn sendCompressedResponse(stream: std.net.Stream, status: []const u8, content_type: []const u8, body: []const u8) !void {
-    try sendResponseImpl(stream, status, content_type, body, true);
-}
-
-fn sendResponseImpl(stream: std.net.Stream, status: []const u8, content_type: []const u8, body: []const u8, gzip: bool) !void {
     var header_buf: [512]u8 = undefined;
-    var off: usize = 0;
-    off += (std.fmt.bufPrint(header_buf[off..],
+    const header = std.fmt.bufPrint(&header_buf,
         "HTTP/1.1 {s}\r\n" ++
             "Content-Type: {s}\r\n" ++
-            "Content-Length: {d}\r\n",
-        .{ status, content_type, body.len },
-    ) catch return).len;
-    if (gzip) {
-        off += (std.fmt.bufPrint(header_buf[off..], "Content-Encoding: gzip\r\n", .{}) catch return).len;
-    }
-    off += (std.fmt.bufPrint(header_buf[off..],
-        "Cache-Control: no-store\r\n" ++
+            "Content-Length: {d}\r\n" ++
+            "Cache-Control: no-store\r\n" ++
             "Cross-Origin-Opener-Policy: same-origin\r\n" ++
             "Cross-Origin-Embedder-Policy: require-corp\r\n" ++
             "Connection: close\r\n\r\n",
-        .{},
-    ) catch return).len;
-    try socketWrite(stream.handle, header_buf[0..off]);
+        .{ status, content_type, body.len },
+    ) catch return;
+    try socketWrite(stream.handle, header);
     try socketWrite(stream.handle, body);
 }
