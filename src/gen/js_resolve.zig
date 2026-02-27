@@ -366,12 +366,12 @@ fn genApp(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?
 
 fn genAsset(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
     _ = sig;
-    const Entry = struct { []const u8, []const u8, bool };
+    const Entry = struct { []const u8, []const u8, bool, bool };
     const js_map = [_]Entry{
-        .{ "fetch", "const url = readStr(arguments[0], arguments[1]); const h = H.nextId(); fetch(url).then(r=>r.arrayBuffer()).then(buf=>{H.set(h,buf);}); return h;", true },
-        .{ "is_ready", "return H.get(arguments[0]) instanceof ArrayBuffer ? 1 : 0;", false },
-        .{ "get_len", "const b=H.get(arguments[0]); return b instanceof ArrayBuffer ? b.byteLength : 0;", false },
-        .{ "get_ptr", "const b=H.get(arguments[0]); if(!(b instanceof ArrayBuffer)) return 0; const src=new Uint8Array(b); new Uint8Array(memory.buffer,arguments[1],src.length).set(src); return src.length;", false },
+        .{ "fetch", "const url = readStr(arguments[0], arguments[1]); const h = H.nextId(); fetch(url).then(r=>r.arrayBuffer()).then(buf=>{H.set(h,buf);}); return h;", true, false },
+        .{ "is_ready", "return H.get(arguments[0]) instanceof ArrayBuffer ? 1 : 0;", false, false },
+        .{ "get_len", "const b=H.get(arguments[0]); return b instanceof ArrayBuffer ? b.byteLength : 0;", false, false },
+        .{ "get_ptr", "const b=H.get(arguments[0]); if(!(b instanceof ArrayBuffer)) return 0; const src=new Uint8Array(b); new Uint8Array(memory.buffer,arguments[1],src.length).set(src); return src.length;", false, true },
     };
     inline for (js_map) |entry| {
         if (std.mem.eql(u8, method, entry[0])) {
@@ -379,6 +379,7 @@ fn genAsset(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType)
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
                 .needs_handles = true,
                 .needs_string_helper = entry[2],
+                .needs_memory_view = entry[3],
                 .confidence = .exact,
                 .category = .asset,
             };

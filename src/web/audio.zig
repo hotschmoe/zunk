@@ -46,9 +46,7 @@ pub fn play(buffer: AudioBuffer) void {
     zunk_audio_play(buffer.toInt());
 }
 
-/// Decode raw asset bytes (from zunk.web.asset) as audio. Returns a buffer
-/// handle immediately; the browser decodes asynchronously. Use isReady()
-/// to check when the buffer can be played.
+/// Decode a fetched asset (from zunk.web.asset) as audio. Poll isReady().
 pub fn decodeAsset(asset_handle: bind.Handle) AudioBuffer {
     return bind.Handle.fromInt(zunk_audio_decode_asset(asset_handle.toInt()));
 }
