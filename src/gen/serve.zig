@@ -1,5 +1,6 @@
 const std = @import("std");
 const webzocket = @import("webzocket");
+const rich = @import("rich_zig");
 const native_os = @import("builtin").os.tag;
 const windows = std.os.windows;
 
@@ -44,42 +45,56 @@ const WsRegistry = struct {
     }
 };
 
-pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16, autoreload: bool) !void {
+pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16, autoreload: bool, console: *rich.Console) !void {
     var root_dir = try std.fs.cwd().openDir(root_dir_path, .{});
     defer root_dir.close();
 
     var ws_reg = WsRegistry{};
 
     if (autoreload) {
-        const watcher = std.Thread.spawn(.{}, watcherThread, .{ root_dir_path, &ws_reg });
+        const watcher = std.Thread.spawn(.{}, watcherThread, .{ root_dir_path, &ws_reg, console });
         if (watcher) |t| t.detach() else |err| {
-            std.debug.print("warning: could not start file watcher: {}\n", .{err});
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "warning: could not start file watcher: {}", .{err}) catch "warning: could not start file watcher";
+            console.printStyled(msg, rich.Style.empty.foreground(rich.Color.yellow)) catch {};
         }
     }
 
     const addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port);
     var server = addr.listen(.{ .reuse_address = true }) catch |err| {
         if (err == error.AddressInUse) {
-            std.debug.print("error: port {d} is already in use\n", .{port});
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "error: port {d} is already in use", .{port}) catch "error: port is already in use";
+            console.printStyled(msg, rich.Style.empty.bold().foreground(rich.Color.red)) catch {};
         }
         return err;
     };
     defer server.deinit();
 
-    const reload_note: []const u8 = if (autoreload) " (live reload enabled)" else "";
-    std.debug.print("Serving on http://127.0.0.1:{d}/{s}\nPress Ctrl+C to stop.\n", .{ port, reload_note });
+    const reload_note: []const u8 = if (autoreload) "\nlive reload enabled" else "";
+    var banner_buf: [256]u8 = undefined;
+    const banner_content = std.fmt.bufPrint(&banner_buf, "http://127.0.0.1:{d}{s}", .{ port, reload_note }) catch "localhost";
+
+    const banner = rich.Panel.fromText(allocator, banner_content)
+        .withTitle("zunk dev server")
+        .withBorderStyle(rich.Style.empty.foreground(rich.Color.green));
+    try console.printRenderable(banner);
+    try console.print("[dim]Press Ctrl+C to stop.[/]");
+    try console.print("");
 
     while (true) {
         const conn = server.accept() catch |err| {
-            std.debug.print("accept error: {}\n", .{err});
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "accept error: {}", .{err}) catch "accept error";
+            console.printStyled(msg, rich.Style.empty.foreground(rich.Color.red)) catch {};
             continue;
         };
-        const thread = std.Thread.spawn(.{}, connectionThread, .{ allocator, conn.stream, root_dir, &ws_reg, autoreload });
+        const thread = std.Thread.spawn(.{}, connectionThread, .{ allocator, conn.stream, root_dir, &ws_reg, autoreload, console });
         if (thread) |t| t.detach() else |_| conn.stream.close();
     }
 }
 
-fn connectionThread(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, ws_reg: *WsRegistry, autoreload: bool) void {
+fn connectionThread(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, ws_reg: *WsRegistry, autoreload: bool, console: *rich.Console) void {
     defer stream.close();
 
     var buf: [4096]u8 = undefined;
@@ -95,12 +110,14 @@ fn connectionThread(allocator: std.mem.Allocator, stream: std.net.Stream, root_d
         return;
     }
 
-    handleHttpRequest(allocator, stream, root_dir, request) catch |err| {
-        std.debug.print("request error: {}\n", .{err});
+    handleHttpRequest(allocator, stream, root_dir, request, console) catch |err| {
+        var err_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&err_buf, "request error: {}", .{err}) catch "request error";
+        console.printStyled(msg, rich.Style.empty.foreground(rich.Color.red)) catch {};
     };
 }
 
-fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, request: []const u8) !void {
+fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, request: []const u8, console: *rich.Console) !void {
     const path = parsePath(request) orelse return;
 
     if (std.mem.indexOf(u8, path, "..") != null) {
@@ -116,7 +133,10 @@ fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_
     };
     defer allocator.free(file_data);
 
-    std.debug.print("{s} -> {s}\n", .{ path, rel_path });
+    var log_buf: [512]u8 = undefined;
+    const log_msg = std.fmt.bufPrint(&log_buf, "{s} -> {s}", .{ path, rel_path }) catch return;
+    console.printStyled(log_msg, rich.Style.empty.dim()) catch {};
+
     try sendResponse(stream, "200 OK", mimeType(rel_path), file_data);
 }
 
@@ -161,13 +181,13 @@ fn wsReadLoop(handle: Handle) void {
     }
 }
 
-fn watcherThread(root_dir_path: []const u8, ws_reg: *WsRegistry) void {
+fn watcherThread(root_dir_path: []const u8, ws_reg: *WsRegistry, console: *rich.Console) void {
     var last_fingerprint: i128 = 0;
     _ = pollDirChanged(root_dir_path, &last_fingerprint);
     while (true) {
         std.Thread.sleep(500 * std.time.ns_per_ms);
         if (pollDirChanged(root_dir_path, &last_fingerprint)) {
-            std.debug.print("[reload] dist/ changed, notifying browsers\n", .{});
+            console.printStyled("reload: dist/ changed, notifying browsers", rich.Style.empty.bold().foreground(rich.Color.yellow)) catch {};
             ws_reg.broadcast("reload");
         }
     }
