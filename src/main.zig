@@ -3,7 +3,7 @@ const zunk = @import("zunk");
 
 const wa = zunk.gen.wasm_analyze;
 const js_gen = zunk.gen.js_gen;
-const serve_mod = zunk.gen.serve;
+const dev_server = zunk.gen.serve;
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
@@ -110,7 +110,7 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
     std.debug.print("{s}\nBuild complete: {s}/\n", .{ result.report, parsed.output_dir });
 
     if (do_serve) {
-        try serve_mod.serve(allocator, parsed.output_dir, parsed.port, true);
+        try dev_server.serve(allocator, parsed.output_dir, parsed.port, true);
     }
 }
 

@@ -23,11 +23,9 @@ const WsRegistry = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         for (&self.handles) |*slot| {
-            if (slot.*) |h| {
-                if (h == handle) {
-                    slot.* = null;
-                    return;
-                }
+            if (slot.* == handle) {
+                slot.* = null;
+                return;
             }
         }
     }
@@ -67,11 +65,8 @@ pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16,
     };
     defer server.deinit();
 
-    if (autoreload) {
-        std.debug.print("Serving on http://127.0.0.1:{d}/ (live reload enabled)\nPress Ctrl+C to stop.\n", .{port});
-    } else {
-        std.debug.print("Serving on http://127.0.0.1:{d}/\nPress Ctrl+C to stop.\n", .{port});
-    }
+    const reload_note: []const u8 = if (autoreload) " (live reload enabled)" else "";
+    std.debug.print("Serving on http://127.0.0.1:{d}/{s}\nPress Ctrl+C to stop.\n", .{ port, reload_note });
 
     while (true) {
         const conn = server.accept() catch |err| {
@@ -99,12 +94,12 @@ fn connectionThread(allocator: std.mem.Allocator, stream: std.net.Stream, root_d
         return;
     }
 
-    handleConnection(allocator, stream, root_dir, request) catch |err| {
+    handleHttpRequest(allocator, stream, root_dir, request) catch |err| {
         std.debug.print("request error: {}\n", .{err});
     };
 }
 
-fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, request: []const u8) !void {
+fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, request: []const u8) !void {
     const path = parsePath(request) orelse return;
 
     if (std.mem.indexOf(u8, path, "..") != null) {
@@ -135,9 +130,7 @@ fn findHeader(request: []const u8, name: []const u8) ?[]const u8 {
     while (iter.next()) |line| {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
         if (std.ascii.eqlIgnoreCase(line[0..colon], name)) {
-            var value = line[colon + 1 ..];
-            while (value.len > 0 and value[0] == ' ') value = value[1..];
-            return value;
+            return std.mem.trimLeft(u8, line[colon + 1 ..], " ");
         }
     }
     return null;
