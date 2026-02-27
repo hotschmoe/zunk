@@ -97,22 +97,15 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
     });
     defer result.deinit(allocator);
 
-    const dist_wasm_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ parsed.output_dir, wasm_basename });
-    defer allocator.free(dist_wasm_path);
-
-    const html_path = try std.fmt.allocPrint(allocator, "{s}/index.html", .{parsed.output_dir});
-    defer allocator.free(html_path);
-
-    const js_path = try std.fmt.allocPrint(allocator, "{s}/app.js", .{parsed.output_dir});
-    defer allocator.free(js_path);
-
     std.fs.cwd().makePath(parsed.output_dir) catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = html_path, .data = result.html });
-    try std.fs.cwd().writeFile(.{ .sub_path = js_path, .data = result.js });
-    try std.fs.cwd().writeFile(.{ .sub_path = dist_wasm_path, .data = wasm });
+    var out_dir = try std.fs.cwd().openDir(parsed.output_dir, .{});
+    defer out_dir.close();
 
-    std.debug.print("{s}", .{result.report});
-    std.debug.print("\nBuild complete: {s}/\n", .{parsed.output_dir});
+    try out_dir.writeFile(.{ .sub_path = "index.html", .data = result.html });
+    try out_dir.writeFile(.{ .sub_path = "app.js", .data = result.js });
+    try out_dir.writeFile(.{ .sub_path = wasm_basename, .data = wasm });
+
+    std.debug.print("{s}\nBuild complete: {s}/\n", .{ result.report, parsed.output_dir });
 
     if (do_serve) {
         try serve_mod.serve(allocator, parsed.output_dir, parsed.port);

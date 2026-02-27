@@ -4,13 +4,10 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Library module -- the public "zunk" package that user projects import.
-    // No target set: inherits from whatever compile step imports it.
     const mod = b.addModule("zunk", .{
         .root_source_file = b.path("src/root.zig"),
     });
 
-    // CLI executable -- the `zunk` build tool (always compiled for host)
     const exe = b.addExecutable(.{
         .name = "zunk",
         .root_module = b.createModule(.{
@@ -25,7 +22,6 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
-    // -- run step --
     const run_step = b.step("run", "Run the zunk CLI");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
@@ -34,7 +30,6 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    // -- test step --
     const test_step = b.step("test", "Run all tests");
 
     const test_mod = b.createModule(.{
@@ -45,8 +40,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = test_mod })).step);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = exe.root_module })).step);
 }
-
-// -- Build integration for consumer projects --
 
 pub const InstallAppOptions = struct {
     port: u16 = 8080,
@@ -62,7 +55,6 @@ pub fn installApp(
     const cli = dep.artifact("zunk");
     b.installArtifact(user_exe);
 
-    // Default install step: compile WASM + generate dist/
     const gen_cmd = b.addRunArtifact(cli);
     gen_cmd.addArg("build");
     gen_cmd.addArg("--wasm");
@@ -72,7 +64,6 @@ pub fn installApp(
     gen_cmd.setCwd(b.path("."));
     b.getInstallStep().dependOn(&gen_cmd.step);
 
-    // "run" step: build + serve
     const run_step = b.step("run", "Build and serve on localhost");
     const serve_cmd = b.addRunArtifact(cli);
     serve_cmd.addArg("run");

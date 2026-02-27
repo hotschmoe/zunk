@@ -1,6 +1,9 @@
 const std = @import("std");
 
 pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16) !void {
+    var root_dir = try std.fs.cwd().openDir(root_dir_path, .{});
+    defer root_dir.close();
+
     const addr = std.net.Address.initIp4(.{ 127, 0, 0, 0 }, port);
     var server = addr.listen(.{ .reuse_address = true }) catch |err| {
         if (err == error.AddressInUse) {
@@ -18,42 +21,34 @@ pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16)
             continue;
         };
         defer conn.stream.close();
-        handleConnection(allocator, conn.stream, root_dir_path) catch |err| {
+        handleConnection(allocator, conn.stream, root_dir) catch |err| {
             std.debug.print("request error: {}\n", .{err});
         };
     }
 }
 
-fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir_path: []const u8) !void {
+fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir) !void {
     var buf: [4096]u8 = undefined;
     const n = try stream.read(&buf);
     if (n == 0) return;
 
-    const request = buf[0..n];
-    const path = parsePath(request) orelse return;
+    const path = parsePath(buf[0..n]) orelse return;
 
     if (std.mem.indexOf(u8, path, "..") != null) {
         try sendResponse(stream, "403 Forbidden", "text/plain", "Forbidden");
         return;
     }
 
-    const file_path = if (std.mem.eql(u8, path, "/"))
-        "index.html"
-    else
-        path[1..];
+    const rel_path = if (std.mem.eql(u8, path, "/")) "index.html" else path[1..];
 
-    const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ root_dir_path, file_path });
-    defer allocator.free(full_path);
-
-    const file_data = std.fs.cwd().readFileAlloc(allocator, full_path, 50 * 1024 * 1024) catch {
+    const file_data = root_dir.readFileAlloc(allocator, rel_path, 50 * 1024 * 1024) catch {
         try sendResponse(stream, "404 Not Found", "text/plain", "Not Found");
         return;
     };
     defer allocator.free(file_data);
 
-    const mime = mimeType(file_path);
-    std.debug.print("{s} -> {s}\n", .{ path, file_path });
-    try sendResponse(stream, "200 OK", mime, file_data);
+    std.debug.print("{s} -> {s}\n", .{ path, rel_path });
+    try sendResponse(stream, "200 OK", mimeType(rel_path), file_data);
 }
 
 fn parsePath(request: []const u8) ?[]const u8 {
@@ -74,16 +69,9 @@ fn mimeType(path: []const u8) []const u8 {
     return "application/octet-stream";
 }
 
-fn writeAll(stream: std.net.Stream, data: []const u8) !void {
-    var sent: usize = 0;
-    while (sent < data.len) {
-        sent += try stream.write(data[sent..]);
-    }
-}
-
 fn sendResponse(stream: std.net.Stream, status: []const u8, content_type: []const u8, body: []const u8) !void {
     var header_buf: [512]u8 = undefined;
     const header = std.fmt.bufPrint(&header_buf, "HTTP/1.1 {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ status, content_type, body.len }) catch return;
-    try writeAll(stream, header);
-    try writeAll(stream, body);
+    try stream.writeAll(header);
+    try stream.writeAll(body);
 }
