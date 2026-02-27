@@ -13,10 +13,16 @@ and an ordered plan to close the gaps.
 | Capability                   | Implementation                                |
 |------------------------------|-----------------------------------------------|
 | Static file serving          | `root_dir.readFileAlloc`, 50 MB cap           |
-| MIME types                   | `.html`, `.js`, `.wasm`, `.css`, `.json`, `.png` |
+| MIME types                   | `.html`, `.js`, `.wasm`, `.css`, `.json`, `.png`, `.wgsl`, `.svg`, `.ico`, `.woff2`, `.mp3`, `.ogg`, `.wav` |
 | WebSocket live reload        | `/__zunk_ws` endpoint, `webzocket` library    |
 | File-change detection        | Polling `dist/` mtime every 500ms             |
+| Source watching + auto-rebuild | Polls `src/`, `build.zig`, runs configurable build cmd |
+| SPA fallback                 | Extensionless 404 paths serve `index.html`    |
+| Gzip compression             | Auto-compress >1KB compressible responses     |
+| Single-target proxy          | `--proxy /prefix=http://host:port` TCP relay  |
+| Browser error overlay        | Build errors shown via WS as red overlay      |
 | Path traversal protection    | `..` substring check                          |
+| Cache-Control: no-store      | Hardcoded on every response                   |
 | COOP/COEP headers            | Hardcoded on every response (ahead of Trunk)  |
 | Port-in-use error            | Explicit message on `AddressInUse`            |
 | Windows support              | `socketRead`/`socketWrite` use `ws2_32`       |
@@ -35,19 +41,26 @@ and an ordered plan to close the gaps.
         |                                   |
   +-----v------+                   +--------v-------+
   | HTTP handler|                  | WS handshake   |
-  | parsePath   |                  | wsReadLoop     |
-  | mimeType    |                  +--------+-------+
-  | sendResponse|                           |
-  +-----+------+                   +--------v-------+
-        |                          | WsRegistry     |
-  +-----v------+                   | broadcast()    |
-  | root_dir   |                   +--------+-------+
-  | (dist/)    |                            |
-  +------------+              +-------------v-----------+
-                              | watcherThread           |
-                              | pollDirChanged (500ms)  |
-                              | watches dist/ only      |
-                              +-------------------------+
+  | proxy check |                  | wsReadLoop     |
+  | parsePath   |                  +--------+-------+
+  | gzip check  |                           |
+  | mimeType    |                  +--------v-------+
+  | sendResponse|                  | WsRegistry     |
+  +-----+------+                  | broadcast()    |
+        |                         +---+--------+---+
+  +-----v------+                      |        |
+  | root_dir   |           +----------v--+ +---v-----------------+
+  | (dist/)    |           | watcherThread| | sourceWatcherThread |
+  +------------+           | polls dist/  | | polls src/          |
+                           | sends reload | | runs zig build      |
+  +------------+           +-------------+  | sends error/clear   |
+  | proxyReq   |                            +---------+-----------+
+  | TCP relay  |                                      |
+  +------------+                              +-------v-------+
+                                              | runBuild      |
+                                              | Child process |
+                                              | captures stderr|
+                                              +---------------+
 ```
 
 ### Comparison with Trunk (`trunk-rs` v0.21.14)
@@ -56,21 +69,21 @@ and an ordered plan to close the gaps.
 |--------------------------|---------------------|-------------------------------|
 | Live reload mechanism    | WS full page reload | WS full page reload           |
 | Hot module replacement   | No                  | No                            |
-| Watch target             | dist/ only          | Source dirs (configurable)     |
+| Watch target             | src/ + dist/        | Source dirs (configurable)     |
 | Watch mechanism          | Polling (500ms)     | `notify` crate (inotify etc.) |
-| Auto-rebuild on change   | No                  | Yes (full cargo rebuild)       |
-| Debounce                 | N/A                 | 25ms debounce + 1s cooldown   |
-| Cache-Control headers    | None                | None                          |
+| Auto-rebuild on change   | Yes (configurable)  | Yes (full cargo rebuild)       |
+| Debounce                 | 100ms               | 25ms debounce + 1s cooldown   |
+| Cache-Control headers    | no-store            | None                          |
 | COOP/COEP headers        | Always on           | Manual config required        |
-| SPA fallback             | No (404)            | Default on                    |
-| Gzip/Brotli              | No                  | No (open issue)               |
-| Proxy support            | No                  | HTTP + WS proxy, multi-target |
+| SPA fallback             | Yes (extensionless) | Default on                    |
+| Gzip/Brotli              | Gzip (auto)         | No (open issue)               |
+| Proxy support            | Single-target       | HTTP + WS proxy, multi-target |
 | HTTPS/TLS                | No                  | rustls or OpenSSL             |
-| Browser error overlay    | No                  | Build errors via WS           |
+| Browser error overlay    | Yes (WS + overlay)  | Build errors via WS           |
 | Custom headers           | Hardcoded           | Arbitrary via Trunk.toml      |
 | WASM MIME type            | Correct             | Correct                       |
 | Source maps              | No                  | No (proposal open)            |
-| `.wgsl` MIME type        | Missing             | N/A (not Zig-focused)         |
+| `.wgsl` MIME type        | Yes                 | N/A (not Zig-focused)         |
 | Address/port config      | Hardcoded 127.0.0.1 | CLI, env, Trunk.toml          |
 | File hashing             | Done at build time  | Default on                    |
 
@@ -95,41 +108,33 @@ and an ordered plan to close the gaps.
 
 ### Must-have for usable dev experience
 
-- [ ] **[1] Source watching + auto-rebuild** -- the "save and see" loop.
-  Watch source directories (not just `dist/`), trigger `zig build`
-  on change, then broadcast reload. Consider 25ms debounce + cooldown
-  to avoid rebuild storms. This is the single biggest dev experience gap.
+- [x] **[1] Source watching + auto-rebuild** -- sourceWatcherThread polls
+  src/ and build.zig for mtime changes, runs configurable build command
+  via std.process.Child, captures stderr for error overlay. 100ms debounce.
 
-- [ ] **[2] Cache-Control: no-store header** -- 30-second fix, prevents real pain.
-  Add `Cache-Control: no-store\r\n` to `sendResponse` header template.
-  Ensures browsers always fetch fresh content during development.
+- [x] **[2] Cache-Control: no-store header** -- already implemented in serve.zig.
 
-- [ ] **[3] .wgsl MIME type** -- 30-second fix, needed for WebGPU.
-  Add `if (std.mem.eql(u8, ext, ".wgsl")) return "text/wgsl";` to `mimeType`.
-  Without this, `fetch("shader.wgsl")` may fail or warn in some browsers.
+- [x] **[3] .wgsl MIME type** -- added .wgsl, .svg, .ico, .woff2, .mp3, .ogg, .wav.
 
 ### Nice-to-have for good dev experience
 
-- [ ] **[4] SPA fallback to index.html** -- when a path resolves to 404,
-  serve `index.html` instead (only for non-file paths, i.e. paths without
-  a file extension). Enables client-side routing without server config.
+- [x] **[4] SPA fallback to index.html** -- extensionless paths that 404
+  now serve index.html instead, enabling client-side routing.
 
-- [ ] **[5] Gzip compression (opt-in)** -- compress responses above a size
-  threshold when the client sends `Accept-Encoding: gzip`. Significant
-  for `.wasm` files which compress ~60-70%. Can use `std.compress.gzip`
-  from the standard library. Should be opt-in via CLI flag.
+- [x] **[5] Gzip compression** -- responses >1KB with compressible MIME types
+  are gzip-compressed when the client sends Accept-Encoding: gzip. Uses
+  std.compress.flate with gzip container, heap-allocated compressor.
 
-- [ ] **[6] Single-target proxy (--proxy)** -- forward requests matching a
-  path prefix to a backend server. Eliminates CORS pain during dev.
-  Single target is sufficient; no need for Trunk's multi-target system.
+- [x] **[6] Single-target proxy (--proxy)** -- `--proxy /api=http://localhost:3000`
+  forwards matching requests to a backend via TCP relay. Rewrites the
+  request line and relays the full response.
 
 ### Polish
 
-- [ ] **[7] Browser error overlay via WebSocket** -- when a build fails,
-  send the error text over the existing WS connection. Inject a small
-  `<div>` overlay in the client-side reload script that displays build
-  errors. Dismiss on next successful build. Trunk does this and users
-  value it highly.
+- [x] **[7] Browser error overlay via WebSocket** -- build failures send
+  "error:<stderr>" over WS, displayed as a full-screen red overlay.
+  Successful builds send "clear" to dismiss. wsWriteText now supports
+  messages >125 bytes via extended length frames.
 
 ---
 

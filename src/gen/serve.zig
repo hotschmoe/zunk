@@ -8,6 +8,16 @@ const default_favicon = @embedFile("favicon.ico");
 
 const Handle = std.net.Stream.Handle;
 
+pub const ServeConfig = struct {
+    autoreload: bool = true,
+    watch_sources: bool = true,
+    watch_paths: []const []const u8 = &.{"src"},
+    watch_files: []const []const u8 = &.{ "build.zig", "build.zig.zon" },
+    build_cmd: []const []const u8 = &.{ "zig", "build" },
+    proxy_prefix: ?[]const u8 = null,
+    proxy_target: ?[]const u8 = null,
+};
+
 const WsRegistry = struct {
     mutex: std.Thread.Mutex = .{},
     handles: [16]?Handle = .{null} ** 16,
@@ -47,17 +57,26 @@ const WsRegistry = struct {
     }
 };
 
-pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16, autoreload: bool, console: *rich.Console) !void {
+pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16, config: ServeConfig, console: *rich.Console) !void {
     var root_dir = try std.fs.cwd().openDir(root_dir_path, .{});
     defer root_dir.close();
 
     var ws_reg = WsRegistry{};
 
-    if (autoreload) {
+    if (config.autoreload) {
         const watcher = std.Thread.spawn(.{}, watcherThread, .{ root_dir_path, &ws_reg, console });
         if (watcher) |t| t.detach() else |err| {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "warning: could not start file watcher: {}", .{err}) catch "warning: could not start file watcher";
+            console.printStyled(msg, rich.Style.empty.foreground(rich.Color.yellow)) catch {};
+        }
+    }
+
+    if (config.autoreload and config.watch_sources) {
+        const src_watcher = std.Thread.spawn(.{}, sourceWatcherThread, .{ allocator, &config, &ws_reg, console });
+        if (src_watcher) |t| t.detach() else |err| {
+            var buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "warning: could not start source watcher: {}", .{err}) catch "warning: could not start source watcher";
             console.printStyled(msg, rich.Style.empty.foreground(rich.Color.yellow)) catch {};
         }
     }
@@ -73,9 +92,16 @@ pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16,
     };
     defer server.deinit();
 
-    const reload_note: []const u8 = if (autoreload) "\nlive reload enabled" else "";
-    var banner_buf: [256]u8 = undefined;
-    const banner_content = std.fmt.bufPrint(&banner_buf, "http://127.0.0.1:{d}{s}", .{ port, reload_note }) catch "localhost";
+    var banner_buf: [512]u8 = undefined;
+    var banner_off: usize = 0;
+    banner_off += (std.fmt.bufPrint(banner_buf[banner_off..], "http://127.0.0.1:{d}", .{port}) catch "").len;
+    if (config.autoreload) {
+        banner_off += (std.fmt.bufPrint(banner_buf[banner_off..], "\nlive reload enabled", .{}) catch "").len;
+    }
+    if (config.watch_sources) {
+        banner_off += (std.fmt.bufPrint(banner_buf[banner_off..], "\nsource watching enabled", .{}) catch "").len;
+    }
+    const banner_content = banner_buf[0..banner_off];
 
     const banner = rich.Panel.fromText(allocator, banner_content)
         .withTitle("zunk dev server")
@@ -91,12 +117,12 @@ pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16,
             console.printStyled(msg, rich.Style.empty.foreground(rich.Color.red)) catch {};
             continue;
         };
-        const thread = std.Thread.spawn(.{}, connectionThread, .{ allocator, conn.stream, root_dir, &ws_reg, autoreload, console });
+        const thread = std.Thread.spawn(.{}, connectionThread, .{ allocator, conn.stream, root_dir, &ws_reg, &config, console });
         if (thread) |t| t.detach() else |_| conn.stream.close();
     }
 }
 
-fn connectionThread(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, ws_reg: *WsRegistry, autoreload: bool, console: *rich.Console) void {
+fn connectionThread(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, ws_reg: *WsRegistry, config: *const ServeConfig, console: *rich.Console) void {
     defer stream.close();
 
     var buf: [4096]u8 = undefined;
@@ -104,7 +130,7 @@ fn connectionThread(allocator: std.mem.Allocator, stream: std.net.Stream, root_d
     if (n == 0) return;
     const request = buf[0..n];
 
-    if (autoreload and isWsUpgrade(request)) {
+    if (config.autoreload and isWsUpgrade(request)) {
         wsHandshake(stream.handle, request) catch return;
         ws_reg.add(stream.handle);
         wsReadLoop(stream.handle);
@@ -112,15 +138,27 @@ fn connectionThread(allocator: std.mem.Allocator, stream: std.net.Stream, root_d
         return;
     }
 
-    handleHttpRequest(allocator, stream, root_dir, request, console) catch |err| {
+    handleHttpRequest(allocator, stream, root_dir, request, config, console) catch |err| {
         var err_buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&err_buf, "request error: {}", .{err}) catch "request error";
         console.printStyled(msg, rich.Style.empty.foreground(rich.Color.red)) catch {};
     };
 }
 
-fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, request: []const u8, console: *rich.Console) !void {
+fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, request: []const u8, config: *const ServeConfig, console: *rich.Console) !void {
     const path = parsePath(request) orelse return;
+
+    if (config.proxy_prefix) |prefix| {
+        if (std.mem.startsWith(u8, path, prefix)) {
+            proxyRequest(allocator, stream, request, path, config.proxy_target.?, console) catch |err| {
+                var buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "proxy error: {}", .{err}) catch "proxy error";
+                console.printStyled(msg, rich.Style.empty.foreground(rich.Color.red)) catch {};
+                sendResponse(stream, "502 Bad Gateway", "text/plain", "Bad Gateway") catch {};
+            };
+            return;
+        }
+    }
 
     if (std.mem.indexOf(u8, path, "..") != null) {
         try sendResponse(stream, "403 Forbidden", "text/plain", "Forbidden");
@@ -134,6 +172,15 @@ fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_
             try sendResponse(stream, "200 OK", "image/x-icon", default_favicon);
             return;
         }
+        if (std.fs.path.extension(rel_path).len == 0) {
+            const fallback = root_dir.readFileAlloc(allocator, "index.html", 50 * 1024 * 1024) catch {
+                try sendResponse(stream, "404 Not Found", "text/plain", "Not Found");
+                return;
+            };
+            defer allocator.free(fallback);
+            try sendResponse(stream, "200 OK", "text/html", fallback);
+            return;
+        }
         try sendResponse(stream, "404 Not Found", "text/plain", "Not Found");
         return;
     };
@@ -143,7 +190,21 @@ fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_
     const log_msg = std.fmt.bufPrint(&log_buf, "{s} -> {s}", .{ path, rel_path }) catch return;
     console.printStyled(log_msg, rich.Style.empty.dim()) catch {};
 
-    try sendResponse(stream, "200 OK", mimeType(rel_path), file_data);
+    const content_type = mimeType(rel_path);
+    const accepts_gzip = if (findHeader(request, "Accept-Encoding")) |ae|
+        std.mem.indexOf(u8, ae, "gzip") != null
+    else
+        false;
+
+    if (accepts_gzip and file_data.len > 1024 and isCompressible(content_type)) {
+        if (gzipCompress(allocator, file_data)) |compressed| {
+            defer allocator.free(compressed);
+            try sendCompressedResponse(stream, "200 OK", content_type, compressed);
+            return;
+        }
+    }
+
+    try sendResponse(stream, "200 OK", content_type, file_data);
 }
 
 fn isWsUpgrade(request: []const u8) bool {
@@ -171,11 +232,17 @@ fn wsHandshake(handle: Handle, request: []const u8) !void {
 }
 
 fn wsWriteText(handle: Handle, msg: []const u8) !void {
-    std.debug.assert(msg.len <= 125);
-    var buf: [2 + 125]u8 = undefined;
-    const header = webzocket.proto.writeFrameHeader(&buf, .text, msg.len, false);
-    @memcpy(buf[header.len..][0..msg.len], msg);
-    try socketWrite(handle, buf[0 .. header.len + msg.len]);
+    if (msg.len <= 125) {
+        var buf: [2 + 125]u8 = undefined;
+        const header = webzocket.proto.writeFrameHeader(&buf, .text, msg.len, false);
+        @memcpy(buf[header.len..][0..msg.len], msg);
+        try socketWrite(handle, buf[0 .. header.len + msg.len]);
+    } else {
+        var header_buf: [14]u8 = undefined;
+        const header = webzocket.proto.writeFrameHeader(&header_buf, .text, msg.len, false);
+        try socketWrite(handle, header_buf[0..header.len]);
+        try socketWrite(handle, msg);
+    }
 }
 
 fn wsReadLoop(handle: Handle) void {
@@ -218,6 +285,107 @@ fn pollDirChanged(root_dir_path: []const u8, last_fingerprint: *i128) bool {
         return true;
     }
     return false;
+}
+
+fn sourceWatcherThread(allocator: std.mem.Allocator, config: *const ServeConfig, ws_reg: *WsRegistry, console: *rich.Console) void {
+    var last_fingerprint: i128 = 0;
+    _ = pollSourceChanged(config, &last_fingerprint);
+    while (true) {
+        std.Thread.sleep(500 * std.time.ns_per_ms);
+        if (pollSourceChanged(config, &last_fingerprint)) {
+            std.Thread.sleep(100 * std.time.ns_per_ms);
+            console.printStyled("watch: source changed, rebuilding...", rich.Style.empty.bold().foreground(rich.Color.cyan)) catch {};
+            runBuild(allocator, config, ws_reg, console);
+        }
+    }
+}
+
+fn runBuild(allocator: std.mem.Allocator, config: *const ServeConfig, ws_reg: *WsRegistry, console: *rich.Console) void {
+    var child = std.process.Child.init(config.build_cmd, allocator);
+    child.stderr_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.spawn() catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "build: failed to spawn: {}", .{err}) catch "build: failed to spawn";
+        console.printStyled(msg, rich.Style.empty.foreground(rich.Color.red)) catch {};
+        return;
+    };
+
+    var stdout_buf: std.ArrayList(u8) = .empty;
+    defer stdout_buf.deinit(allocator);
+    var stderr_buf: std.ArrayList(u8) = .empty;
+    defer stderr_buf.deinit(allocator);
+
+    child.collectOutput(allocator, &stdout_buf, &stderr_buf, 512 * 1024) catch {};
+
+    const result = child.wait() catch |err| {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "build: wait failed: {}", .{err}) catch "build: wait failed";
+        console.printStyled(msg, rich.Style.empty.foreground(rich.Color.red)) catch {};
+        return;
+    };
+
+    const success = switch (result) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+
+    if (success) {
+        console.printStyled("build: success", rich.Style.empty.bold().foreground(rich.Color.green)) catch {};
+        ws_reg.broadcast("clear");
+    } else {
+        console.printStyled("build: failed", rich.Style.empty.bold().foreground(rich.Color.red)) catch {};
+        const err_text = stderr_buf.items;
+        if (err_text.len > 0) {
+            const truncated = if (err_text.len > 60000) err_text[0..60000] else err_text;
+            const prefix = "error:";
+            const msg = allocator.alloc(u8, prefix.len + truncated.len) catch return;
+            defer allocator.free(msg);
+            @memcpy(msg[0..prefix.len], prefix);
+            @memcpy(msg[prefix.len..], truncated);
+            ws_reg.broadcast(msg);
+        }
+    }
+}
+
+fn pollSourceChanged(config: *const ServeConfig, last_fingerprint: *i128) bool {
+    var fingerprint: i128 = 0;
+
+    for (config.watch_paths) |watch_path| {
+        pollDirRecursive(watch_path, &fingerprint);
+    }
+
+    for (config.watch_files) |file_path| {
+        const file = std.fs.cwd().openFile(file_path, .{}) catch continue;
+        defer file.close();
+        const stat = file.stat() catch continue;
+        fingerprint +%= stat.mtime;
+    }
+
+    if (fingerprint != last_fingerprint.*) {
+        last_fingerprint.* = fingerprint;
+        return true;
+    }
+    return false;
+}
+
+fn pollDirRecursive(dir_path: []const u8, fingerprint: *i128) void {
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (iter.next() catch null) |entry| {
+        if (entry.kind == .directory) {
+            var sub_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const sub_path = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
+            pollDirRecursive(sub_path, fingerprint);
+        } else if (entry.kind == .file) {
+            const file = dir.openFile(entry.name, .{}) catch continue;
+            defer file.close();
+            const stat = file.stat() catch continue;
+            fingerprint.* +%= stat.mtime;
+        }
+    }
 }
 
 fn socketRead(handle: Handle, buf: []u8) !usize {
@@ -273,7 +441,108 @@ fn mimeType(path: []const u8) []const u8 {
     if (std.mem.eql(u8, ext, ".css")) return "text/css";
     if (std.mem.eql(u8, ext, ".json")) return "application/json";
     if (std.mem.eql(u8, ext, ".png")) return "image/png";
+    if (std.mem.eql(u8, ext, ".wgsl")) return "text/wgsl";
+    if (std.mem.eql(u8, ext, ".svg")) return "image/svg+xml";
+    if (std.mem.eql(u8, ext, ".ico")) return "image/x-icon";
+    if (std.mem.eql(u8, ext, ".woff2")) return "font/woff2";
+    if (std.mem.eql(u8, ext, ".mp3")) return "audio/mpeg";
+    if (std.mem.eql(u8, ext, ".ogg")) return "audio/ogg";
+    if (std.mem.eql(u8, ext, ".wav")) return "audio/wav";
     return "application/octet-stream";
+}
+
+fn proxyRequest(allocator: std.mem.Allocator, client_stream: std.net.Stream, request: []const u8, path: []const u8, target: []const u8, console: *rich.Console) !void {
+    const scheme_end = std.mem.indexOf(u8, target, "://") orelse return error.InvalidAddress;
+    const host_start = scheme_end + 3;
+    const rest = target[host_start..];
+
+    var host: []const u8 = rest;
+    var port: u16 = 80;
+    if (std.mem.indexOfScalar(u8, rest, ':')) |colon| {
+        host = rest[0..colon];
+        port = std.fmt.parseInt(u16, rest[colon + 1 ..], 10) catch 80;
+    } else if (std.mem.indexOfScalar(u8, rest, '/')) |slash| {
+        host = rest[0..slash];
+    }
+
+    var log_buf: [512]u8 = undefined;
+    const log_msg = std.fmt.bufPrint(&log_buf, "proxy: {s} -> {s}:{d}", .{ path, host, port }) catch "proxy";
+    console.printStyled(log_msg, rich.Style.empty.dim()) catch {};
+
+    const backend = std.net.tcpConnectToHost(allocator, host, port) catch return error.ConnectionRefused;
+    defer backend.close();
+
+    const first_line_end = std.mem.indexOf(u8, request, "\r\n") orelse return error.InvalidRequest;
+    var rewritten: std.ArrayList(u8) = .empty;
+    defer rewritten.deinit(allocator);
+    const w = rewritten.writer(allocator);
+
+    const method_end = std.mem.indexOfScalar(u8, request[0..first_line_end], ' ') orelse return error.InvalidRequest;
+    const method = request[0..method_end];
+    const version_start = std.mem.lastIndexOfScalar(u8, request[0..first_line_end], ' ') orelse return error.InvalidRequest;
+    const version = request[version_start..first_line_end];
+
+    try w.print("{s} {s}{s}\r\n", .{ method, path, version });
+    try w.writeAll(request[first_line_end + 2 ..]);
+
+    try backend.writeAll(rewritten.items);
+
+    var response_buf: [8192]u8 = undefined;
+    while (true) {
+        const n = backend.read(&response_buf) catch break;
+        if (n == 0) break;
+        socketWrite(client_stream.handle, response_buf[0..n]) catch break;
+    }
+}
+
+fn isCompressible(content_type: []const u8) bool {
+    const compressible = [_][]const u8{
+        "text/html",
+        "application/javascript",
+        "text/css",
+        "application/json",
+        "text/wgsl",
+        "application/wasm",
+        "image/svg+xml",
+    };
+    for (compressible) |ct| {
+        if (std.mem.eql(u8, content_type, ct)) return true;
+    }
+    return false;
+}
+
+fn gzipCompress(allocator: std.mem.Allocator, input: []const u8) ?[]u8 {
+    const flate = std.compress.flate;
+    var output = std.Io.Writer.Allocating.init(allocator);
+    const compress_buf = allocator.alloc(u8, 65536) catch return null;
+    defer allocator.free(compress_buf);
+    var compressor = allocator.create(flate.Compress) catch return null;
+    defer allocator.destroy(compressor);
+    compressor.* = flate.Compress.init(&output.writer, compress_buf, .{
+        .level = .fast,
+        .container = .gzip,
+    });
+    compressor.writer.writeAll(input) catch return null;
+    compressor.end() catch return null;
+    var list = output.toArrayList();
+    return list.toOwnedSlice(allocator) catch null;
+}
+
+fn sendCompressedResponse(stream: std.net.Stream, status: []const u8, content_type: []const u8, body: []const u8) !void {
+    var header_buf: [512]u8 = undefined;
+    const header = std.fmt.bufPrint(&header_buf,
+        "HTTP/1.1 {s}\r\n" ++
+            "Content-Type: {s}\r\n" ++
+            "Content-Length: {d}\r\n" ++
+            "Content-Encoding: gzip\r\n" ++
+            "Cache-Control: no-store\r\n" ++
+            "Cross-Origin-Opener-Policy: same-origin\r\n" ++
+            "Cross-Origin-Embedder-Policy: require-corp\r\n" ++
+            "Connection: close\r\n\r\n",
+        .{ status, content_type, body.len },
+    ) catch return;
+    try socketWrite(stream.handle, header);
+    try socketWrite(stream.handle, body);
 }
 
 fn sendResponse(stream: std.net.Stream, status: []const u8, content_type: []const u8, body: []const u8) !void {

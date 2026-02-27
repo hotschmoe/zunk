@@ -53,6 +53,8 @@ fn printUsage(console: *rich.Console) !void {
     try console.print("    [yellow]--wasm[/] <path>         Path to a pre-compiled .wasm file");
     try console.print("    [yellow]--output-dir[/] <path>   Output directory (default: dist)");
     try console.print("    [yellow]--port[/] <num>          Server port for 'run' (default: 8080)");
+    try console.print("    [yellow]--no-watch[/]             Disable source watching for 'run'");
+    try console.print("    [yellow]--proxy[/] <prefix=url>  Proxy requests (e.g. --proxy /api=http://localhost:3000)");
     try console.print("");
 }
 
@@ -60,6 +62,8 @@ const BuildArgs = struct {
     wasm_path: ?[]const u8 = null,
     output_dir: []const u8 = "dist",
     port: u16 = 8080,
+    watch: bool = true,
+    proxy: ?[]const u8 = null,
 };
 
 fn parseBuildArgs(args: []const []const u8) BuildArgs {
@@ -74,6 +78,11 @@ fn parseBuildArgs(args: []const []const u8) BuildArgs {
             i += 1;
         } else if (std.mem.eql(u8, args[i], "--port") and i + 1 < args.len) {
             result.port = std.fmt.parseInt(u16, args[i + 1], 10) catch 8080;
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--no-watch")) {
+            result.watch = false;
+        } else if (std.mem.eql(u8, args[i], "--proxy") and i + 1 < args.len) {
+            result.proxy = args[i + 1];
             i += 1;
         }
     }
@@ -127,7 +136,22 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
 
     if (do_serve) {
         try console.print("");
-        try dev_server.serve(allocator, parsed.output_dir, parsed.port, true, console);
+
+        var proxy_prefix: ?[]const u8 = null;
+        var proxy_target: ?[]const u8 = null;
+        if (parsed.proxy) |proxy_arg| {
+            if (std.mem.indexOf(u8, proxy_arg, "=")) |eq_pos| {
+                proxy_prefix = proxy_arg[0..eq_pos];
+                proxy_target = proxy_arg[eq_pos + 1 ..];
+            }
+        }
+
+        try dev_server.serve(allocator, parsed.output_dir, parsed.port, .{
+            .autoreload = true,
+            .watch_sources = parsed.watch,
+            .proxy_prefix = proxy_prefix,
+            .proxy_target = proxy_target,
+        }, console);
     }
 }
 
