@@ -70,6 +70,7 @@ pub const gen = struct {
     pub const wasm_analyze = @import("gen/wasm_analyze.zig");
     pub const js_resolve = @import("gen/js_resolve.zig");
     pub const js_gen = @import("gen/js_gen.zig");
+    pub const serve = @import("gen/serve.zig");
 };
 
 test {

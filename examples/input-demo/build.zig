@@ -1,4 +1,5 @@
 const std = @import("std");
+const zunk = @import("zunk");
 
 pub fn build(b: *std.Build) void {
     const optimize = b.option(
@@ -34,5 +35,5 @@ pub fn build(b: *std.Build) void {
     exe.entry = .disabled;
     exe.export_memory = true;
 
-    b.installArtifact(exe);
+    zunk.installApp(b, zunk_dep, exe, .{});
 }

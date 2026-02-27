@@ -3,6 +3,7 @@ const zunk = @import("zunk");
 
 const wa = zunk.gen.wasm_analyze;
 const js_gen = zunk.gen.js_gen;
+const serve_mod = zunk.gen.serve;
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
@@ -17,8 +18,10 @@ pub fn main() !void {
 
     const cmd = args[1];
 
-    if (std.mem.eql(u8, cmd, "build") or std.mem.eql(u8, cmd, "run")) {
-        try buildCommand(allocator, args[2..]);
+    if (std.mem.eql(u8, cmd, "build")) {
+        try buildCommand(allocator, args[2..], false);
+    } else if (std.mem.eql(u8, cmd, "run")) {
+        try buildCommand(allocator, args[2..], true);
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
         printUsage();
     } else if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version")) {
@@ -34,19 +37,46 @@ fn printUsage() void {
         \\Usage: zunk <command> [options]
         \\
         \\Commands:
-        \\  build    Compile .zig to .wasm, analyze, generate JS + HTML
-        \\  run      Build + serve with live reload
+        \\  build    Compile .wasm, analyze, generate JS + HTML
+        \\  run      Build + serve on localhost
         \\  help     Show this help
         \\  version  Show version
         \\
         \\Options:
-        \\  --wasm <path>   Path to a pre-compiled .wasm file
+        \\  --wasm <path>         Path to a pre-compiled .wasm file
+        \\  --output-dir <path>   Output directory (default: dist)
+        \\  --port <num>          Server port for 'run' (default: 8080)
         \\
     , .{});
 }
 
-fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    const wasm_path = parseWasmPath(args) orelse {
+const BuildArgs = struct {
+    wasm_path: ?[]const u8 = null,
+    output_dir: []const u8 = "dist",
+    port: u16 = 8080,
+};
+
+fn parseBuildArgs(args: []const []const u8) BuildArgs {
+    var result = BuildArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--wasm") and i + 1 < args.len) {
+            result.wasm_path = args[i + 1];
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--output-dir") and i + 1 < args.len) {
+            result.output_dir = args[i + 1];
+            i += 1;
+        } else if (std.mem.eql(u8, args[i], "--port") and i + 1 < args.len) {
+            result.port = std.fmt.parseInt(u16, args[i + 1], 10) catch 8080;
+            i += 1;
+        }
+    }
+    return result;
+}
+
+fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve: bool) !void {
+    const parsed = parseBuildArgs(args);
+    const wasm_path = parsed.wasm_path orelse {
         std.debug.print("error: --wasm <path> required (auto-compile not yet implemented)\n", .{});
         return;
     };
@@ -67,26 +97,26 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     });
     defer result.deinit(allocator);
 
-    const dist_wasm_path = try std.fmt.allocPrint(allocator, "dist/{s}", .{wasm_basename});
+    const dist_wasm_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ parsed.output_dir, wasm_basename });
     defer allocator.free(dist_wasm_path);
 
-    std.fs.cwd().makePath("dist") catch {};
-    try std.fs.cwd().writeFile(.{ .sub_path = "dist/index.html", .data = result.html });
-    try std.fs.cwd().writeFile(.{ .sub_path = "dist/app.js", .data = result.js });
+    const html_path = try std.fmt.allocPrint(allocator, "{s}/index.html", .{parsed.output_dir});
+    defer allocator.free(html_path);
+
+    const js_path = try std.fmt.allocPrint(allocator, "{s}/app.js", .{parsed.output_dir});
+    defer allocator.free(js_path);
+
+    std.fs.cwd().makePath(parsed.output_dir) catch {};
+    try std.fs.cwd().writeFile(.{ .sub_path = html_path, .data = result.html });
+    try std.fs.cwd().writeFile(.{ .sub_path = js_path, .data = result.js });
     try std.fs.cwd().writeFile(.{ .sub_path = dist_wasm_path, .data = wasm });
 
     std.debug.print("{s}", .{result.report});
-    std.debug.print("\nBuild complete: dist/\n", .{});
-}
+    std.debug.print("\nBuild complete: {s}/\n", .{parsed.output_dir});
 
-fn parseWasmPath(args: []const []const u8) ?[]const u8 {
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--wasm") and i + 1 < args.len) {
-            return args[i + 1];
-        }
+    if (do_serve) {
+        try serve_mod.serve(allocator, parsed.output_dir, parsed.port);
     }
-    return null;
 }
 
 test {
