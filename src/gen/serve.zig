@@ -4,7 +4,7 @@ pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16)
     var root_dir = try std.fs.cwd().openDir(root_dir_path, .{});
     defer root_dir.close();
 
-    const addr = std.net.Address.initIp4(.{ 127, 0, 0, 0 }, port);
+    const addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port);
     var server = addr.listen(.{ .reuse_address = true }) catch |err| {
         if (err == error.AddressInUse) {
             std.debug.print("error: port {d} is already in use\n", .{port});
@@ -27,9 +27,50 @@ pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16)
     }
 }
 
+const native_os = @import("builtin").os.tag;
+const windows = std.os.windows;
+
+fn socketRead(handle: std.net.Stream.Handle, buf: []u8) !usize {
+    if (native_os == .windows) {
+        const len: i32 = @intCast(buf.len);
+        const rc = windows.ws2_32.recv(handle, buf.ptr, len, 0);
+        if (rc == windows.ws2_32.SOCKET_ERROR) {
+            return switch (windows.ws2_32.WSAGetLastError()) {
+                .WSAECONNRESET => error.ConnectionResetByPeer,
+                else => |err| windows.unexpectedWSAError(err),
+            };
+        }
+        return @intCast(rc);
+    }
+    return std.posix.read(handle, buf);
+}
+
+fn socketWrite(handle: std.net.Stream.Handle, data: []const u8) !void {
+    var sent: usize = 0;
+    while (sent < data.len) {
+        const chunk = data[sent..];
+        if (native_os == .windows) {
+            const len: i32 = @intCast(@min(chunk.len, std.math.maxInt(i32)));
+            const rc = windows.ws2_32.send(handle, chunk.ptr, len, 0);
+            if (rc == windows.ws2_32.SOCKET_ERROR) {
+                return switch (windows.ws2_32.WSAGetLastError()) {
+                    .WSAECONNRESET => return,
+                    else => |err| windows.unexpectedWSAError(err),
+                };
+            }
+            sent += @intCast(rc);
+        } else {
+            sent += std.posix.write(handle, chunk) catch |err| switch (err) {
+                error.ConnectionResetByPeer, error.BrokenPipe => return,
+                else => return @errorCast(err),
+            };
+        }
+    }
+}
+
 fn handleConnection(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir) !void {
     var buf: [4096]u8 = undefined;
-    const n = try stream.read(&buf);
+    const n = try socketRead(stream.handle, &buf);
     if (n == 0) return;
 
     const path = parsePath(buf[0..n]) orelse return;
@@ -72,6 +113,6 @@ fn mimeType(path: []const u8) []const u8 {
 fn sendResponse(stream: std.net.Stream, status: []const u8, content_type: []const u8, body: []const u8) !void {
     var header_buf: [512]u8 = undefined;
     const header = std.fmt.bufPrint(&header_buf, "HTTP/1.1 {s}\r\nContent-Type: {s}\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n", .{ status, content_type, body.len }) catch return;
-    try stream.writeAll(header);
-    try stream.writeAll(body);
+    try socketWrite(stream.handle, header);
+    try socketWrite(stream.handle, body);
 }
