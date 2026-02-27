@@ -1,7 +1,7 @@
 .{
     .name = .audio_demo_2_assets_cached,
     .version = "0.0.0",
-    .fingerprint = 0xa1b2c3d4e5f60789,
+    .fingerprint = 0x1509fad14d7db35b,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .zunk = .{ .path = "../.." },

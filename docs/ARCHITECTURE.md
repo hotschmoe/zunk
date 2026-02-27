@@ -52,6 +52,7 @@ src/
     canvas.zig              Canvas 2D API wrappers (27 extern fns)
     input.zig               Keyboard/mouse/touch/gamepad polling (shared memory)
     audio.zig               Web Audio API wrappers
+    asset.zig               Generic URL-based asset loading
     app.zig                 Lifecycle utilities, logging, clipboard
   gen/
     wasm_analyze.zig        WASM binary parser
@@ -69,7 +70,7 @@ The single entry point for user code: `@import("zunk")`.
 
 Re-exports everything a developer needs:
 - `zunk.bind` -- low-level FFI primitives
-- `zunk.web.canvas`, `.input`, `.audio`, `.app` -- ergonomic wrappers
+- `zunk.web.canvas`, `.input`, `.audio`, `.asset`, `.app` -- ergonomic wrappers
 - `zunk.Handle`, `zunk.CallbackFn` -- convenience aliases
 - `zunk.gen.*` -- build tool modules (for the CLI, not user code)
 
@@ -155,7 +156,17 @@ The `init()` function calls an extern to tell JS where the InputState struct liv
 
 ### web/audio.zig -- Web Audio API
 
-Minimal but functional: `init(sample_rate)`, `load(url)`, `play(buffer)`, `resume()`, `suspend()`, `setMasterVolume(volume)`.
+Minimal but functional: `init(sample_rate)`, `load(url)`, `loadFromMemory(data)`, `decodeAsset(handle)`, `play(buffer)`, `resume()`, `suspend()`, `setMasterVolume(volume)`.
+
+`decodeAsset` bridges the asset and audio modules: it takes a raw asset handle (an ArrayBuffer from `web.asset.fetch`) and decodes it as audio via `decodeAudioData`. This enables the two-stage pattern: generic fetch, then type-specific decode.
+
+### web/asset.zig -- Generic Asset Loading
+
+Fetches arbitrary assets from URLs at runtime. The browser's `fetch()` API loads the data; WASM code polls for completion and copies bytes into linear memory.
+
+Public API: `fetch(url)`, `isReady(handle)`, `getLen(handle)`, `getBytes(handle, dest)`.
+
+The asset handle stores a raw `ArrayBuffer` in the JS handle table. Type-specific modules (like `audio.decodeAsset`) consume these raw buffers for further processing. This separation means new asset types (images, JSON, binary data) only need a decoder function, not new fetch plumbing.
 
 ### web/app.zig -- Lifecycle Utilities
 
@@ -211,7 +222,8 @@ Resolution {
 | `zunk_canvas_*` | genCanvas | Canvas element ops (get_2d, set_size) |
 | `zunk_c2d_*` | genCanvas2D | 2D context methods (fill_rect, arc, etc.) |
 | `zunk_input_*` | genInput | Input system (init, poll, callbacks) |
-| `zunk_audio_*` | genAudio | Web Audio (init, load, play) |
+| `zunk_audio_*` | genAudio | Web Audio (init, load, play, decode_asset) |
+| `zunk_asset_*` | genAsset | Generic asset loading (fetch, is_ready, get_len, get_ptr) |
 | `zunk_app_*` | genApp | Lifecycle (set_title, cursor, log, perf) |
 | `zunk_gpu_*` | -- | WebGPU (stubs, pending implementation) |
 | `canvas_*`, `input_*`, etc. | (same) | Generic prefixes (no `zunk_` prefix) |
@@ -227,7 +239,7 @@ Each generator function produces the exact JS needed for that operation, setting
 
 **Tier 5 -- Stub Generation.** Fallback: generates `console.warn('[zunk] unresolved: ...')` and returns a zero/undefined. The build report lists all stubs so the developer knows exactly what to fix.
 
-**Category** -- 16 categories for grouping: console, performance, dom, canvas2d, webgpu, audio, input, fetch, websocket, storage, timer, clipboard, lifecycle, callback, custom, unknown.
+**Category** -- Categories for grouping: console, performance, dom, canvas2d, webgpu, audio, input, asset, fetch, websocket, storage, timer, clipboard, lifecycle, zunk_internal, unknown.
 
 ### gen/js_gen.zig -- JS + HTML Code Generator
 
@@ -259,8 +271,9 @@ The `build` command:
 1. Reads a pre-compiled .wasm file (via `--wasm <path>`)
 2. Calls `wasm_analyze.analyze()` to parse the binary
 3. Calls `js_gen.generate()` to produce JS + HTML
-4. Writes output to `dist/index.html` and `dist/app.js`
-5. Prints the resolution diagnostic report
+4. Writes output to `dist/index.html`, `dist/app.js`, and the .wasm file
+5. Copies `src/assets/` to `dist/assets/` if the directory exists
+6. Prints the resolution diagnostic report
 
 Auto-compilation (invoking `zig build` on user source) is not yet implemented.
 

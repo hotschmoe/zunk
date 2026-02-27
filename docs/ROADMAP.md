@@ -8,7 +8,7 @@ The core architecture is implemented and functional.
 - [x] 5-tier auto-resolution engine with Web API knowledge base -- `gen/js_resolve.zig`
 - [x] JS + HTML code generator (adaptive, minimal output) -- `gen/js_gen.zig`
 - [x] Binding system (Handle, CallbackFn, string exchange, comptime manifest) -- `bind/bind.zig`
-- [x] Layer 2 web modules (canvas, input, audio, app) -- `web/*.zig`
+- [x] Layer 2 web modules (canvas, input, audio, asset, app) -- `web/*.zig`
 - [x] CLI with `build` command (reads .wasm, generates JS+HTML to dist/) -- `main.zig`
 
 ---
@@ -184,12 +184,17 @@ During development, proxy certain URL patterns to a backend server. Useful for a
 
 ### 5.4 Asset pipeline
 
-Beyond simple file copying:
+The foundation is in place: `zunk.web.asset` provides generic URL-based
+fetching, and the build tool copies `src/assets/` to `dist/assets/`.
+
+Remaining work beyond the current simple file copying:
+- Content-hashed filenames for cache busting
+- Manifest file for asset URL lookups from WASM
+- Batch loading (`asset.fetchAll`)
+- Progress tracking (`asset.getProgress`)
 - CSS minification
 - Image optimization
 - Font subsetting
-- Content-hashed filenames for cache busting
-- Manifest file for asset URL lookups from WASM
 
 ### 5.5 `Zunk.toml` configuration
 

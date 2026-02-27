@@ -491,6 +491,7 @@ Already partly built |    YES       |    No       |    No        |    No        
 |------------|----------|-----------|
 | 2027-02-27 | Created document, evaluating options A-D | Need external asset path for audio-demo-2-assets-cached |
 | 2027-02-27 | **Go straight to Option B** (generic asset module) + Option D (convention-based serving) | See reasoning below |
+| 2027-02-27 | **Option B + D implemented** | See implementation notes below |
 
 ### Why Option B (2027-02-27)
 
@@ -526,5 +527,85 @@ We pair B with Option D's convention: `src/assets/` auto-copies to
 
 ---
 
-*This document is maintained alongside the codebase. When we settle on an
-approach, update the Decision Log and add implementation notes below.*
+## Implementation Notes (2027-02-27)
+
+Option B + D is implemented. Here is what shipped and how the pieces connect.
+
+### Files added/changed
+
+| File | Change |
+|------|--------|
+| `src/web/asset.zig` | New module. Four externs, four public functions. |
+| `src/root.zig` | Added `pub const asset` to the `web` struct. |
+| `src/gen/js_resolve.zig` | New `.asset` category, `genAsset` resolver, `decode_asset` in audio resolver. |
+| `src/web/audio.zig` | Added `decodeAsset(asset_handle)` for the fetch-then-decode workflow. |
+| `src/main.zig` | Added `copyAssets()` -- copies `src/assets/` to `dist/assets/` during build. |
+| `examples/audio-demo-2-assets-cached/src/main.zig` | Uses the new API end-to-end. |
+
+### Zig API surface
+
+```zig
+const asset = zunk.web.asset;
+
+// Fetch any asset by URL. Returns a handle immediately.
+const h = asset.fetch("assets/explode.ogg");
+
+// Poll for completion.
+if (asset.isReady(h)) { ... }
+
+// Get raw bytes (for binary data, JSON, etc.).
+const len = asset.getLen(h);
+const bytes = asset.getBytes(h, buffer[0..len]);
+
+// Decode as audio (two-stage: fetch raw, then decode).
+const audio_buf = audio.decodeAsset(h);
+if (audio.isReady(audio_buf)) { audio.play(audio_buf); }
+```
+
+### JS resolver mappings
+
+| Extern | JS body (abbreviated) |
+|--------|-----------------------|
+| `zunk_asset_fetch` | `fetch(url).then(r=>r.arrayBuffer()).then(buf=>{H.set(h,buf)})` |
+| `zunk_asset_is_ready` | `H.get(h) instanceof ArrayBuffer ? 1 : 0` |
+| `zunk_asset_get_len` | `b.byteLength` |
+| `zunk_asset_get_ptr` | Copy ArrayBuffer into WASM linear memory |
+| `zunk_audio_decode_asset` | `decodeAudioData(buf.slice())` via the audio context |
+
+### Convention-based serving (Option D)
+
+The build command (`buildCommand` in `main.zig`) calls `copyAssets()` after
+writing the generated files. It walks `src/assets/` recursively and copies
+every file to `{output_dir}/assets/`, preserving directory structure.
+
+The dev server already serves `dist/` with correct MIME types, so assets
+are immediately available at their relative URLs (e.g., `assets/explode.ogg`).
+
+### Two-stage loading pattern
+
+The key design choice: asset fetching is separated from type-specific decoding.
+
+```
+asset.fetch(url)          -- generic: fetch raw bytes from any URL
+    |
+    v
+asset.isReady(handle)     -- generic: poll for completion
+    |
+    v
+audio.decodeAsset(handle) -- type-specific: ArrayBuffer -> AudioBuffer
+    |
+    v
+audio.isReady(buffer)     -- type-specific: poll for decode completion
+```
+
+This pattern extends naturally to other asset types (images, fonts, data files)
+without changing the fetch infrastructure.
+
+### What is NOT yet implemented
+
+These are scaffolded as TODO comments in `src/web/asset.zig`:
+
+- `fetchAll(urls) -> []Handle` -- batch loading
+- `getProgress(handle) -> f32` -- download progress (0.0 to 1.0)
+- `fetchStreaming(url) -> StreamHandle` -- progressive/streaming loading
+- `fetchWithOptions(url, .{ .cache = .reload })` -- cache control

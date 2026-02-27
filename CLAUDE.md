@@ -156,7 +156,7 @@ src/
   zunk.zig                -- root module
   bind/bind.zig           -- Handle, CallbackFn, string exchange, comptime manifest
   web/                    -- Layer 2 ergonomic Web API wrappers
-    canvas.zig, input.zig, audio.zig, app.zig
+    canvas.zig, input.zig, audio.zig, asset.zig, app.zig
   gen/                    -- build tool: WASM analysis + JS generation
     wasm_analyze.zig      -- WASM binary parser
     js_resolve.zig        -- 5-tier auto-resolution engine
