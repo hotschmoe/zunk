@@ -390,21 +390,147 @@ fn genAsset(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType)
 
 fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
     _ = sig;
-    const js_map = .{
-        .{ "request_adapter", "const a = await navigator.gpu.requestAdapter(); return H.store(a);" },
-        .{ "request_device", "const d = await H.get(arguments[0]).requestDevice(); return H.store(d);" },
-        .{ "get_preferred_format", "return H.store(navigator.gpu.getPreferredCanvasFormat());" },
-        .{ "configure_surface", "H.get(arguments[0]).getContext('webgpu').configure({device:H.get(arguments[1]),format:H.get(arguments[2])});" },
-        .{ "create_shader", "return H.store(H.get(arguments[0]).createShaderModule({code:readStr(arguments[1],arguments[2])}));" },
-        .{ "create_pipeline", "/* WebGPU pipeline -- complex, see bridge.js */ return 0;" },
+    // Entry: { name, js_body, needs_strings, needs_memory, needs_handles }
+    const Entry = struct { []const u8, []const u8, bool, bool, bool };
+    const js_map = [_]Entry{
+        // Buffer operations
+        .{ "create_buffer", "return H.store(H.get(1).createBuffer({size:arguments[0],usage:arguments[1],mappedAtCreation:false}));", false, false, true },
+        .{ "buffer_write", "H.get(1).queue.writeBuffer(H.get(arguments[0]),arguments[1],new Uint8Array(memory.buffer,arguments[2],arguments[3]));", false, true, true },
+        .{ "buffer_destroy", "H.get(arguments[0]).destroy();", false, false, true },
+        .{ "copy_buffer_in_encoder", "H.get(arguments[0]).copyBufferToBuffer(H.get(arguments[1]),arguments[2],H.get(arguments[3]),arguments[4],arguments[5]);", false, false, true },
+
+        // Shader
+        .{ "create_shader_module", "return H.store(H.get(1).createShaderModule({code:readStr(arguments[0],arguments[1])}));", true, false, true },
+
+        // Texture
+        .{ "create_texture",
+            "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
+            "return H.store(H.get(1).createTexture({size:[arguments[0],arguments[1]],format:fmts[arguments[2]],usage:arguments[3]}));",
+            false, false, true },
+        .{ "create_texture_view", "return H.store(H.get(arguments[0]).createView());", false, false, true },
+        .{ "destroy_texture", "H.get(arguments[0]).destroy();", false, false, true },
+
+        // Bind group layout (reads 40-byte struct array from WASM memory)
+        .{ "create_bind_group_layout",
+            "const v=new DataView(memory.buffer,arguments[0],arguments[1]*40);" ++
+            "const entries=[];for(let i=0;i<arguments[1];i++){const o=i*40;" ++
+            "const e={binding:v.getUint32(o,true),visibility:v.getUint32(o+4,true)};" ++
+            "const t=v.getUint32(o+8,true);" ++
+            "if(t===0){e.buffer={type:['uniform','storage','read-only-storage'][v.getUint32(o+12,true)]," ++
+            "hasDynamicOffset:!!v.getUint32(o+20,true)};" ++
+            "if(v.getUint32(o+16,true))e.buffer.minBindingSize=Number(v.getBigUint64(o+24,true));}" ++
+            "else if(t===1){e.texture={sampleType:'float'};}entries.push(e);}" ++
+            "return H.store(H.get(1).createBindGroupLayout({entries}));",
+            false, true, true },
+
+        // Bind group (reads 32-byte struct array from WASM memory)
+        .{ "create_bind_group",
+            "const v=new DataView(memory.buffer,arguments[1],arguments[2]*32);" ++
+            "const entries=[];for(let i=0;i<arguments[2];i++){const o=i*32;" ++
+            "const e={binding:v.getUint32(o,true)};" ++
+            "const t=v.getUint32(o+4,true);" ++
+            "if(t===0){e.resource={buffer:H.get(v.getUint32(o+8,true))," ++
+            "offset:Number(v.getBigUint64(o+16,true)),size:Number(v.getBigUint64(o+24,true))};" ++
+            "}else{e.resource=H.get(v.getUint32(o+8,true));}entries.push(e);}" ++
+            "return H.store(H.get(1).createBindGroup({layout:H.get(arguments[0]),entries}));",
+            false, true, true },
+
+        // Pipeline layout (reads array of handle i32s from WASM memory)
+        .{ "create_pipeline_layout",
+            "const v=new DataView(memory.buffer,arguments[0],arguments[1]*4);" ++
+            "const layouts=[];for(let i=0;i<arguments[1];i++)layouts.push(H.get(v.getInt32(i*4,true)));" ++
+            "return H.store(H.get(1).createPipelineLayout({bindGroupLayouts:layouts}));",
+            false, true, true },
+
+        // Compute pipeline
+        .{ "create_compute_pipeline",
+            "return H.store(H.get(1).createComputePipeline({layout:H.get(arguments[0])," ++
+            "compute:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}}));",
+            true, false, true },
+
+        // Render pipeline (screen format, no blending)
+        .{ "create_render_pipeline",
+            "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
+            "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}," ++
+            "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
+            "targets:[{format:zunkGPUFormat}]}," ++
+            "primitive:{topology:'triangle-list'}}));",
+            true, false, true },
+
+        // Render pipeline HDR (custom format + optional additive blending)
+        .{ "create_render_pipeline_hdr",
+            "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
+            "const t={format:fmts[arguments[6]]};" ++
+            "if(arguments[7]){t.blend={color:{srcFactor:'src-alpha',dstFactor:'one',operation:'add'}," ++
+            "alpha:{srcFactor:'one',dstFactor:'one',operation:'add'}};}" ++
+            "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
+            "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}," ++
+            "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
+            "targets:[t]},primitive:{topology:'triangle-list'}}));",
+            true, false, true },
+
+        // Command encoder lifecycle
+        .{ "create_command_encoder", "return H.store(H.get(1).createCommandEncoder());", false, false, true },
+        .{ "begin_compute_pass", "return H.store(H.get(arguments[0]).beginComputePass());", false, false, true },
+        .{ "encoder_finish", "return H.store(H.get(arguments[0]).finish());", false, false, true },
+        .{ "queue_submit", "H.get(1).queue.submit([H.get(arguments[0])]);", false, false, true },
+
+        // Compute pass operations
+        .{ "compute_pass_set_pipeline", "H.get(arguments[0]).setPipeline(H.get(arguments[1]));", false, false, true },
+        .{ "compute_pass_set_bind_group", "H.get(arguments[0]).setBindGroup(arguments[1],H.get(arguments[2]));", false, false, true },
+        .{ "compute_pass_set_bind_group_offset", "H.get(arguments[0]).setBindGroup(arguments[1],H.get(arguments[2]),[arguments[3]]);", false, false, true },
+        .{ "compute_pass_dispatch", "H.get(arguments[0]).dispatchWorkgroups(arguments[1],arguments[2],arguments[3]);", false, false, true },
+        .{ "compute_pass_end", "H.get(arguments[0]).end();", false, false, true },
+
+        // Render pass (to screen canvas)
+        .{ "begin_render_pass",
+            "zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
+            "const v=zunkGPUContext.getCurrentTexture().createView();" ++
+            "return H.store(zunkGPUEncoder.beginRenderPass({colorAttachments:[{view:v," ++
+            "clearValue:{r:arguments[0],g:arguments[1],b:arguments[2],a:arguments[3]}," ++
+            "loadOp:'clear',storeOp:'store'}]}));",
+            false, false, true },
+
+        // Render pass (to HDR offscreen texture)
+        .{ "begin_render_pass_hdr",
+            "zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
+            "return H.store(zunkGPUEncoder.beginRenderPass({colorAttachments:[{view:H.get(arguments[0])," ++
+            "clearValue:{r:arguments[1],g:arguments[2],b:arguments[3],a:arguments[4]}," ++
+            "loadOp:'clear',storeOp:'store'}]}));",
+            false, false, true },
+
+        // Render pass operations
+        .{ "render_pass_set_pipeline", "H.get(arguments[0]).setPipeline(H.get(arguments[1]));", false, false, true },
+        .{ "render_pass_set_bind_group", "H.get(arguments[0]).setBindGroup(arguments[1],H.get(arguments[2]));", false, false, true },
+        .{ "render_pass_draw", "H.get(arguments[0]).draw(arguments[1],arguments[2],arguments[3],arguments[4]);", false, false, true },
+        .{ "render_pass_end", "H.get(arguments[0]).end();", false, false, true },
+
+        // Present (finalize shared encoder)
+        .{ "present", "if(zunkGPUEncoder){H.get(1).queue.submit([zunkGPUEncoder.finish()]);zunkGPUEncoder=null;}", false, false, true },
+
+        // Asset -> GPU texture
+        .{ "create_texture_from_asset",
+            "const buf=H.get(arguments[0]);" ++
+            "if(!(buf instanceof ArrayBuffer))return 0;" ++
+            "const h=H.nextId();" ++
+            "createImageBitmap(new Blob([buf]),{colorSpaceConversion:'none'})" ++
+            ".then(bmp=>{" ++
+            "const tex=H.get(1).createTexture({format:'rgba8unorm'," ++
+            "size:[bmp.width,bmp.height],usage:0x16});" ++
+            "H.get(1).queue.copyExternalImageToTexture(" ++
+            "{source:bmp},{texture:tex},{width:bmp.width,height:bmp.height});" ++
+            "H.set(h,tex);});return h;",
+            false, false, true },
+        .{ "is_texture_ready", "const t=H.get(arguments[0]);return(t instanceof GPUTexture)?1:0;", false, false, true },
     };
     inline for (js_map) |entry| {
         if (std.mem.eql(u8, method, entry[0])) {
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
-                .needs_handles = true,
-                .needs_string_helper = std.mem.indexOf(u8, entry[1], "readStr") != null,
-                .confidence = if (std.mem.indexOf(u8, entry[1], "bridge.js") != null) .medium else .exact,
+                .needs_handles = entry[4],
+                .needs_string_helper = entry[2],
+                .needs_memory_view = entry[3],
+                .confidence = .exact,
                 .category = .webgpu,
             };
         }
@@ -685,4 +811,12 @@ test "stub for unknown" {
     defer std.testing.allocator.free(res.js_body);
     try std.testing.expect(res.confidence == .stub);
     try std.testing.expect(std.mem.indexOf(u8, res.js_body, "unresolved") != null);
+}
+
+test "prefix match webgpu create_buffer" {
+    const res = (try prefixMatch(std.testing.allocator, "zunk_gpu_create_buffer", null)).?;
+    defer std.testing.allocator.free(res.js_body);
+    try std.testing.expect(res.category == .webgpu);
+    try std.testing.expect(res.confidence == .exact);
+    try std.testing.expect(res.needs_handles);
 }

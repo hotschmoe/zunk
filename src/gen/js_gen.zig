@@ -59,6 +59,7 @@ pub fn generate(
     if (has_resize) needs.resize_handler = true;
     if (categories_used.contains(.input)) needs.input_system = true;
     if (categories_used.contains(.audio)) needs.audio_state = true;
+    if (categories_used.contains(.webgpu)) needs.webgpu_init = true;
 
     var js: std.ArrayList(u8) = .empty;
     defer js.deinit(allocator);
@@ -73,6 +74,7 @@ pub fn generate(
     if (needs.strings) try emitStringHelper(w);
     if (needs.audio_state) try emitAudioState(w);
     if (needs.input_system) try emitInputSystem(w);
+    if (needs.webgpu_init) try emitWebGPUState(w);
     if (categories_used.contains(.fetch)) try w.writeAll("let zunkFetchBuf = null;\n\n");
 
     try w.writeAll("const env = {\n");
@@ -112,6 +114,8 @@ pub fn generate(
         try w.writeAll("H._memory = memory;\n\n");
     }
 
+    if (needs.webgpu_init) try emitWebGPUInit(w);
+
     if (has_init) {
         try w.writeAll("// Init\nexports.init();\n\n");
     }
@@ -138,18 +142,37 @@ pub fn generate(
     }
 
     if (needs.resize_handler) {
-        try w.writeAll(
-            \\// --- Resize handler ---
-            \\function zunkResize() {
-            \\  const c = document.getElementById('app') || document.querySelector('canvas');
-            \\  if (c) { c.width = window.innerWidth; c.height = window.innerHeight; }
-            \\  exports.resize(window.innerWidth, window.innerHeight);
-            \\}
-            \\window.addEventListener('resize', zunkResize);
-            \\zunkResize();
-            \\
-            \\
-        );
+        if (needs.webgpu_init) {
+            try w.writeAll(
+                \\// --- Resize handler (DPR-aware for WebGPU) ---
+                \\function zunkResize() {
+                \\  const c = document.getElementById('app') || document.querySelector('canvas');
+                \\  if (c) {
+                \\    const dpr = window.devicePixelRatio || 1;
+                \\    c.width = Math.round(c.clientWidth * dpr);
+                \\    c.height = Math.round(c.clientHeight * dpr);
+                \\  }
+                \\  exports.resize(c ? c.width : window.innerWidth, c ? c.height : window.innerHeight);
+                \\}
+                \\window.addEventListener('resize', zunkResize);
+                \\zunkResize();
+                \\
+                \\
+            );
+        } else {
+            try w.writeAll(
+                \\// --- Resize handler ---
+                \\function zunkResize() {
+                \\  const c = document.getElementById('app') || document.querySelector('canvas');
+                \\  if (c) { c.width = window.innerWidth; c.height = window.innerHeight; }
+                \\  exports.resize(window.innerWidth, window.innerHeight);
+                \\}
+                \\window.addEventListener('resize', zunkResize);
+                \\zunkResize();
+                \\
+                \\
+            );
+        }
     }
 
     if (has_cleanup) {
@@ -222,6 +245,7 @@ const Features = struct {
     resize_handler: bool = false,
     input_system: bool = false,
     audio_state: bool = false,
+    webgpu_init: bool = false,
 };
 
 fn emitHandleTable(w: anytype) !void {
@@ -318,6 +342,34 @@ fn emitInputSystem(w: anytype) !void {
         \\  },
         \\  poll() { this.flush(); },
         \\};
+        \\
+        \\
+    );
+}
+
+fn emitWebGPUState(w: anytype) !void {
+    try w.writeAll(
+        \\// --- WebGPU state ---
+        \\let zunkGPUEncoder = null;
+        \\let zunkGPUContext = null;
+        \\let zunkGPUFormat = null;
+        \\
+        \\
+    );
+}
+
+fn emitWebGPUInit(w: anytype) !void {
+    try w.writeAll(
+        \\// --- WebGPU initialization ---
+        \\if (!navigator.gpu) throw new Error('WebGPU not supported');
+        \\const zunkGPUAdapter = await navigator.gpu.requestAdapter();
+        \\if (!zunkGPUAdapter) throw new Error('No WebGPU adapter');
+        \\const zunkGPUDevice = await zunkGPUAdapter.requestDevice();
+        \\zunkGPUFormat = navigator.gpu.getPreferredCanvasFormat();
+        \\const zunkGPUCanvas = document.getElementById('app');
+        \\zunkGPUContext = zunkGPUCanvas.getContext('webgpu');
+        \\zunkGPUContext.configure({device:zunkGPUDevice, format:zunkGPUFormat, alphaMode:'opaque'});
+        \\H.store(zunkGPUDevice);
         \\
         \\
     );

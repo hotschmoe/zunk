@@ -52,6 +52,7 @@ pub const web = struct {
     pub const audio = @import("web/audio.zig");
     pub const app = @import("web/app.zig");
     pub const asset = @import("web/asset.zig");
+    pub const gpu = @import("web/gpu.zig");
 };
 
 pub const Handle = bind.Handle;
