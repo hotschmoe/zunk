@@ -390,16 +390,14 @@ fn genAsset(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType)
 
 fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
     _ = sig;
-    // Entry: { name, js_body, needs_strings, needs_memory, needs_handles }
     const Entry = struct { []const u8, []const u8, bool, bool, bool };
     const js_map = [_]Entry{
-        // Buffer operations
+        // Buffer
         .{ "create_buffer", "return H.store(H.get(1).createBuffer({size:arguments[0],usage:arguments[1],mappedAtCreation:false}));", false, false, true },
         .{ "buffer_write", "H.get(1).queue.writeBuffer(H.get(arguments[0]),arguments[1],new Uint8Array(memory.buffer,arguments[2],arguments[3]));", false, true, true },
         .{ "buffer_destroy", "H.get(arguments[0]).destroy();", false, false, true },
         .{ "copy_buffer_in_encoder", "H.get(arguments[0]).copyBufferToBuffer(H.get(arguments[1]),arguments[2],H.get(arguments[3]),arguments[4],arguments[5]);", false, false, true },
 
-        // Shader
         .{ "create_shader_module", "return H.store(H.get(1).createShaderModule({code:readStr(arguments[0],arguments[1])}));", true, false, true },
 
         // Texture
@@ -410,7 +408,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         .{ "create_texture_view", "return H.store(H.get(arguments[0]).createView());", false, false, true },
         .{ "destroy_texture", "H.get(arguments[0]).destroy();", false, false, true },
 
-        // Bind group layout (reads 40-byte struct array from WASM memory)
+        // Bind group layout / bind group
         .{ "create_bind_group_layout",
             "const v=new DataView(memory.buffer,arguments[0],arguments[1]*40);" ++
             "const entries=[];for(let i=0;i<arguments[1];i++){const o=i*40;" ++
@@ -423,7 +421,6 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "return H.store(H.get(1).createBindGroupLayout({entries}));",
             false, true, true },
 
-        // Bind group (reads 32-byte struct array from WASM memory)
         .{ "create_bind_group",
             "const v=new DataView(memory.buffer,arguments[1],arguments[2]*32);" ++
             "const entries=[];for(let i=0;i<arguments[2];i++){const o=i*32;" ++
@@ -435,20 +432,18 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "return H.store(H.get(1).createBindGroup({layout:H.get(arguments[0]),entries}));",
             false, true, true },
 
-        // Pipeline layout (reads array of handle i32s from WASM memory)
+        // Pipeline layout / pipelines
         .{ "create_pipeline_layout",
             "const v=new DataView(memory.buffer,arguments[0],arguments[1]*4);" ++
             "const layouts=[];for(let i=0;i<arguments[1];i++)layouts.push(H.get(v.getInt32(i*4,true)));" ++
             "return H.store(H.get(1).createPipelineLayout({bindGroupLayouts:layouts}));",
             false, true, true },
 
-        // Compute pipeline
         .{ "create_compute_pipeline",
             "return H.store(H.get(1).createComputePipeline({layout:H.get(arguments[0])," ++
             "compute:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}}));",
             true, false, true },
 
-        // Render pipeline (screen format, no blending)
         .{ "create_render_pipeline",
             "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
             "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}," ++
@@ -457,7 +452,6 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "primitive:{topology:'triangle-list'}}));",
             true, false, true },
 
-        // Render pipeline HDR (custom format + optional additive blending)
         .{ "create_render_pipeline_hdr",
             "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
             "const t={format:fmts[arguments[6]]};" ++
@@ -469,20 +463,20 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "targets:[t]},primitive:{topology:'triangle-list'}}));",
             true, false, true },
 
-        // Command encoder lifecycle
+        // Command encoder
         .{ "create_command_encoder", "return H.store(H.get(1).createCommandEncoder());", false, false, true },
         .{ "begin_compute_pass", "return H.store(H.get(arguments[0]).beginComputePass());", false, false, true },
         .{ "encoder_finish", "return H.store(H.get(arguments[0]).finish());", false, false, true },
         .{ "queue_submit", "H.get(1).queue.submit([H.get(arguments[0])]);", false, false, true },
 
-        // Compute pass operations
+        // Compute pass
         .{ "compute_pass_set_pipeline", "H.get(arguments[0]).setPipeline(H.get(arguments[1]));", false, false, true },
         .{ "compute_pass_set_bind_group", "H.get(arguments[0]).setBindGroup(arguments[1],H.get(arguments[2]));", false, false, true },
         .{ "compute_pass_set_bind_group_offset", "H.get(arguments[0]).setBindGroup(arguments[1],H.get(arguments[2]),[arguments[3]]);", false, false, true },
         .{ "compute_pass_dispatch", "H.get(arguments[0]).dispatchWorkgroups(arguments[1],arguments[2],arguments[3]);", false, false, true },
         .{ "compute_pass_end", "H.get(arguments[0]).end();", false, false, true },
 
-        // Render pass (to screen canvas)
+        // Render pass
         .{ "begin_render_pass",
             "zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
             "const v=zunkGPUContext.getCurrentTexture().createView();" ++
@@ -491,7 +485,6 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "loadOp:'clear',storeOp:'store'}]}));",
             false, false, true },
 
-        // Render pass (to HDR offscreen texture)
         .{ "begin_render_pass_hdr",
             "zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
             "return H.store(zunkGPUEncoder.beginRenderPass({colorAttachments:[{view:H.get(arguments[0])," ++
@@ -499,16 +492,15 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "loadOp:'clear',storeOp:'store'}]}));",
             false, false, true },
 
-        // Render pass operations
         .{ "render_pass_set_pipeline", "H.get(arguments[0]).setPipeline(H.get(arguments[1]));", false, false, true },
         .{ "render_pass_set_bind_group", "H.get(arguments[0]).setBindGroup(arguments[1],H.get(arguments[2]));", false, false, true },
         .{ "render_pass_draw", "H.get(arguments[0]).draw(arguments[1],arguments[2],arguments[3],arguments[4]);", false, false, true },
         .{ "render_pass_end", "H.get(arguments[0]).end();", false, false, true },
 
-        // Present (finalize shared encoder)
+        // Present
         .{ "present", "if(zunkGPUEncoder){H.get(1).queue.submit([zunkGPUEncoder.finish()]);zunkGPUEncoder=null;}", false, false, true },
 
-        // Asset -> GPU texture
+        // Asset texture
         .{ "create_texture_from_asset",
             "const buf=H.get(arguments[0]);" ++
             "if(!(buf instanceof ArrayBuffer))return 0;" ++

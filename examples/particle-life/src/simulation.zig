@@ -2,7 +2,6 @@ const std = @import("std");
 const zunk = @import("zunk");
 const gpu = zunk.web.gpu;
 const input = zunk.web.input;
-const app = zunk.web.app;
 
 const particle = @import("particle.zig");
 const system = @import("system.zig");

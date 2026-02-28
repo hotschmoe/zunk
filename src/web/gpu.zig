@@ -61,7 +61,7 @@ pub const BufferBindingType = enum(u32) {
     read_only_storage = 2,
 };
 
-// --- BindGroupLayoutEntry (40 bytes, extern struct, matches JS DataView) ---
+// 40 bytes, ABI-matched with JS DataView reader in js_resolve.zig
 pub const BindGroupLayoutEntry = extern struct {
     binding: u32,
     visibility: u32,
@@ -110,7 +110,7 @@ pub const BindGroupLayoutEntry = extern struct {
     }
 };
 
-// --- BindGroupEntry (32 bytes, extern struct) ---
+// 32 bytes, ABI-matched with JS DataView reader in js_resolve.zig
 pub const BindGroupEntry = extern struct {
     binding: u32,
     entry_type: u32, // 0=buffer, 1=texture_view
@@ -144,8 +144,6 @@ pub const BindGroupEntry = extern struct {
     }
 };
 
-// --- Extern fn declarations ---
-
 extern "env" fn zunk_gpu_create_buffer(size: u32, usage: u32) i32;
 extern "env" fn zunk_gpu_buffer_write(buffer_h: i32, offset: u32, data_ptr: [*]const u8, data_len: u32) void;
 extern "env" fn zunk_gpu_buffer_destroy(buffer_h: i32) void;
@@ -178,8 +176,6 @@ extern "env" fn zunk_gpu_render_pass_end(pass_h: i32) void;
 extern "env" fn zunk_gpu_present() void;
 extern "env" fn zunk_gpu_create_texture_from_asset(asset_h: i32) i32;
 extern "env" fn zunk_gpu_is_texture_ready(handle: i32) i32;
-
-// --- Public wrapper functions ---
 
 pub fn getDevice() Device {
     return bind.Handle.fromInt(1);

@@ -1,4 +1,3 @@
-const std = @import("std");
 const zunk = @import("zunk");
 const gpu = zunk.web.gpu;
 const input = zunk.web.input;
