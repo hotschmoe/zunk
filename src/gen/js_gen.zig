@@ -155,6 +155,7 @@ pub fn generate(
                 \\  exports.resize(c ? c.width : window.innerWidth, c ? c.height : window.innerHeight);
                 \\}
                 \\window.addEventListener('resize', zunkResize);
+                \\(function zunkWatchDPR(){matchMedia(`(resolution:${window.devicePixelRatio}dppx)`).addEventListener('change',()=>{zunkResize();zunkWatchDPR();},{once:true})})();
                 \\zunkResize();
                 \\
                 \\
@@ -300,7 +301,7 @@ fn emitInputSystem(w: anytype) !void {
         \\    document.addEventListener('keydown', e => { this.keysDown.add(e.keyCode); this.keysPressed.add(e.keyCode); e.preventDefault(); });
         \\    document.addEventListener('keyup', e => { this.keysDown.delete(e.keyCode); this.keysReleased.add(e.keyCode); });
         \\    const canvas = document.getElementById('app') || document.querySelector('canvas') || document;
-        \\    canvas.addEventListener('mousemove', e => { this.mouseDx += e.movementX; this.mouseDy += e.movementY; this.mouseX = e.offsetX || e.clientX; this.mouseY = e.offsetY || e.clientY; });
+        \\    canvas.addEventListener('mousemove', e => { const sx=canvas.clientWidth?canvas.width/canvas.clientWidth:1,sy=canvas.clientHeight?canvas.height/canvas.clientHeight:1; this.mouseDx+=e.movementX*sx; this.mouseDy+=e.movementY*sy; this.mouseX=(e.offsetX??e.clientX)*sx; this.mouseY=(e.offsetY??e.clientY)*sy; });
         \\    canvas.addEventListener('mousedown', e => { this.mouseButtons |= (1 << e.button); });
         \\    canvas.addEventListener('mouseup', e => { this.mouseButtons &= ~(1 << e.button); });
         \\    canvas.addEventListener('wheel', e => { this.mouseWheel += e.deltaY; e.preventDefault(); }, {passive:false});

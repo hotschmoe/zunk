@@ -829,3 +829,50 @@ Phase 6 is simplified -- asset copying is already implemented.
    exports. Should we keep to the standard pattern? Recommendation: yes, standard
    pattern only. Configuration that the ref project did via custom exports
    (setParticleCount, etc.) is hardcoded in the Zig code for Phase 1.
+
+---
+
+## Implementation Status
+
+All six phases are complete. The particle-life example is running.
+
+### Post-implementation fixes (2026-02-28)
+
+Three bugs found during testing, all fixed:
+
+**1. Mouse DPR offset** (`src/gen/js_gen.zig` -- `emitInputSystem`)
+
+Mouse `offsetX/offsetY` are CSS pixels, but the WebGPU resize handler passes
+canvas buffer pixels (`clientWidth * DPR`) to `exports.resize()`. The simulation
+divided mouse coords by buffer dimensions, causing the interaction point to be
+off by the DPR factor (e.g. mapped to center quadrant on 2x displays).
+
+Fix: scale mouse coords by `canvas.width / canvas.clientWidth` in the mousemove
+handler. This ratio is naturally 1.0 for Canvas2D (no DPR scaling) and equals
+DPR for WebGPU, so it works for both paths without branching. Also fixed a
+zero-value bug (`offsetX || clientX` -> `offsetX ?? clientX`).
+
+**2. Initial resize lost** (`examples/particle-life/src/main.zig`)
+
+JS calls `exports.resize()` before the simulation exists (it's created lazily in
+the first `frame()`), so the initial canvas dimensions were silently dropped.
+The simulation initialized with hardcoded 1024x768, causing wrong HDR texture
+size and camera until the user manually resized the window.
+
+Fix: buffer pending resize dimensions in `main.zig`, apply after sim init.
+
+**3. No DPR change detection** (`src/gen/js_gen.zig` -- WebGPU resize handler)
+
+Moving the browser between monitors with different DPI triggered no resize.
+
+Fix: added recursive `matchMedia` DPR watcher (one-shot listener pattern) in
+the WebGPU resize handler path.
+
+### Known issues (not yet addressed)
+
+- **Touch coordinates** use viewport-relative `clientX/clientY` (not
+  canvas-relative, not DPR-scaled). Should be addressed when touch support
+  matures.
+- **input-demo dist** has a stale render loop pattern (calls `zunkInput.flush()`
+  in the JS frame loop AND Zig calls `input.poll()` which flushes again).
+  Harmless double-flush, but inconsistent with the particle-life output.

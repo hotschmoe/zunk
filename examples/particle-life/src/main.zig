@@ -15,6 +15,8 @@ const SEED: u32 = 42;
 var sim: ?simulation.Simulation = null;
 var sim_initialized: bool = false;
 
+var pending_resize: ?struct { w: u32, h: u32 } = null;
+
 var noise_asset: asset.Handle = undefined;
 var noise_texture: gpu.Texture = undefined;
 var noise_ready: bool = false;
@@ -41,6 +43,10 @@ export fn frame(dt: f32) void {
             SEED,
         ) catch return;
         sim_initialized = true;
+        if (pending_resize) |pr| {
+            sim.?.updateCamera(pr.w, pr.h);
+            pending_resize = null;
+        }
     }
 
     if (!noise_ready) {
@@ -67,5 +73,7 @@ export fn frame(dt: f32) void {
 export fn resize(w: u32, h: u32) void {
     if (sim) |*s| {
         s.updateCamera(w, h);
+    } else {
+        pending_resize = .{ .w = w, .h = h };
     }
 }
