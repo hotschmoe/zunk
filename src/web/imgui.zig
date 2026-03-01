@@ -219,7 +219,10 @@ pub fn Ui(comptime Backend: type) type {
             const id = hashId(label_str);
             const display = displayLabel(label_str);
 
-            const w = self.availableWidth();
+            self.backend.setFont(self.theme.font_body);
+            const tw = self.backend.measureText(display);
+            const btn_w = tw + self.theme.padding * 4;
+            const w = if (self.currentLayout().dir == .horizontal) btn_w else self.availableWidth();
             const rect = self.allocRect(w, self.theme.row_height);
 
             self.updateHotActive(id, rect);
@@ -227,8 +230,6 @@ pub fn Ui(comptime Backend: type) type {
 
             self.backend.drawFilledRect(rect, self.widgetColor(id));
             self.backend.drawStrokedRect(rect, self.theme.border, self.theme.border_width);
-            self.backend.setFont(self.theme.font_body);
-            const tw = self.backend.measureText(display);
             self.backend.drawText(
                 display,
                 rect.x + (rect.w - tw) / 2,
