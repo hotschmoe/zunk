@@ -7,20 +7,23 @@ const imgui = zunk.web.imgui;
 var ctx: canvas.Ctx2D = undefined;
 var ui: imgui.CanvasUi = undefined;
 
-// Display settings
-var brightness: f32 = 0.75;
-var fullscreen: bool = false;
-var vsync: bool = true;
+const defaults = .{
+    .brightness = @as(f32, 0.75),
+    .fullscreen = false,
+    .vsync = true,
+    .volume = @as(f32, 0.5),
+    .mute = false,
+    .sensitivity = @as(f32, 1.0),
+    .invert_y = false,
+};
 
-// Audio settings
-var volume: f32 = 0.5;
-var mute: bool = false;
-
-// Controls settings
-var sensitivity: f32 = 1.0;
-var invert_y: bool = false;
-
-// Status
+var brightness: f32 = defaults.brightness;
+var fullscreen: bool = defaults.fullscreen;
+var vsync: bool = defaults.vsync;
+var volume: f32 = defaults.volume;
+var mute: bool = defaults.mute;
+var sensitivity: f32 = defaults.sensitivity;
+var invert_y: bool = defaults.invert_y;
 var apply_count: u32 = 0;
 
 export fn init() void {
@@ -46,7 +49,6 @@ export fn frame(_: f32) void {
 
     ui.label("zunk imgui demo");
 
-    // -- Display Settings --
     ui.beginPanel("Display Settings");
     _ = ui.slider("Brightness", &brightness, 0.0, 1.0);
     _ = ui.checkbox("Fullscreen", &fullscreen);
@@ -54,38 +56,23 @@ export fn frame(_: f32) void {
     ui.separator();
     ui.endPanel();
 
-    // -- Audio Settings --
     ui.beginPanel("Audio Settings");
     _ = ui.slider("Volume", &volume, 0.0, 1.0);
     _ = ui.checkbox("Mute", &mute);
     ui.separator();
     ui.endPanel();
 
-    // -- Controls --
     ui.beginPanel("Controls");
     _ = ui.slider("Sensitivity", &sensitivity, 0.1, 5.0);
     _ = ui.checkbox("Invert Y-Axis", &invert_y);
     ui.separator();
     ui.endPanel();
 
-    // -- Status --
     ui.label(statusLine());
 
-    // -- Action buttons --
     ui.beginHorizontal();
-    if (ui.button("Apply##apply")) {
-        apply_count += 1;
-    }
-    if (ui.button("Reset##reset")) {
-        brightness = 0.75;
-        fullscreen = false;
-        vsync = true;
-        volume = 0.5;
-        mute = false;
-        sensitivity = 1.0;
-        invert_y = false;
-        apply_count = 0;
-    }
+    if (ui.button("Apply##apply")) apply_count += 1;
+    if (ui.button("Reset##reset")) resetSettings();
     ui.endHorizontal();
 
     ui.end();
@@ -95,36 +82,44 @@ export fn resize(w: u32, h: u32) void {
     canvas.setSize(ctx, w, h);
 }
 
+fn resetSettings() void {
+    brightness = defaults.brightness;
+    fullscreen = defaults.fullscreen;
+    vsync = defaults.vsync;
+    volume = defaults.volume;
+    mute = defaults.mute;
+    sensitivity = defaults.sensitivity;
+    invert_y = defaults.invert_y;
+    apply_count = 0;
+}
+
 var status_buf: [64]u8 = undefined;
 
 fn statusLine() []const u8 {
     const prefix = "Applied: ";
-    @memcpy(status_buf[0..prefix.len], prefix);
-    var pos: usize = prefix.len;
-
-    var n = apply_count;
-    if (n == 0) {
-        status_buf[pos] = '0';
-        pos += 1;
-    } else {
-        var digits: [10]u8 = undefined;
-        var dlen: usize = 0;
-        while (n > 0) {
-            digits[dlen] = '0' + @as(u8, @intCast(n % 10));
-            dlen += 1;
-            n /= 10;
-        }
-        var i: usize = dlen;
-        while (i > 0) {
-            i -= 1;
-            status_buf[pos] = digits[i];
-            pos += 1;
-        }
-    }
-
     const suffix = " time(s)";
-    @memcpy(status_buf[pos .. pos + suffix.len], suffix);
-    pos += suffix.len;
+    @memcpy(status_buf[0..prefix.len], prefix);
+    const digits_end = prefix.len + writeU32(status_buf[prefix.len..], apply_count);
+    @memcpy(status_buf[digits_end .. digits_end + suffix.len], suffix);
+    return status_buf[0 .. digits_end + suffix.len];
+}
 
-    return status_buf[0..pos];
+fn writeU32(buf: []u8, value: u32) usize {
+    if (value == 0) {
+        buf[0] = '0';
+        return 1;
+    }
+    var n = value;
+    var tmp: [10]u8 = undefined;
+    var len: usize = 0;
+    while (n > 0) : (len += 1) {
+        tmp[len] = '0' + @as(u8, @intCast(n % 10));
+        n /= 10;
+    }
+    var i: usize = len;
+    while (i > 0) {
+        i -= 1;
+        buf[len - 1 - i] = tmp[i];
+    }
+    return len;
 }
