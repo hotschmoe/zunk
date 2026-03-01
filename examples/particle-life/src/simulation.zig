@@ -340,13 +340,7 @@ pub const Simulation = struct {
             });
         }
 
-        self.camera = particle.CameraParams.initForSimulation(
-            @floatFromInt(w),
-            @floatFromInt(h),
-            self.sim_width,
-            self.sim_height,
-        );
-        self.camera_buffer.writeTyped(particle.CameraParams, 0, &[_]particle.CameraParams{self.camera});
+        self.centerView();
     }
 
     pub fn setBlueNoiseTexture(self: *Simulation, view: gpu.TextureView) void {
@@ -418,5 +412,25 @@ pub const Simulation = struct {
         self.options_buffer.destroy();
         self.camera_buffer.destroy();
         self.spatial_pipeline.deinit();
+    }
+
+    pub fn centerView(self: *Simulation) void {
+        self.camera = particle.CameraParams.initForSimulation(
+            @floatFromInt(self.canvas_width),
+            @floatFromInt(self.canvas_height),
+            self.sim_width,
+            self.sim_height,
+        );
+        self.camera_buffer.writeTyped(particle.CameraParams, 0, &[_]particle.CameraParams{self.camera});
+    }
+
+    pub fn restart(self: *Simulation) void {
+        self.setupInitAndGenerate() catch return;
+        self.centerView();
+    }
+
+    pub fn randomize(self: *Simulation) void {
+        self.rng.state +%= @as(u32, @intFromFloat(self.rng.next() * 4294967296.0));
+        self.restart();
     }
 };

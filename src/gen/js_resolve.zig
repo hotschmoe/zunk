@@ -53,6 +53,8 @@ pub const Category = enum {
     // Storage
     storage,
     clipboard,
+    // UI
+    ui,
     // Application
     lifecycle,
     timer,
@@ -165,12 +167,14 @@ const prefix_rules = [_]PrefixRule{
     .{ .prefix = "zunk_asset_", .category = .asset, .generator = &genAsset },
     .{ .prefix = "zunk_fetch", .category = .fetch, .generator = &genFetch },
     .{ .prefix = "zunk_gpu_", .category = .webgpu, .generator = &genWebGPU },
+    .{ .prefix = "zunk_ui_", .category = .ui, .generator = &genUI },
     .{ .prefix = "canvas_", .category = .canvas2d, .generator = &genCanvas },
     .{ .prefix = "ctx2d_", .category = .canvas2d, .generator = &genCanvas2D },
     .{ .prefix = "dom_", .category = .dom, .generator = &genDom },
     .{ .prefix = "audio_", .category = .audio, .generator = &genAudio },
     .{ .prefix = "input_", .category = .input, .generator = &genInput },
     .{ .prefix = "gpu_", .category = .webgpu, .generator = &genWebGPU },
+    .{ .prefix = "ui_", .category = .ui, .generator = &genUI },
     .{ .prefix = "ws_", .category = .websocket, .generator = &genWebSocket },
     .{ .prefix = "fetch_", .category = .fetch, .generator = &genFetch },
     .{ .prefix = "asset_", .category = .asset, .generator = &genAsset },
@@ -526,6 +530,44 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
                 .needs_memory_view = entry[3],
                 .confidence = .exact,
                 .category = .webgpu,
+            };
+        }
+    }
+    return null;
+}
+
+fn genUI(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
+    _ = sig;
+    const Entry = struct { []const u8, []const u8, bool };
+    const js_map = [_]Entry{
+        // Panel management
+        .{ "create_panel", "return zunkUI.createPanel(readStr(arguments[0],arguments[1]));", true },
+        .{ "show_panel", "zunkUI.showPanel(arguments[0]);", false },
+        .{ "hide_panel", "zunkUI.hidePanel(arguments[0]);", false },
+        .{ "toggle_panel", "zunkUI.togglePanel(arguments[0]);", false },
+        // Control creation
+        .{ "add_slider", "return zunkUI.addSlider(arguments[0],readStr(arguments[1],arguments[2]),arguments[3],arguments[4],arguments[5],arguments[6]);", true },
+        .{ "add_checkbox", "return zunkUI.addCheckbox(arguments[0],readStr(arguments[1],arguments[2]),arguments[3]);", true },
+        .{ "add_button", "return zunkUI.addButton(arguments[0],readStr(arguments[1],arguments[2]));", true },
+        .{ "add_separator", "return zunkUI.addSeparator(arguments[0]);", false },
+        // Value reading
+        .{ "get_float", "return zunkUI.getFloat(arguments[0]);", false },
+        .{ "get_bool", "return zunkUI.getBool(arguments[0]);", false },
+        .{ "is_clicked", "return zunkUI.isClicked(arguments[0]);", false },
+        // Label / status
+        .{ "set_label", "zunkUI.setLabel(arguments[0],readStr(arguments[1],arguments[2]));", true },
+        .{ "set_status", "zunkUI.setStatus(readStr(arguments[0],arguments[1]));", true },
+        // Fullscreen
+        .{ "request_fullscreen", "document.documentElement.requestFullscreen();", false },
+    };
+    inline for (js_map) |entry| {
+        if (std.mem.eql(u8, method, entry[0])) {
+            return .{
+                .js_body = allocator.dupe(u8, entry[1]) catch return null,
+                .needs_string_helper = entry[2],
+                .confidence = .exact,
+                .category = .ui,
+                .description = "UI: " ++ entry[0],
             };
         }
     }

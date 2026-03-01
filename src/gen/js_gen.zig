@@ -60,6 +60,7 @@ pub fn generate(
     if (categories_used.contains(.input)) needs.input_system = true;
     if (categories_used.contains(.audio)) needs.audio_state = true;
     if (categories_used.contains(.webgpu)) needs.webgpu_init = true;
+    if (categories_used.contains(.ui)) needs.ui_system = true;
 
     var js: std.ArrayList(u8) = .empty;
     defer js.deinit(allocator);
@@ -76,6 +77,7 @@ pub fn generate(
     if (needs.input_system) try emitInputSystem(w);
     if (needs.webgpu_init) try emitWebGPUState(w);
     if (categories_used.contains(.fetch)) try w.writeAll("let zunkFetchBuf = null;\n\n");
+    if (needs.ui_system) try emitUISystem(w);
 
     try w.writeAll("const env = {\n");
 
@@ -247,6 +249,7 @@ const Features = struct {
     input_system: bool = false,
     audio_state: bool = false,
     webgpu_init: bool = false,
+    ui_system: bool = false,
 };
 
 fn emitHandleTable(w: anytype) !void {
@@ -376,6 +379,115 @@ fn emitWebGPUInit(w: anytype) !void {
     );
 }
 
+fn emitUISystem(w: anytype) !void {
+    try w.writeAll(
+        \\// --- UI system ---
+        \\const zunkUI = {
+        \\  _nextId: 1,
+        \\  _elements: new Map(),
+        \\  _panels: new Map(),
+        \\  createPanel(title) {
+        \\    const id = this._nextId++;
+        \\    const toggle = document.createElement('button');
+        \\    toggle.className = 'zunk-ui-toggle';
+        \\    toggle.innerHTML = '&#9776;';
+        \\    toggle.title = title;
+        \\    const panel = document.createElement('div');
+        \\    panel.className = 'zunk-ui-panel';
+        \\    const header = document.createElement('div');
+        \\    header.className = 'zunk-ui-header';
+        \\    header.textContent = title;
+        \\    panel.appendChild(header);
+        \\    toggle.onclick = () => { panel.classList.toggle('zunk-ui-hidden'); };
+        \\    document.body.appendChild(toggle);
+        \\    document.body.appendChild(panel);
+        \\    this._panels.set(id, { toggle, panel });
+        \\    return id;
+        \\  },
+        \\  showPanel(id) { const p = this._panels.get(id); if(p) p.panel.classList.remove('zunk-ui-hidden'); },
+        \\  hidePanel(id) { const p = this._panels.get(id); if(p) p.panel.classList.add('zunk-ui-hidden'); },
+        \\  togglePanel(id) { const p = this._panels.get(id); if(p) p.panel.classList.toggle('zunk-ui-hidden'); },
+        \\  addSlider(panelId, label, min, max, value, step) {
+        \\    const id = this._nextId++;
+        \\    const p = this._panels.get(panelId);
+        \\    if(!p) return id;
+        \\    const row = document.createElement('div');
+        \\    row.className = 'zunk-ui-row';
+        \\    const lbl = document.createElement('label');
+        \\    lbl.className = 'zunk-ui-label';
+        \\    lbl.textContent = label;
+        \\    const val = document.createElement('span');
+        \\    val.className = 'zunk-ui-value';
+        \\    val.textContent = String(value);
+        \\    const inp = document.createElement('input');
+        \\    inp.type = 'range';
+        \\    inp.className = 'zunk-ui-slider';
+        \\    inp.min = min; inp.max = max; inp.value = value; inp.step = step;
+        \\    inp.oninput = () => { val.textContent = inp.value; };
+        \\    row.appendChild(lbl);
+        \\    row.appendChild(inp);
+        \\    row.appendChild(val);
+        \\    p.panel.appendChild(row);
+        \\    this._elements.set(id, { type:'slider', el:inp, val, lbl });
+        \\    return id;
+        \\  },
+        \\  addCheckbox(panelId, label, checked) {
+        \\    const id = this._nextId++;
+        \\    const p = this._panels.get(panelId);
+        \\    if(!p) return id;
+        \\    const row = document.createElement('div');
+        \\    row.className = 'zunk-ui-row';
+        \\    const lbl = document.createElement('label');
+        \\    lbl.className = 'zunk-ui-label';
+        \\    lbl.textContent = label;
+        \\    const inp = document.createElement('input');
+        \\    inp.type = 'checkbox';
+        \\    inp.className = 'zunk-ui-checkbox';
+        \\    inp.checked = !!checked;
+        \\    row.appendChild(lbl);
+        \\    row.appendChild(inp);
+        \\    p.panel.appendChild(row);
+        \\    this._elements.set(id, { type:'checkbox', el:inp, lbl });
+        \\    return id;
+        \\  },
+        \\  addButton(panelId, label) {
+        \\    const id = this._nextId++;
+        \\    const p = this._panels.get(panelId);
+        \\    if(!p) return id;
+        \\    const btn = document.createElement('button');
+        \\    btn.className = 'zunk-ui-button';
+        \\    btn.textContent = label;
+        \\    let clicked = false;
+        \\    btn.onclick = () => { clicked = true; };
+        \\    p.panel.appendChild(btn);
+        \\    this._elements.set(id, { type:'button', el:btn, getClicked() { const c=clicked; clicked=false; return c; } });
+        \\    return id;
+        \\  },
+        \\  addSeparator(panelId) {
+        \\    const id = this._nextId++;
+        \\    const p = this._panels.get(panelId);
+        \\    if(!p) return id;
+        \\    const hr = document.createElement('hr');
+        \\    hr.className = 'zunk-ui-separator';
+        \\    p.panel.appendChild(hr);
+        \\    this._elements.set(id, { type:'separator', el:hr });
+        \\    return id;
+        \\  },
+        \\  getFloat(id) { const e = this._elements.get(id); return e ? parseFloat(e.el.value) : 0; },
+        \\  getBool(id) { const e = this._elements.get(id); return (e && e.el.checked) ? 1 : 0; },
+        \\  isClicked(id) { const e = this._elements.get(id); return (e && e.getClicked) ? (e.getClicked() ? 1 : 0) : 0; },
+        \\  setLabel(id, text) { const e = this._elements.get(id); if(e && e.lbl) e.lbl.textContent = text; },
+        \\  setStatus(text) {
+        \\    let el = document.getElementById('zunk-ui-status');
+        \\    if(!el) { el = document.createElement('div'); el.id = 'zunk-ui-status'; document.body.appendChild(el); }
+        \\    el.textContent = text;
+        \\  },
+        \\};
+        \\
+        \\
+    );
+}
+
 fn generateHtml(
     w: anytype,
     analysis: *const wa.Analysis,
@@ -397,6 +509,28 @@ fn generateHtml(
         try w.writeAll("    canvas { display: block; width: 100%; height: 100%; }\n");
     } else {
         try w.writeAll("    body { font-family: system-ui, sans-serif; margin: 2rem; }\n");
+    }
+
+    if (categories.contains(.ui)) {
+        try w.writeAll(
+            \\    .zunk-ui-toggle { position:fixed; top:10px; left:10px; z-index:10000; background:rgba(30,30,30,0.85); color:#ccc; border:1px solid #555; border-radius:4px; font-size:20px; width:36px; height:36px; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+            \\    .zunk-ui-toggle:hover { background:rgba(60,60,60,0.9); color:#fff; }
+            \\    .zunk-ui-panel { position:fixed; top:10px; left:56px; z-index:9999; background:rgba(20,20,25,0.92); color:#ddd; border:1px solid #444; border-radius:6px; padding:0 12px 12px; font:13px/1.6 system-ui,sans-serif; min-width:220px; max-height:calc(100vh - 20px); overflow-y:auto; backdrop-filter:blur(8px); }
+            \\    .zunk-ui-panel.zunk-ui-hidden { display:none; }
+            \\    .zunk-ui-header { font-weight:600; font-size:14px; padding:10px 0 6px; border-bottom:1px solid #333; margin-bottom:8px; color:#fff; }
+            \\    .zunk-ui-row { display:flex; align-items:center; gap:8px; margin:5px 0; }
+            \\    .zunk-ui-label { flex:0 0 auto; min-width:100px; font-size:12px; color:#aaa; }
+            \\    .zunk-ui-value { flex:0 0 auto; min-width:36px; text-align:right; font-size:12px; color:#8cf; font-variant-numeric:tabular-nums; }
+            \\    .zunk-ui-slider { flex:1; height:4px; -webkit-appearance:none; appearance:none; background:#333; border-radius:2px; outline:none; cursor:pointer; }
+            \\    .zunk-ui-slider::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#6af; cursor:pointer; }
+            \\    .zunk-ui-slider::-moz-range-thumb { width:14px; height:14px; border-radius:50%; background:#6af; border:none; cursor:pointer; }
+            \\    .zunk-ui-checkbox { width:16px; height:16px; accent-color:#6af; cursor:pointer; }
+            \\    .zunk-ui-button { background:rgba(60,60,70,0.8); color:#ddd; border:1px solid #555; border-radius:4px; padding:5px 14px; font-size:12px; cursor:pointer; margin:3px 2px; }
+            \\    .zunk-ui-button:hover { background:rgba(80,80,100,0.9); color:#fff; }
+            \\    .zunk-ui-separator { border:none; border-top:1px solid #333; margin:8px 0; }
+            \\    #zunk-ui-status { position:fixed; bottom:10px; left:10px; z-index:10000; background:rgba(20,20,25,0.85); color:#8cf; border:1px solid #444; border-radius:4px; padding:4px 10px; font:12px/1.4 monospace; }
+            \\
+        );
     }
 
     try w.writeAll("  </style>\n</head>\n<body>\n");
