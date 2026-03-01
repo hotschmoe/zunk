@@ -1,6 +1,6 @@
 # Demo Projects for Maturing zunk
 
-Ten projects designed to stress-test zunk's architecture, force new web API
+Eleven projects designed to stress-test zunk's architecture, force new web API
 bindings, and prove that "write only Zig, generate everything else" scales
 beyond games and particles.
 
@@ -399,6 +399,138 @@ trickling requires async event handling.
 
 ---
 
+## 11. Parallel Raytracer -- Multi-Threaded WASM via Web Workers
+
+A progressive path tracer that distributes tile rendering across multiple
+Web Workers, each running the same WASM module against shared linear memory.
+The main thread composites tiles to canvas in real-time, with a UI showing
+per-worker throughput and total speedup vs single-threaded baseline.
+
+This is the hardest systems-level demo on the list. It forces zunk to solve
+WASM multithreading end-to-end, which no pure-Zig browser framework has
+done.
+
+### How WASM multithreading actually works
+
+There is no `std.Thread` for `wasm32-freestanding`. Browsers do not let
+WASM modules spawn threads directly. Instead, multithreading is built from
+three browser primitives:
+
+```
+1. SharedArrayBuffer     -- backing store for WebAssembly.Memory({shared: true})
+2. Web Workers           -- OS threads, each instantiates the same WASM module
+3. Atomics               -- wait/notify/CAS on shared memory (WASM atomic instrs)
+```
+
+The architecture for this demo:
+
+```
+Main thread (Zig)                        Worker threads (Zig)
+  |                                        |
+  +-- init(): set up scene in shared mem   |
+  |                                        |
+  +-- [zunk JS] spawn N Web Workers ------>+-- each worker instantiates
+  |              pass SharedArrayBuffer    |   same .wasm with shared memory
+  |                                        |
+  +-- write tile assignments to      ----->+-- worker reads assignment via
+  |   shared memory (atomic store)         |   atomic load
+  |                                        |
+  |                                        +-- render tile: ray-scene intersect,
+  |                                        |   write pixels to shared framebuffer
+  |                                        |
+  +-- frame(): read shared framebuffer <---+-- atomic flag: tile complete
+  |   blit completed tiles to canvas       |
+  |                                        |
+  +-- UI: worker count slider,             |
+  |   tiles/sec, linear speedup graph      |
+  |                                        |
+  +-- cleanup(): signal workers to exit    |
+```
+
+### What the Zig developer writes
+
+The key insight: since zunk generates all JS, it can generate the Web Worker
+scaffolding automatically. The Zig developer writes:
+
+- A `render_tile(tile_id: u32, shared_buf: [*]u8) void` function, exported
+- Scene data structures in shared memory (positions, materials, BVH)
+- The main thread `frame()` composites finished tiles
+
+zunk's code generator detects the threading pattern (shared memory flag +
+worker export convention) and emits the Worker instantiation, message
+passing, and SharedArrayBuffer plumbing. The developer never writes a line
+of JavaScript worker code.
+
+### What makes this hard in Zig + wasm32-freestanding
+
+**No std.Thread**: Zig's standard library thread support does not exist for
+`wasm32-freestanding`. Thread creation happens on the JS side (Web Workers).
+The Zig code only sees shared memory and atomic operations.
+
+**Stack isolation**: Each Web Worker instantiates a separate WASM instance
+but shares the same linear memory. Each worker needs its own stack region.
+zunk must partition the linear memory: one stack per worker, plus a shared
+heap region. This is what Emscripten does internally, but zunk must
+implement it from scratch since we target freestanding, not emscripten.
+
+```
+Linear memory layout (shared):
++------------------+------------------+-----+------------------+-----------+
+| Main stack (64K) | Worker 0 (64K)   | ... | Worker N (64K)   | Shared    |
+|                  |                  |     |                  | heap/data |
++------------------+------------------+-----+------------------+-----------+
+0              65536            131072                     (N+1)*65536
+```
+
+**No allocator**: The standard WASM page allocator is not thread-safe.
+Shared heap access needs a mutex built from `Atomics.wait` / `Atomics.notify`
+(WASM `memory.atomic.wait32` / `memory.atomic.notify`). For a raytracer,
+pre-allocating all buffers avoids runtime allocation entirely -- the
+practical path.
+
+**Build flags**: The WASM binary must be compiled with shared memory enabled.
+In Zig's build system: `lib.shared_memory = true`. This produces a module
+with `(memory (shared ...))` in the WASM binary. The Zig compiler also needs
+bulk-memory and atomics features enabled for the target.
+
+**Required HTTP headers**: SharedArrayBuffer requires cross-origin isolation.
+zunk's dev server (`gen/serve.zig`) must serve:
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+**Web APIs exercised**: Web Workers (spawn, postMessage, terminate),
+SharedArrayBuffer, Atomics (wait, notify, store, load, compareExchange),
+WebAssembly.Memory({shared: true}), Canvas 2D (ImageData for tile blitting),
+Performance API (per-worker timing).
+
+**zunk growth**:
+- `web/worker.zig` -- worker-side entry point and shared memory access helpers
+- Thread-aware build pipeline: `shared_memory = true`, atomics target features
+- JS generator: emit Worker creation, SharedArrayBuffer passing, and
+  lifecycle management
+- Memory partitioning: automatic stack-per-worker layout in linear memory
+- Atomic primitives in Zig: mutex, barrier, atomic counters over shared mem
+- COOP/COEP headers in `gen/serve.zig`
+- Build report: "N worker exports detected, generating threaded scaffold"
+
+**Hard problems**: Determining the right number of workers
+(`navigator.hardwareConcurrency` from JS, passed to WASM at init). Graceful
+degradation when SharedArrayBuffer is unavailable (Safari with COOP/COEP
+issues, older browsers) -- fall back to single-threaded rendering. Debugging
+is painful: browser devtools for Workers + WASM is sparse. Memory ordering
+in WASM only offers unordered and sequentially consistent (no
+acquire/release), which may leave performance on the table for expert
+lock-free patterns.
+
+**Why a raytracer**: Embarrassingly parallel, visually dramatic (watch tiles
+fill in), trivially benchmarkable (tiles/sec scales linearly with worker
+count on multi-core machines), and the scene data + framebuffer naturally
+map to shared memory without complex synchronization.
+
+---
+
 ## Build Order Recommendation
 
 Sequenced by dependency and incremental value to the framework:
@@ -413,9 +545,10 @@ Phase B (media and GPU depth):
   [3] Photo Editor ......... File API, compute shaders, large memory
   [7] 3D Model Viewer ...... Full WebGPU render pipeline
 
-Phase C (advanced APIs):
+Phase C (advanced APIs and threading):
   [6] Music Tracker ........ AudioWorklet, MIDI, multi-WASM builds
   [8] Terminal Emulator .... Text rendering, keyboard depth, sustained I/O
+  [11] Parallel Raytracer .. Web Workers, SharedArrayBuffer, WASM atomics
 
 Phase D (frontier):
   [1] ZanoGPT-Web .......... WebNN, cross-backend ML inference
@@ -423,6 +556,10 @@ Phase D (frontier):
   [10] WebRTC Chat ......... Peer connections, media capture
 
 Each phase builds on bindings and patterns established by the previous one.
+Demo 11 (raytracer) is in Phase C because it benefits from the multi-WASM
+patterns established by the music tracker (demo 6), and its shared memory
+plumbing feeds directly into demo 1 (ZanoGPT) where CPU-side parallelism
+via workers would complement GPU/NPU paths.
 ```
 
 ---
