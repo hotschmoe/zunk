@@ -8,8 +8,36 @@ const default_favicon = @embedFile("favicon.ico");
 
 const Handle = std.net.Stream.Handle;
 
+fn reloadScript(port: u16) [reload_script_max]u8 {
+    var buf: [reload_script_max]u8 = undefined;
+    const len = (std.fmt.bufPrint(&buf,
+        \\<script>
+        \\(function(){{
+        \\const ws=new WebSocket('ws://'+location.hostname+':{d}/__zunk_ws');
+        \\ws.onmessage=e=>{{
+        \\  if(e.data==='reload')location.reload();
+        \\  if(e.data==='clear'){{const o=document.getElementById('zunk-err');if(o)o.remove();}}
+        \\  if(e.data.startsWith('error:')){{
+        \\    let o=document.getElementById('zunk-err');
+        \\    if(!o){{o=document.createElement('pre');o.id='zunk-err';
+        \\    o.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;background:rgba(0,0,0,0.92);color:#ff6b6b;padding:2rem;margin:0;overflow:auto;font:14px/1.6 monospace;white-space:pre-wrap;';
+        \\    document.body.appendChild(o);}}
+        \\    o.textContent='BUILD ERROR\n\n'+e.data.slice(6);
+        \\  }}
+        \\}};
+        \\ws.onclose=()=>setTimeout(()=>location.reload(),2000);
+        \\}})();
+        \\</script>
+    , .{port}) catch unreachable).len;
+    @memset(buf[len..], 0);
+    return buf;
+}
+
+const reload_script_max = 768;
+
 pub const ServeConfig = struct {
     autoreload: bool = true,
+    port: u16 = 8080,
     watch_sources: bool = true,
     watch_paths: []const []const u8 = &.{"src"},
     watch_files: []const []const u8 = &.{ "build.zig", "build.zig.zon" },
@@ -156,7 +184,7 @@ fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_
                 return;
             };
             defer allocator.free(fallback);
-            try sendResponse(stream, "200 OK", "text/html", fallback);
+            try sendHtmlWithReload(allocator, stream, fallback, config);
             return;
         }
         try sendResponse(stream, "404 Not Found", "text/plain", "Not Found");
@@ -166,7 +194,32 @@ fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_
 
     logDim("{s} -> {s}", .{ path, rel_path }, console);
 
-    try sendResponse(stream, "200 OK", mimeType(rel_path), file_data);
+    const mime = mimeType(rel_path);
+    if (config.autoreload and std.mem.eql(u8, mime, "text/html")) {
+        try sendHtmlWithReload(allocator, stream, file_data, config);
+    } else {
+        try sendResponse(stream, "200 OK", mime, file_data);
+    }
+}
+
+fn sendHtmlWithReload(allocator: std.mem.Allocator, stream: std.net.Stream, html: []const u8, config: *const ServeConfig) !void {
+    const script_buf = reloadScript(config.port);
+    const script = std.mem.sliceTo(&script_buf, 0);
+
+    if (std.mem.indexOf(u8, html, "</body>")) |pos| {
+        const body = try allocator.alloc(u8, html.len + script.len);
+        defer allocator.free(body);
+        @memcpy(body[0..pos], html[0..pos]);
+        @memcpy(body[pos..][0..script.len], script);
+        @memcpy(body[pos + script.len ..], html[pos..]);
+        try sendResponse(stream, "200 OK", "text/html", body);
+    } else {
+        const body = try allocator.alloc(u8, html.len + script.len);
+        defer allocator.free(body);
+        @memcpy(body[0..html.len], html);
+        @memcpy(body[html.len..], script);
+        try sendResponse(stream, "200 OK", "text/html", body);
+    }
 }
 
 fn isWsUpgrade(request: []const u8) bool {

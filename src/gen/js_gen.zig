@@ -5,8 +5,6 @@ const resolver = @import("js_resolve.zig");
 pub const GenOptions = struct {
     public_url: []const u8 = "/",
     wasm_filename: []const u8,
-    autoreload: bool = false,
-    autoreload_port: u16 = 8080,
     bridge_js: ?[]const u8 = null,
 };
 
@@ -180,26 +178,6 @@ pub fn generate(
 
     if (has_cleanup) {
         try w.writeAll("window.addEventListener('beforeunload', () => exports.cleanup());\n\n");
-    }
-
-    if (opts.autoreload) {
-        try w.print(
-            \\// --- Live reload + error overlay ---
-            \\const ws = new WebSocket('ws://'+location.hostname+':{d}/__zunk_ws');
-            \\ws.onmessage = e => {{
-            \\  if(e.data==='reload') location.reload();
-            \\  if(e.data==='clear') {{ const o=document.getElementById('zunk-err'); if(o) o.remove(); }}
-            \\  if(e.data.startsWith('error:')) {{
-            \\    let o=document.getElementById('zunk-err');
-            \\    if(!o){{o=document.createElement('pre');o.id='zunk-err';
-            \\    o.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;background:rgba(0,0,0,0.92);color:#ff6b6b;padding:2rem;margin:0;overflow:auto;font:14px/1.6 monospace;white-space:pre-wrap;';
-            \\    document.body.appendChild(o);}}
-            \\    o.textContent='BUILD ERROR\n\n'+e.data.slice(6);
-            \\  }}
-            \\}};
-            \\ws.onclose = () => setTimeout(()=>location.reload(), 2000);
-            \\
-        , .{opts.autoreload_port});
     }
 
     try w.writeAll(

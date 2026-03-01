@@ -125,8 +125,6 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
 
     var result = try js_gen.generate(allocator, &analysis, .{
         .wasm_filename = wasm_basename,
-        .autoreload = do_serve,
-        .autoreload_port = parsed.port,
     });
     defer result.deinit(allocator);
 
@@ -157,6 +155,7 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
 
         try dev_server.serve(allocator, parsed.output_dir, parsed.port, .{
             .autoreload = true,
+            .port = parsed.port,
             .watch_sources = parsed.watch,
             .proxy_prefix = proxy.prefix,
             .proxy_target = proxy.target,
