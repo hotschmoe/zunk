@@ -448,7 +448,9 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
             "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}," ++
             "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
-            "targets:[{format:zunkGPUFormat}]}," ++
+            "targets:[{format:zunkGPUFormat,blend:{" ++
+            "color:{srcFactor:'src-alpha',dstFactor:'one-minus-src-alpha'}," ++
+            "alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha'}}}]}," ++
             "primitive:{topology:'triangle-list'}}));",
             true, false, true },
 
@@ -478,7 +480,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
 
         // Render pass
         .{ "begin_render_pass",
-            "zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
+            "if(!zunkGPUEncoder)zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
             "const v=zunkGPUContext.getCurrentTexture().createView();" ++
             "return H.store(zunkGPUEncoder.beginRenderPass({colorAttachments:[{view:v," ++
             "clearValue:{r:arguments[0],g:arguments[1],b:arguments[2],a:arguments[3]}," ++
@@ -486,7 +488,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             false, false, true },
 
         .{ "begin_render_pass_hdr",
-            "zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
+            "if(!zunkGPUEncoder)zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
             "return H.store(zunkGPUEncoder.beginRenderPass({colorAttachments:[{view:H.get(arguments[0])," ++
             "clearValue:{r:arguments[1],g:arguments[2],b:arguments[3],a:arguments[4]}," ++
             "loadOp:'clear',storeOp:'store'}]}));",
