@@ -243,6 +243,9 @@ fn genCanvas2D(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncTy
         .{ "scale", "H.get(arguments[0]).scale(arguments[1], arguments[2]);" },
         .{ "draw_image", "H.get(arguments[0]).drawImage(H.get(arguments[1]), arguments[2], arguments[3]);" },
         .{ "set_global_alpha", "H.get(arguments[0]).globalAlpha = arguments[1];" },
+        .{ "measure_text", "return H.get(arguments[0]).measureText(readStr(arguments[1], arguments[2])).width;" },
+        .{ "clip", "H.get(arguments[0]).clip();" },
+        .{ "set_text_baseline", "H.get(arguments[0]).textBaseline = readStr(arguments[1], arguments[2]);" },
     };
     inline for (js_map) |entry| {
         if (std.mem.eql(u8, method, entry[0])) {

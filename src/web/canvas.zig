@@ -24,6 +24,9 @@ extern "env" fn zunk_c2d_translate(ctx: i32, x: f32, y: f32) void;
 extern "env" fn zunk_c2d_rotate(ctx: i32, angle: f32) void;
 extern "env" fn zunk_c2d_scale(ctx: i32, x: f32, y: f32) void;
 extern "env" fn zunk_c2d_set_global_alpha(ctx: i32, alpha: f32) void;
+extern "env" fn zunk_c2d_measure_text(ctx: i32, ptr: [*]const u8, len: u32) f32;
+extern "env" fn zunk_c2d_clip(ctx: i32) void;
+extern "env" fn zunk_c2d_set_text_baseline(ctx: i32, ptr: [*]const u8, len: u32) void;
 
 pub const Ctx2D = bind.Handle;
 
@@ -128,4 +131,16 @@ pub fn scale(ctx: Ctx2D, x: f32, y: f32) void {
 
 pub fn setGlobalAlpha(ctx: Ctx2D, alpha: f32) void {
     zunk_c2d_set_global_alpha(ctx.toInt(), alpha);
+}
+
+pub fn measureText(ctx: Ctx2D, text: []const u8) f32 {
+    return zunk_c2d_measure_text(ctx.toInt(), text.ptr, @intCast(text.len));
+}
+
+pub fn clip(ctx: Ctx2D) void {
+    zunk_c2d_clip(ctx.toInt());
+}
+
+pub fn setTextBaseline(ctx: Ctx2D, baseline: []const u8) void {
+    zunk_c2d_set_text_baseline(ctx.toInt(), baseline.ptr, @intCast(baseline.len));
 }
