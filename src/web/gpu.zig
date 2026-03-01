@@ -1,0 +1,369 @@
+const std = @import("std");
+const bind = @import("../bind/bind.zig");
+
+// Type aliases -- all bind.Handle underneath, but named for documentation.
+pub const Device = bind.Handle;
+pub const Buffer = bind.Handle;
+pub const ShaderModule = bind.Handle;
+pub const Texture = bind.Handle;
+pub const TextureView = bind.Handle;
+pub const BindGroupLayout = bind.Handle;
+pub const BindGroup = bind.Handle;
+pub const PipelineLayout = bind.Handle;
+pub const ComputePipeline = bind.Handle;
+pub const RenderPipeline = bind.Handle;
+pub const CommandEncoder = bind.Handle;
+pub const ComputePassEncoder = bind.Handle;
+pub const RenderPassEncoder = bind.Handle;
+pub const CommandBuffer = bind.Handle;
+
+// Usage flag constants (matching WebGPU GPUBufferUsage / GPUTextureUsage).
+pub const BufferUsage = struct {
+    pub const MAP_READ: u32 = 0x0001;
+    pub const MAP_WRITE: u32 = 0x0002;
+    pub const COPY_SRC: u32 = 0x0004;
+    pub const COPY_DST: u32 = 0x0008;
+    pub const INDEX: u32 = 0x0010;
+    pub const VERTEX: u32 = 0x0020;
+    pub const UNIFORM: u32 = 0x0040;
+    pub const STORAGE: u32 = 0x0080;
+    pub const INDIRECT: u32 = 0x0100;
+    pub const QUERY_RESOLVE: u32 = 0x0200;
+};
+
+pub const TextureUsage = struct {
+    pub const COPY_SRC: u32 = 0x01;
+    pub const COPY_DST: u32 = 0x02;
+    pub const TEXTURE_BINDING: u32 = 0x04;
+    pub const STORAGE_BINDING: u32 = 0x08;
+    pub const RENDER_ATTACHMENT: u32 = 0x10;
+};
+
+pub const TextureFormat = enum(u32) {
+    rgba16float = 0,
+    rgba32float = 1,
+    bgra8unorm = 2,
+    rgba8unorm = 3,
+    rgba8unorm_srgb = 4,
+    depth24plus = 5,
+    depth32float = 6,
+};
+
+pub const ShaderVisibility = struct {
+    pub const VERTEX: u32 = 1;
+    pub const FRAGMENT: u32 = 2;
+    pub const COMPUTE: u32 = 4;
+};
+
+pub const BufferBindingType = enum(u32) {
+    uniform = 0,
+    storage = 1,
+    read_only_storage = 2,
+};
+
+// 40 bytes, ABI-matched with JS DataView reader in js_resolve.zig
+pub const BindGroupLayoutEntry = extern struct {
+    binding: u32,
+    visibility: u32,
+    entry_type: u32, // 0=buffer, 1=texture, 2=sampler
+    buffer_type: u32, // 0=uniform, 1=storage, 2=read-only-storage
+    has_min_size: u32,
+    has_dynamic_offset: u32,
+    min_size: u64,
+    _padding: u64 = 0,
+
+    pub fn initBuffer(b: u32, vis: u32, buf_type: BufferBindingType) BindGroupLayoutEntry {
+        return .{
+            .binding = b,
+            .visibility = vis,
+            .entry_type = 0,
+            .buffer_type = @intFromEnum(buf_type),
+            .has_min_size = 0,
+            .has_dynamic_offset = 0,
+            .min_size = 0,
+        };
+    }
+
+    pub fn initTexture(b: u32, vis: u32) BindGroupLayoutEntry {
+        return .{
+            .binding = b,
+            .visibility = vis,
+            .entry_type = 1,
+            .buffer_type = 0,
+            .has_min_size = 0,
+            .has_dynamic_offset = 0,
+            .min_size = 0,
+        };
+    }
+
+    pub fn withDynamicOffset(self: BindGroupLayoutEntry) BindGroupLayoutEntry {
+        var entry = self;
+        entry.has_dynamic_offset = 1;
+        return entry;
+    }
+
+    pub fn withMinSize(self: BindGroupLayoutEntry, size: u64) BindGroupLayoutEntry {
+        var entry = self;
+        entry.has_min_size = 1;
+        entry.min_size = size;
+        return entry;
+    }
+};
+
+// 32 bytes, ABI-matched with JS DataView reader in js_resolve.zig
+pub const BindGroupEntry = extern struct {
+    binding: u32,
+    entry_type: u32, // 0=buffer, 1=texture_view
+    resource_handle: u32,
+    _padding: u32 = 0,
+    offset: u64,
+    size: u64,
+
+    pub fn initBuffer(b: u32, handle: bind.Handle, offset: u64, size: u64) BindGroupEntry {
+        return .{
+            .binding = b,
+            .entry_type = 0,
+            .resource_handle = @bitCast(handle.toInt()),
+            .offset = offset,
+            .size = size,
+        };
+    }
+
+    pub fn initBufferFull(b: u32, handle: bind.Handle, size: u64) BindGroupEntry {
+        return initBuffer(b, handle, 0, size);
+    }
+
+    pub fn initTextureView(b: u32, handle: bind.Handle) BindGroupEntry {
+        return .{
+            .binding = b,
+            .entry_type = 1,
+            .resource_handle = @bitCast(handle.toInt()),
+            .offset = 0,
+            .size = 0,
+        };
+    }
+};
+
+extern "env" fn zunk_gpu_create_buffer(size: u32, usage: u32) i32;
+extern "env" fn zunk_gpu_buffer_write(buffer_h: i32, offset: u32, data_ptr: [*]const u8, data_len: u32) void;
+extern "env" fn zunk_gpu_buffer_destroy(buffer_h: i32) void;
+extern "env" fn zunk_gpu_copy_buffer_in_encoder(encoder_h: i32, src: i32, src_off: u32, dst: i32, dst_off: u32, size: u32) void;
+extern "env" fn zunk_gpu_create_shader_module(source_ptr: [*]const u8, source_len: u32) i32;
+extern "env" fn zunk_gpu_create_texture(width: u32, height: u32, format: u32, usage: u32) i32;
+extern "env" fn zunk_gpu_create_texture_view(texture_h: i32) i32;
+extern "env" fn zunk_gpu_destroy_texture(texture_h: i32) void;
+extern "env" fn zunk_gpu_create_bind_group_layout(entries_ptr: [*]const u8, entries_len: u32) i32;
+extern "env" fn zunk_gpu_create_bind_group(layout_h: i32, entries_ptr: [*]const u8, entries_len: u32) i32;
+extern "env" fn zunk_gpu_create_pipeline_layout(layouts_ptr: [*]const u8, layouts_len: u32) i32;
+extern "env" fn zunk_gpu_create_compute_pipeline(layout_h: i32, shader_h: i32, entry_ptr: [*]const u8, entry_len: u32) i32;
+extern "env" fn zunk_gpu_create_render_pipeline(layout_h: i32, shader_h: i32, vert_ptr: [*]const u8, vert_len: u32, frag_ptr: [*]const u8, frag_len: u32) i32;
+extern "env" fn zunk_gpu_create_render_pipeline_hdr(layout_h: i32, shader_h: i32, vert_ptr: [*]const u8, vert_len: u32, frag_ptr: [*]const u8, frag_len: u32, format: u32, blending: u32) i32;
+extern "env" fn zunk_gpu_create_command_encoder() i32;
+extern "env" fn zunk_gpu_begin_compute_pass(encoder_h: i32) i32;
+extern "env" fn zunk_gpu_compute_pass_set_pipeline(pass_h: i32, pipeline_h: i32) void;
+extern "env" fn zunk_gpu_compute_pass_set_bind_group(pass_h: i32, index: u32, group_h: i32) void;
+extern "env" fn zunk_gpu_compute_pass_set_bind_group_offset(pass_h: i32, index: u32, group_h: i32, offset: u32) void;
+extern "env" fn zunk_gpu_compute_pass_dispatch(pass_h: i32, x: u32, y: u32, z: u32) void;
+extern "env" fn zunk_gpu_compute_pass_end(pass_h: i32) void;
+extern "env" fn zunk_gpu_encoder_finish(encoder_h: i32) i32;
+extern "env" fn zunk_gpu_queue_submit(cmd_buffer_h: i32) void;
+extern "env" fn zunk_gpu_begin_render_pass(r: f32, g: f32, b: f32, a: f32) i32;
+extern "env" fn zunk_gpu_begin_render_pass_hdr(texture_view_h: i32, r: f32, g: f32, b: f32, a: f32) i32;
+extern "env" fn zunk_gpu_render_pass_set_pipeline(pass_h: i32, pipeline_h: i32) void;
+extern "env" fn zunk_gpu_render_pass_set_bind_group(pass_h: i32, index: u32, group_h: i32) void;
+extern "env" fn zunk_gpu_render_pass_draw(pass_h: i32, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void;
+extern "env" fn zunk_gpu_render_pass_end(pass_h: i32) void;
+extern "env" fn zunk_gpu_present() void;
+extern "env" fn zunk_gpu_create_texture_from_asset(asset_h: i32) i32;
+extern "env" fn zunk_gpu_is_texture_ready(handle: i32) i32;
+
+pub fn getDevice() Device {
+    return bind.Handle.fromInt(1);
+}
+
+pub fn createBuffer(size: u32, usage: u32) Buffer {
+    return bind.Handle.fromInt(zunk_gpu_create_buffer(size, usage));
+}
+
+pub fn createStorageBuffer(size: u32) Buffer {
+    return createBuffer(size, BufferUsage.STORAGE | BufferUsage.COPY_DST | BufferUsage.COPY_SRC);
+}
+
+pub fn createUniformBuffer(size: u32) Buffer {
+    return createBuffer(size, BufferUsage.UNIFORM | BufferUsage.COPY_DST);
+}
+
+pub fn bufferWrite(buf: Buffer, offset: u32, data: []const u8) void {
+    zunk_gpu_buffer_write(buf.toInt(), offset, data.ptr, @intCast(data.len));
+}
+
+pub fn bufferWriteTyped(comptime T: type, buf: Buffer, offset: u32, items: []const T) void {
+    bufferWrite(buf, offset, std.mem.sliceAsBytes(items));
+}
+
+pub fn bufferDestroy(buf: Buffer) void {
+    zunk_gpu_buffer_destroy(buf.toInt());
+}
+
+pub fn copyBufferInEncoder(encoder: CommandEncoder, src: Buffer, src_off: u32, dst: Buffer, dst_off: u32, size: u32) void {
+    zunk_gpu_copy_buffer_in_encoder(encoder.toInt(), src.toInt(), src_off, dst.toInt(), dst_off, size);
+}
+
+pub fn createShaderModule(source: []const u8) ShaderModule {
+    return bind.Handle.fromInt(zunk_gpu_create_shader_module(source.ptr, @intCast(source.len)));
+}
+
+pub fn createTexture(w: u32, h: u32, fmt: TextureFormat, usage: u32) Texture {
+    return bind.Handle.fromInt(zunk_gpu_create_texture(w, h, @intFromEnum(fmt), usage));
+}
+
+pub fn createTextureView(tex: Texture) TextureView {
+    return bind.Handle.fromInt(zunk_gpu_create_texture_view(tex.toInt()));
+}
+
+pub fn destroyTexture(tex: Texture) void {
+    zunk_gpu_destroy_texture(tex.toInt());
+}
+
+pub fn createHDRTexture(w: u32, h: u32) Texture {
+    return createTexture(w, h, .rgba16float, TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING);
+}
+
+pub fn createBindGroupLayout(entries: []const BindGroupLayoutEntry) BindGroupLayout {
+    return bind.Handle.fromInt(zunk_gpu_create_bind_group_layout(
+        @ptrCast(entries.ptr),
+        @intCast(entries.len),
+    ));
+}
+
+pub fn createBindGroup(layout: BindGroupLayout, entries: []const BindGroupEntry) BindGroup {
+    return bind.Handle.fromInt(zunk_gpu_create_bind_group(
+        layout.toInt(),
+        @ptrCast(entries.ptr),
+        @intCast(entries.len),
+    ));
+}
+
+pub fn createPipelineLayout(layouts: []const BindGroupLayout) PipelineLayout {
+    return bind.Handle.fromInt(zunk_gpu_create_pipeline_layout(
+        @ptrCast(layouts.ptr),
+        @intCast(layouts.len),
+    ));
+}
+
+pub fn createComputePipeline(layout: PipelineLayout, shader: ShaderModule, entry_point: []const u8) ComputePipeline {
+    return bind.Handle.fromInt(zunk_gpu_create_compute_pipeline(
+        layout.toInt(),
+        shader.toInt(),
+        entry_point.ptr,
+        @intCast(entry_point.len),
+    ));
+}
+
+pub fn createRenderPipeline(layout: PipelineLayout, shader: ShaderModule, vertex_entry: []const u8, fragment_entry: []const u8) RenderPipeline {
+    return bind.Handle.fromInt(zunk_gpu_create_render_pipeline(
+        layout.toInt(),
+        shader.toInt(),
+        vertex_entry.ptr,
+        @intCast(vertex_entry.len),
+        fragment_entry.ptr,
+        @intCast(fragment_entry.len),
+    ));
+}
+
+pub fn createRenderPipelineHDR(layout: PipelineLayout, shader: ShaderModule, vertex_entry: []const u8, fragment_entry: []const u8, format: TextureFormat, blending: bool) RenderPipeline {
+    return bind.Handle.fromInt(zunk_gpu_create_render_pipeline_hdr(
+        layout.toInt(),
+        shader.toInt(),
+        vertex_entry.ptr,
+        @intCast(vertex_entry.len),
+        fragment_entry.ptr,
+        @intCast(fragment_entry.len),
+        @intFromEnum(format),
+        @intFromBool(blending),
+    ));
+}
+
+pub fn createCommandEncoder() CommandEncoder {
+    return bind.Handle.fromInt(zunk_gpu_create_command_encoder());
+}
+
+pub fn beginComputePass(encoder: CommandEncoder) ComputePassEncoder {
+    return bind.Handle.fromInt(zunk_gpu_begin_compute_pass(encoder.toInt()));
+}
+
+pub fn computePassSetPipeline(pass: ComputePassEncoder, pip: ComputePipeline) void {
+    zunk_gpu_compute_pass_set_pipeline(pass.toInt(), pip.toInt());
+}
+
+pub fn computePassSetBindGroup(pass: ComputePassEncoder, index: u32, group: BindGroup) void {
+    zunk_gpu_compute_pass_set_bind_group(pass.toInt(), index, group.toInt());
+}
+
+pub fn computePassSetBindGroupWithOffset(pass: ComputePassEncoder, index: u32, group: BindGroup, offset: u32) void {
+    zunk_gpu_compute_pass_set_bind_group_offset(pass.toInt(), index, group.toInt(), offset);
+}
+
+pub fn computePassDispatch(pass: ComputePassEncoder, x: u32, y: u32, z: u32) void {
+    zunk_gpu_compute_pass_dispatch(pass.toInt(), x, y, z);
+}
+
+pub fn computePassEnd(pass: ComputePassEncoder) void {
+    zunk_gpu_compute_pass_end(pass.toInt());
+}
+
+pub fn encoderFinish(encoder: CommandEncoder) CommandBuffer {
+    return bind.Handle.fromInt(zunk_gpu_encoder_finish(encoder.toInt()));
+}
+
+pub fn queueSubmit(cmd: CommandBuffer) void {
+    zunk_gpu_queue_submit(cmd.toInt());
+}
+
+pub fn beginRenderPass(r: f32, g: f32, b: f32, a: f32) RenderPassEncoder {
+    return bind.Handle.fromInt(zunk_gpu_begin_render_pass(r, g, b, a));
+}
+
+pub fn beginRenderPassHDR(view: TextureView, r: f32, g: f32, b: f32, a: f32) RenderPassEncoder {
+    return bind.Handle.fromInt(zunk_gpu_begin_render_pass_hdr(view.toInt(), r, g, b, a));
+}
+
+pub fn renderPassSetPipeline(pass: RenderPassEncoder, pip: RenderPipeline) void {
+    zunk_gpu_render_pass_set_pipeline(pass.toInt(), pip.toInt());
+}
+
+pub fn renderPassSetBindGroup(pass: RenderPassEncoder, index: u32, group: BindGroup) void {
+    zunk_gpu_render_pass_set_bind_group(pass.toInt(), index, group.toInt());
+}
+
+pub fn renderPassDraw(pass: RenderPassEncoder, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void {
+    zunk_gpu_render_pass_draw(pass.toInt(), vertex_count, instance_count, first_vertex, first_instance);
+}
+
+pub fn renderPassEnd(pass: RenderPassEncoder) void {
+    zunk_gpu_render_pass_end(pass.toInt());
+}
+
+pub fn present() void {
+    zunk_gpu_present();
+}
+
+pub fn createTextureFromAsset(asset_handle: bind.Handle) Texture {
+    return bind.Handle.fromInt(zunk_gpu_create_texture_from_asset(asset_handle.toInt()));
+}
+
+pub fn isTextureReady(handle: Texture) bool {
+    return zunk_gpu_is_texture_ready(handle.toInt()) != 0;
+}
+
+test "struct layout BindGroupLayoutEntry" {
+    try std.testing.expectEqual(@as(usize, 40), @sizeOf(BindGroupLayoutEntry));
+}
+
+test "struct layout BindGroupEntry" {
+    try std.testing.expectEqual(@as(usize, 32), @sizeOf(BindGroupEntry));
+}
+
+test {
+    std.testing.refAllDecls(@This());
+}

@@ -1,0 +1,14 @@
+.{
+    .name = .audio_demo_2_assets_cached,
+    .version = "0.0.0",
+    .fingerprint = 0x1509fad14d7db35b,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .zunk = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

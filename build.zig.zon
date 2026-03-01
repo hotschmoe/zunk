@@ -3,7 +3,16 @@
     .version = "0.0.0",
     .fingerprint = 0x56e2cba64281ab82, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.2",
-    .dependencies = .{},
+    .dependencies = .{
+        .webzocket = .{
+            .url = "git+https://github.com/hotschmoe/webzocket.git#954579ad469a08d3d6cb578b2be62498265c945e",
+            .hash = "webzocket-0.1.0-qU6sG0EIAwB7rOOeFxMKQ1bJ6ec8G7T2TIMDHhygOC3l",
+        },
+        .rich_zig = .{
+            .url = "git+https://github.com/hotschmoe/rich_zig.git#cd37c050cc7ce0414b81fa61e1e14f702ee04563",
+            .hash = "rich_zig-1.4.1-cZcAnKdFDACT8IHmL0fvgpUUnI1rcaAP7IsB66Qh7zpY",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",
