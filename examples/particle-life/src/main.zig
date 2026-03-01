@@ -14,6 +14,8 @@ var sim_initialized: bool = false;
 var paused: bool = false;
 
 var pending_resize: ?struct { w: u32, h: u32 } = null;
+var last_canvas_w: u32 = 0;
+var last_canvas_h: u32 = 0;
 
 var noise_asset: asset.Handle = undefined;
 var noise_texture: gpu.Texture = undefined;
@@ -93,8 +95,12 @@ fn initSim() void {
     ) catch return;
     sim_initialized = true;
     if (pending_resize) |pr| {
-        sim.?.updateCamera(pr.w, pr.h);
+        last_canvas_w = pr.w;
+        last_canvas_h = pr.h;
         pending_resize = null;
+    }
+    if (last_canvas_w > 0 and last_canvas_h > 0) {
+        sim.?.updateCamera(last_canvas_w, last_canvas_h);
     }
 }
 
@@ -174,6 +180,8 @@ export fn frame(dt: f32) void {
 }
 
 export fn resize(w: u32, h: u32) void {
+    last_canvas_w = w;
+    last_canvas_h = h;
     if (sim) |*s| {
         s.updateCamera(w, h);
     } else {
