@@ -48,9 +48,7 @@ const LayoutEntry = struct {
 const MAX_LAYOUT_DEPTH = 16;
 
 pub fn Ui(comptime Backend: type) type {
-    comptime {
-        rb.validateBackend(Backend);
-    }
+    comptime rb.validateBackend(Backend);
 
     return struct {
         const Self = @This();
@@ -98,15 +96,11 @@ pub fn Ui(comptime Backend: type) type {
         }
 
         pub fn end(self: *Self) void {
-            if (self.layout_depth > 0) {
-                self.layout_depth = 0;
-            }
+            self.layout_depth = 0;
             if (!self.mouse_down) {
                 self.active = null_id;
             }
         }
-
-        // -- ID system --
 
         fn hashId(label_str: []const u8) Id {
             // FNV-1a
@@ -126,8 +120,6 @@ pub fn Ui(comptime Backend: type) type {
             }
             return label_str;
         }
-
-        // -- Layout --
 
         fn pushLayout(self: *Self, entry: LayoutEntry) void {
             if (self.layout_depth < MAX_LAYOUT_DEPTH) {
@@ -174,8 +166,6 @@ pub fn Ui(comptime Backend: type) type {
             return lay.bounds.w - (lay.cursor_x - lay.bounds.x);
         }
 
-        // -- Interaction helpers --
-
         fn mousePressed(self: *Self) bool {
             return self.mouse_down and !self.was_mouse_down;
         }
@@ -202,8 +192,6 @@ pub fn Ui(comptime Backend: type) type {
             if (self.hot == id) return self.theme.bg_hover;
             return self.theme.bg;
         }
-
-        // -- Widgets --
 
         pub fn label(self: *Self, text: []const u8) void {
             const w = self.availableWidth();
@@ -261,7 +249,6 @@ pub fn Ui(comptime Backend: type) type {
             const toggled = self.hot == id and self.active == id and self.mouseReleased();
             if (toggled) value.* = !value.*;
 
-            // checkbox box
             const box_y = rect.y + (self.theme.row_height - self.theme.checkbox_size) / 2;
             const box_rect = Rect{
                 .x = rect.x + self.theme.padding,
@@ -277,7 +264,6 @@ pub fn Ui(comptime Backend: type) type {
                 self.backend.drawFilledRect(inner, self.theme.check_mark);
             }
 
-            // label
             self.backend.setFont(self.theme.font_body);
             self.backend.drawText(
                 display,
@@ -295,7 +281,6 @@ pub fn Ui(comptime Backend: type) type {
             const w = self.availableWidth();
             const rect = self.allocRect(w, self.theme.row_height + self.theme.slider_height);
 
-            // label row
             self.backend.setFont(self.theme.font_body);
             self.backend.drawText(
                 display,
@@ -304,7 +289,6 @@ pub fn Ui(comptime Backend: type) type {
                 self.theme.text,
             );
 
-            // value display (right-aligned)
             var buf: [32]u8 = undefined;
             const val_str = formatFloat(buf[0..], value.*);
             const val_tw = self.backend.measureText(val_str);
@@ -315,7 +299,6 @@ pub fn Ui(comptime Backend: type) type {
                 self.theme.text_dim,
             );
 
-            // track
             const track_x = rect.x + self.theme.padding;
             const track_y = rect.y + self.theme.row_height;
             const track_w = rect.w - self.theme.padding * 2;
@@ -341,10 +324,8 @@ pub fn Ui(comptime Backend: type) type {
                 }
             }
 
-            // draw track background
             self.backend.drawFilledRect(track_rect, self.theme.slider_track);
 
-            // draw fill
             const range = max_val - min_val;
             const fill_t = if (range > 0) (value.* - min_val) / range else 0;
             if (fill_t > 0) {
@@ -354,13 +335,10 @@ pub fn Ui(comptime Backend: type) type {
                 );
             }
 
-            // draw track border
             self.backend.drawStrokedRect(track_rect, self.theme.border, self.theme.border_width);
 
             return changed;
         }
-
-        // -- Containers --
 
         pub fn beginPanel(self: *Self, title: []const u8) void {
             const w = self.availableWidth();
@@ -368,7 +346,6 @@ pub fn Ui(comptime Backend: type) type {
 
             self.backend.pushState();
 
-            // title bar
             const title_rect = Rect{
                 .x = outer_rect.x,
                 .y = outer_rect.y,
@@ -384,7 +361,6 @@ pub fn Ui(comptime Backend: type) type {
                 self.theme.text,
             );
 
-            // push inner layout below title
             self.pushLayout(.{
                 .dir = .vertical,
                 .bounds = .{
@@ -400,30 +376,15 @@ pub fn Ui(comptime Backend: type) type {
         }
 
         pub fn endPanel(self: *Self) void {
-            if (self.popLayout()) |inner| {
-                // total height consumed by panel content
-                const content_h = inner.cursor_y - inner.bounds.y + self.theme.padding;
-                const panel_h = self.theme.row_height + self.theme.padding + content_h;
+            const inner = self.popLayout() orelse return;
+            const content_h = inner.cursor_y - inner.bounds.y + self.theme.padding;
+            const panel_h = self.theme.row_height + self.theme.padding + content_h;
 
-                // draw panel background behind content
-                const bg_rect = Rect{
-                    .x = inner.bounds.x - self.theme.padding,
-                    .y = inner.bounds.y - self.theme.row_height - self.theme.padding,
-                    .w = inner.bounds.w + self.theme.padding * 2,
-                    .h = panel_h,
-                };
+            self.backend.popState();
 
-                self.backend.popState();
-                // re-draw background first, then we need to re-render...
-                // Since immediate mode draws in order, panel bg was already behind.
-                // We adjust the parent layout cursor to account for actual panel height.
-                if (self.layout_depth > 0) {
-                    const parent = self.currentLayout();
-                    // the allocRect for beginPanel gave h=0, so fix cursor
-                    // cursor_y was advanced by 0 + item_spacing, we need panel_h total
-                    _ = bg_rect;
-                    parent.cursor_y = parent.cursor_y - self.theme.item_spacing + panel_h + self.theme.item_spacing;
-                }
+            if (self.layout_depth > 0) {
+                const parent = self.currentLayout();
+                parent.cursor_y = parent.cursor_y + panel_h;
             }
         }
 
@@ -444,16 +405,13 @@ pub fn Ui(comptime Backend: type) type {
         }
 
         pub fn endHorizontal(self: *Self) void {
-            if (self.popLayout()) |inner| {
-                if (self.layout_depth > 0) {
-                    const parent = self.currentLayout();
-                    const h = if (inner.max_cross > 0) inner.max_cross else self.theme.row_height;
-                    parent.cursor_y += h + self.theme.item_spacing;
-                }
+            const inner = self.popLayout() orelse return;
+            if (self.layout_depth > 0) {
+                const parent = self.currentLayout();
+                const h = if (inner.max_cross > 0) inner.max_cross else self.theme.row_height;
+                parent.cursor_y += h + self.theme.item_spacing;
             }
         }
-
-        // -- Float formatting (no allocator) --
 
         fn formatFloat(buf: []u8, val: f32) []const u8 {
             if (val != val) {
@@ -467,11 +425,9 @@ pub fn Ui(comptime Backend: type) type {
             const negative = val < 0;
             const v: f32 = if (negative) -val else val;
 
-            // two decimal places
             var scaled: u32 = @intFromFloat(v * 100 + 0.5);
             var pos: usize = buf.len;
 
-            // fractional part (2 digits)
             const d1: u8 = @intCast(scaled % 10);
             scaled /= 10;
             const d0: u8 = @intCast(scaled % 10);
@@ -490,7 +446,6 @@ pub fn Ui(comptime Backend: type) type {
                 buf[pos] = '.';
             }
 
-            // integer part
             if (scaled == 0) {
                 if (pos > 0) {
                     pos -= 1;

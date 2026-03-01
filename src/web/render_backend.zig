@@ -79,8 +79,7 @@ pub const Canvas2DBackend = struct {
         canvas.clip(self.ctx);
     }
 
-    pub fn clearClipRect(self: Canvas2DBackend) void {
-        _ = self;
+    pub fn clearClipRect(_: Canvas2DBackend) void {
         // clip clearing is handled via save/restore
     }
 
@@ -119,11 +118,4 @@ test "Rect.shrink" {
     try std.testing.expectApproxEqAbs(@as(f32, 25), s.y, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 90), s.w, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 40), s.h, 0.001);
-}
-
-test "Canvas2DBackend validates at comptime" {
-    // comptime block in Canvas2DBackend already validates; this just forces evaluation
-    comptime {
-        validateBackend(Canvas2DBackend);
-    }
 }
