@@ -35,6 +35,9 @@ pub const InputState = extern struct {
     viewport_height: u32 align(1),
     device_pixel_ratio: f32 align(1),
     has_focus: u8 align(1),
+
+    typed_chars_len: u8 align(1),
+    typed_chars: [32]u8 align(1),
 };
 
 var input_state: InputState = std.mem.zeroes(InputState);
@@ -220,6 +223,10 @@ pub fn getDevicePixelRatio() f32 {
 
 pub fn hasFocus() bool {
     return input_state.has_focus != 0;
+}
+
+pub fn getTypedChars() []const u8 {
+    return input_state.typed_chars[0..input_state.typed_chars_len];
 }
 
 pub fn onKeyDown(cb: bind.CallbackFn) void {

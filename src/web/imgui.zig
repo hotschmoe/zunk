@@ -58,6 +58,9 @@ pub fn Ui(comptime Backend: type) type {
 
         hot: Id = null_id,
         active: Id = null_id,
+        focused: Id = null_id,
+        frame_claimed_focus: bool = false,
+        elapsed: f32 = 0,
 
         mouse_x: f32 = 0,
         mouse_y: f32 = 0,
@@ -79,12 +82,18 @@ pub fn Ui(comptime Backend: type) type {
         }
 
         pub fn begin(self: *Self, available_width: f32) void {
+            self.beginWithDt(available_width, 0);
+        }
+
+        pub fn beginWithDt(self: *Self, available_width: f32, dt: f32) void {
             const mouse = input.getMouse();
             self.was_mouse_down = self.mouse_down;
             self.mouse_x = mouse.x;
             self.mouse_y = mouse.y;
             self.mouse_down = mouse.buttons.left;
             self.hot = null_id;
+            self.frame_claimed_focus = false;
+            self.elapsed += dt;
             self.layout_depth = 0;
             self.pushLayout(.{
                 .dir = .vertical,
@@ -99,6 +108,9 @@ pub fn Ui(comptime Backend: type) type {
             self.layout_depth = 0;
             if (!self.mouse_down) {
                 self.active = null_id;
+            }
+            if (self.mousePressed() and !self.frame_claimed_focus) {
+                self.focused = null_id;
             }
         }
 
@@ -337,6 +349,105 @@ pub fn Ui(comptime Backend: type) type {
             }
 
             self.backend.drawStrokedRect(track_rect, self.theme.border, self.theme.border_width);
+
+            return changed;
+        }
+
+        pub fn textInput(self: *Self, label_str: []const u8, buffer: []u8, len_ptr: *usize) bool {
+            const id = hashId(label_str);
+            const display = displayLabel(label_str);
+
+            const w = self.availableWidth();
+            const rect = self.allocRect(w, self.theme.row_height * 2 + self.theme.item_spacing);
+
+            // Label above the input box
+            self.backend.setFont(self.theme.font_body);
+            self.backend.drawText(
+                display,
+                rect.x + self.theme.padding,
+                rect.y + (self.theme.row_height - 14) / 2,
+                self.theme.text_dim,
+            );
+
+            // Input box area
+            const box_rect = Rect{
+                .x = rect.x,
+                .y = rect.y + self.theme.row_height,
+                .w = w,
+                .h = self.theme.row_height,
+            };
+
+            self.updateHotActive(id, box_rect);
+
+            // Click to focus
+            if (self.hot == id and self.mousePressed()) {
+                self.focused = id;
+                self.frame_claimed_focus = true;
+                self.elapsed = 0;
+            }
+
+            // If we are focused, also mark claimed so end() doesn't clear us
+            if (self.focused == id) {
+                self.frame_claimed_focus = true;
+            }
+
+            // Escape to unfocus
+            if (self.focused == id and input.isKeyPressed(.escape)) {
+                self.focused = null_id;
+            }
+
+            // Process typed chars when focused
+            var changed = false;
+            if (self.focused == id) {
+                for (input.getTypedChars()) |ch| {
+                    if (ch == 0x0A) {
+                        // Enter: unfocus
+                        self.focused = null_id;
+                        break;
+                    } else if (ch == 0x08) {
+                        // Backspace
+                        if (len_ptr.* > 0) {
+                            len_ptr.* -= 1;
+                            changed = true;
+                        }
+                    } else if (ch >= 0x20 and len_ptr.* < buffer.len) {
+                        buffer[len_ptr.*] = ch;
+                        len_ptr.* += 1;
+                        changed = true;
+                    }
+                }
+            }
+
+            // Draw input box
+            const is_focused = self.focused == id;
+            const box_bg = if (is_focused) self.theme.bg_active else self.widgetColor(id);
+            const border_color = if (is_focused) self.theme.accent else self.theme.border;
+            self.backend.drawFilledRect(box_rect, box_bg);
+            self.backend.drawStrokedRect(box_rect, border_color, self.theme.border_width);
+
+            // Draw text content
+            const content = buffer[0..len_ptr.*];
+            self.backend.setFont(self.theme.font_body);
+            self.backend.drawText(
+                content,
+                box_rect.x + self.theme.padding,
+                box_rect.y + (self.theme.row_height - 14) / 2,
+                self.theme.text,
+            );
+
+            // Blinking cursor when focused
+            if (is_focused) {
+                const blink_on = @mod(self.elapsed, 1.0) < 0.5;
+                if (blink_on) {
+                    const text_w = self.backend.measureText(content);
+                    const cursor_x = box_rect.x + self.theme.padding + text_w + 1;
+                    const cursor_y = box_rect.y + 4;
+                    self.backend.drawFilledRect(
+                        .{ .x = cursor_x, .y = cursor_y, .w = 2, .h = self.theme.row_height - 8 },
+                        self.theme.text,
+                    );
+                }
+            }
 
             return changed;
         }

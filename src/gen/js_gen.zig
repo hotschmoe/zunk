@@ -274,12 +274,13 @@ fn emitInputSystem(w: anytype) !void {
         \\  keysDown: new Set(),
         \\  keysPressed: new Set(),
         \\  keysReleased: new Set(),
+        \\  typedChars: [],
         \\  mouseX: 0, mouseY: 0, mouseDx: 0, mouseDy: 0,
         \\  mouseWheel: 0, mouseButtons: 0,
         \\  touches: [],
         \\  init(ptr, len) {
         \\    this.ptr = ptr; this.len = len;
-        \\    document.addEventListener('keydown', e => { this.keysDown.add(e.keyCode); this.keysPressed.add(e.keyCode); e.preventDefault(); });
+        \\    document.addEventListener('keydown', e => { this.keysDown.add(e.keyCode); this.keysPressed.add(e.keyCode); if(e.key.length===1&&this.typedChars.length<32)this.typedChars.push(e.key.charCodeAt(0)); else if(e.key==='Backspace'&&this.typedChars.length<32)this.typedChars.push(8); else if(e.key==='Enter'&&this.typedChars.length<32)this.typedChars.push(10); e.preventDefault(); });
         \\    document.addEventListener('keyup', e => { this.keysDown.delete(e.keyCode); this.keysReleased.add(e.keyCode); });
         \\    const canvas = document.getElementById('app') || document.querySelector('canvas') || document;
         \\    canvas.addEventListener('mousemove', e => { const sx=canvas.clientWidth?canvas.width/canvas.clientWidth:1,sy=canvas.clientHeight?canvas.height/canvas.clientHeight:1; this.mouseDx+=e.movementX*sx; this.mouseDy+=e.movementY*sy; this.mouseX=(e.offsetX??e.clientX)*sx; this.mouseY=(e.offsetY??e.clientY)*sy; });
@@ -317,10 +318,15 @@ fn emitInputSystem(w: anytype) !void {
         \\    view.setUint32(off, window.innerWidth, true); off += 4;
         \\    view.setUint32(off, window.innerHeight, true); off += 4;
         \\    view.setFloat32(off, window.devicePixelRatio, true); off += 4;
-        \\    view.setUint8(off, document.hasFocus() ? 1 : 0);
+        \\    view.setUint8(off, document.hasFocus() ? 1 : 0); off += 1;
+        \\    // Typed chars buffer (1 byte count + up to 32 bytes)
+        \\    const tc = Math.min(this.typedChars.length, 32);
+        \\    view.setUint8(off, tc); off += 1;
+        \\    for (let i = 0; i < tc; i++) { view.setUint8(off + i, this.typedChars[i]); }
         \\    // Clear per-frame state
         \\    this.keysPressed.clear(); this.keysReleased.clear();
         \\    this.mouseDx = 0; this.mouseDy = 0; this.mouseWheel = 0;
+        \\    this.typedChars.length = 0;
         \\  },
         \\  poll() { this.flush(); },
         \\};

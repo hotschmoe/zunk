@@ -31,6 +31,11 @@ var sensitivity: f32 = defaults.sensitivity;
 var invert_y: bool = defaults.invert_y;
 var apply_count: u32 = 0;
 
+var name_buf: [64]u8 = undefined;
+var name_len: usize = 0;
+var status_msg_buf: [128]u8 = undefined;
+var status_msg_len: usize = 0;
+
 // Tracker dot -- smoothly follows mouse, affected by sensitivity + invert-Y
 var tracker_x: f32 = 200;
 var tracker_y: f32 = 200;
@@ -57,12 +62,12 @@ export fn frame(dt: f32) void {
     canvas.fillRect(ctx, 0, 0, w, h);
 
     drawPreview(dt, w, h);
-    drawUI(w);
+    drawUI(w, dt);
 }
 
-fn drawUI(w: f32) void {
+fn drawUI(w: f32, dt: f32) void {
     const ui_width = @min(panel_width, w);
-    ui.begin(ui_width);
+    ui.beginWithDt(ui_width, dt);
 
     ui.label("zunk imgui demo");
 
@@ -82,6 +87,15 @@ fn drawUI(w: f32) void {
     ui.beginPanel("Controls");
     _ = ui.slider("Sensitivity", &sensitivity, 0.1, 5.0);
     _ = ui.checkbox("Invert Y-Axis", &invert_y);
+    ui.separator();
+    ui.endPanel();
+
+    ui.beginPanel("User Info");
+    _ = ui.textInput("Name##name", &name_buf, &name_len);
+    _ = ui.textInput("Status Message##status", &status_msg_buf, &status_msg_len);
+    if (name_len > 0) {
+        ui.label(echoLine(&name_buf, name_len));
+    }
     ui.separator();
     ui.endPanel();
 
@@ -256,6 +270,18 @@ export fn resize(w: u32, h: u32) void {
     canvas.setSize(ctx, w, h);
 }
 
+var echo_buf: [80]u8 = undefined;
+
+fn echoLine(name: []const u8, len: usize) []const u8 {
+    const prefix = "Hello, ";
+    const suffix = "!";
+    @memcpy(echo_buf[0..prefix.len], prefix);
+    @memcpy(echo_buf[prefix.len .. prefix.len + len], name[0..len]);
+    const end_pos = prefix.len + len;
+    @memcpy(echo_buf[end_pos .. end_pos + suffix.len], suffix);
+    return echo_buf[0 .. end_pos + suffix.len];
+}
+
 fn resetSettings() void {
     brightness = defaults.brightness;
     fullscreen = defaults.fullscreen;
@@ -265,6 +291,8 @@ fn resetSettings() void {
     sensitivity = defaults.sensitivity;
     invert_y = defaults.invert_y;
     apply_count = 0;
+    name_len = 0;
+    status_msg_len = 0;
 }
 
 fn clampf(val: f32, lo: f32, hi: f32) f32 {
