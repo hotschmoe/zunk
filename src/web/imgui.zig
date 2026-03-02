@@ -360,7 +360,6 @@ pub fn Ui(comptime Backend: type) type {
             const w = self.availableWidth();
             const rect = self.allocRect(w, self.theme.row_height * 2 + self.theme.item_spacing);
 
-            // Label above the input box
             self.backend.setFont(self.theme.font_body);
             self.backend.drawText(
                 display,
@@ -369,7 +368,6 @@ pub fn Ui(comptime Backend: type) type {
                 self.theme.text_dim,
             );
 
-            // Input box area
             const box_rect = Rect{
                 .x = rect.x,
                 .y = rect.y + self.theme.row_height,
@@ -379,33 +377,26 @@ pub fn Ui(comptime Backend: type) type {
 
             self.updateHotActive(id, box_rect);
 
-            // Click to focus
             if (self.hot == id and self.mousePressed()) {
                 self.focused = id;
                 self.frame_claimed_focus = true;
                 self.elapsed = 0;
             }
 
-            // If we are focused, also mark claimed so end() doesn't clear us
-            if (self.focused == id) {
-                self.frame_claimed_focus = true;
-            }
-
-            // Escape to unfocus
             if (self.focused == id and input.isKeyPressed(.escape)) {
                 self.focused = null_id;
             }
 
-            // Process typed chars when focused
+            const is_focused = self.focused == id;
+            if (is_focused) self.frame_claimed_focus = true;
+
             var changed = false;
-            if (self.focused == id) {
+            if (is_focused) {
                 for (input.getTypedChars()) |ch| {
                     if (ch == 0x0A) {
-                        // Enter: unfocus
                         self.focused = null_id;
                         break;
                     } else if (ch == 0x08) {
-                        // Backspace
                         if (len_ptr.* > 0) {
                             len_ptr.* -= 1;
                             changed = true;
@@ -418,14 +409,11 @@ pub fn Ui(comptime Backend: type) type {
                 }
             }
 
-            // Draw input box
-            const is_focused = self.focused == id;
             const box_bg = if (is_focused) self.theme.bg_active else self.widgetColor(id);
             const border_color = if (is_focused) self.theme.accent else self.theme.border;
             self.backend.drawFilledRect(box_rect, box_bg);
             self.backend.drawStrokedRect(box_rect, border_color, self.theme.border_width);
 
-            // Draw text content
             const content = buffer[0..len_ptr.*];
             self.backend.setFont(self.theme.font_body);
             self.backend.drawText(
@@ -435,7 +423,6 @@ pub fn Ui(comptime Backend: type) type {
                 self.theme.text,
             );
 
-            // Blinking cursor when focused
             if (is_focused) {
                 const blink_on = @mod(self.elapsed, 1.0) < 0.5;
                 if (blink_on) {

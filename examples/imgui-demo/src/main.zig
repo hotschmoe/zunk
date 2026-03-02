@@ -94,7 +94,7 @@ fn drawUI(w: f32, dt: f32) void {
     _ = ui.textInput("Name##name", &name_buf, &name_len);
     _ = ui.textInput("Status Message##status", &status_msg_buf, &status_msg_len);
     if (name_len > 0) {
-        ui.label(echoLine(&name_buf, name_len));
+        ui.label(echoLine(name_buf[0..name_len]));
     }
     ui.separator();
     ui.endPanel();
@@ -272,12 +272,12 @@ export fn resize(w: u32, h: u32) void {
 
 var echo_buf: [80]u8 = undefined;
 
-fn echoLine(name: []const u8, len: usize) []const u8 {
+fn echoLine(name: []const u8) []const u8 {
     const prefix = "Hello, ";
     const suffix = "!";
     @memcpy(echo_buf[0..prefix.len], prefix);
-    @memcpy(echo_buf[prefix.len .. prefix.len + len], name[0..len]);
-    const end_pos = prefix.len + len;
+    @memcpy(echo_buf[prefix.len .. prefix.len + name.len], name);
+    const end_pos = prefix.len + name.len;
     @memcpy(echo_buf[end_pos .. end_pos + suffix.len], suffix);
     return echo_buf[0 .. end_pos + suffix.len];
 }
