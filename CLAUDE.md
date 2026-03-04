@@ -208,6 +208,10 @@ Zig source --> zig build (wasm32) --> .wasm binary
 | `resize`  | `fn (w: u32, h: u32) void` | On window resize          |
 | `cleanup` | `fn () void`          | On beforeunload                |
 
+### Inspiration: CyberEther
+
+[CyberEther](https://github.com/luigifcruz/cyberether) is the north-star case study. It is a GPU-accelerated signal processing framework that runs in the browser via WebGPU/WebAssembly -- real-time flowgraph editing, visualization, cross-platform from one codebase (Vulkan/Metal/WebGPU). A zunk developer should be able to build something equally ambitious in 100% Zig. The planned WebGPU UI framework (immediate-mode, Zig-native) will be extracted to its own repo once mature.
+
 ### Current Status
 
 Phase 1 (Foundation) -- project is freshly initialized. `src/root.zig` and `src/main.zig` are still zig-init boilerplate. The core modules (bind/, web/, gen/) described in the README are not yet implemented. `ref/` contains prior art and conversation dumps for reference.

@@ -60,11 +60,17 @@ That's it. One file. One command.
 
 - **Production-ready output.** `zunk deploy` produces a `dist/` directory with content-hashed filenames, subresource integrity attributes, and preload hints — ready to drop onto any static file server (nginx, S3, Cloudflare Pages, etc.).
 
+### The Vision
+
+[CyberEther](https://github.com/luigifcruz/cyberether) is a case study for what WebAssembly, WebUSB, and WebGPU can achieve together: a GPU-accelerated signal processing framework with a flowgraph editor, real-time visualization, and cross-platform deployment -- all running in the browser via WebGPU without installation. It targets Vulkan, Metal, and WebGPU from one codebase.
+
+A developer should be able to write something that ambitious and beautiful in 100% Zig, and zunk should handle the JS/HTML generation. The planned WebGPU UI framework (immediate-mode, Zig-native, likely extracted to its own repo) is designed to make this possible.
+
 ### Non-Goals (for now)
 
 - Server-side rendering or SSR
 - Package registry or dependency resolution (use Zig's build system)
-- Framework opinions — zunk is a build tool + platform layer, not a UI framework
+- Framework opinions — zunk is a build tool + platform layer, not a UI framework (the WebGPU UI framework will be a separate project)
 - Support for languages other than Zig
 
 ---
