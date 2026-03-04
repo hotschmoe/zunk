@@ -17,79 +17,99 @@ The core architecture is implemented and functional.
 
 The CLI works end-to-end on pre-compiled WASM. These items close the gap to "one command."
 
-### 2.1 Auto-compilation
+### 2.1 Auto-compilation -- NEEDS WORK
 
 **Priority: Critical**
 
 The CLI currently requires `--wasm <path>` pointing to a pre-compiled binary. It should invoke `zig build` (or `zig build-exe -target wasm32-freestanding`) to compile the user's Zig source to WASM automatically.
 
-Requirements:
-- Detect user project structure (look for `src/main.zig` or `build.zig`)
-- If `build.zig` exists, run `zig build` with appropriate target
-- If only `src/main.zig` exists, invoke zig directly with wasm32-freestanding target
-- Pass the zunk runtime library as a module dependency so `@import("zunk")` works
-- Capture and display compiler errors cleanly
+**Done:**
+- [x] `ServeConfig.build_cmd` field defined (defaults to `{ "zig", "build" }`) -- `gen/serve.zig`
+- [x] `sourceWatcherThread` runs `zig build` as child process on file changes -- `gen/serve.zig`
+- [x] All 5 example projects have working `build.zig` + `build.zig.zon`
+- [x] `installApp()` helper in zunk's `build.zig` wires up the full pipeline as a build step
+- [x] Compiler error capture and display in browser error overlay
 
-### 2.2 End-to-end validation
+**Remaining:**
+- [ ] Detect user project structure (look for `build.zig` or `src/main.zig`) in `buildCommand()`
+- [ ] Initial auto-compilation: run `zig build` before WASM analysis instead of requiring `--wasm`
+- [ ] If only `src/main.zig` exists (no `build.zig`), invoke zig directly with wasm32-freestanding target
+- [ ] Locate the compiled `.wasm` output automatically (scan `zig-out/`)
+- [ ] Pass the zunk runtime library as a module dependency so `@import("zunk")` works (for no-build.zig case)
+
+### 2.2 End-to-end validation -- DONE (manual), NEEDS POLISH (automated)
 
 **Priority: Critical**
 
-No example currently proves the full pipeline works. Need to compile a real Zig WASM project through the analyzer and verify the generated JS runs correctly in a browser.
+**Done:**
+- [x] 5 working examples: input-demo, imgui-demo, audio-demo-1, audio-demo-2, particle-life
+- [x] All compile to WASM and produce correct JS+HTML output via `zunk build`
+- [x] 0 stubs in resolution for all examples (full auto-resolution works)
+- [x] Examples verified running in browser (manual testing)
+- [x] CI runs `zig build` + `zig build test` across 3 platforms x 5 optimization levels
 
-Requirements:
-- Get `examples/bouncing-balls/` (or a simpler hello-world) compiling to WASM
-- Run it through `zunk build`
-- Open the generated output in a browser and confirm it works
-- This becomes the smoke test for all future changes
+**Remaining:**
+- [ ] Automated smoke test: compile an example and validate the generated JS is syntactically correct
+- [ ] Consider headless browser validation (Playwright/Puppeteer) for CI -- nice-to-have, not blocking
 
-### 2.3 Dev server
+### 2.3 Dev server -- DONE
 
-**Priority: High**
+**Done:**
+- [x] HTTP server on localhost with configurable port (default 8080) -- `gen/serve.zig`
+- [x] Correct MIME types: html, js, wasm, css, json, png, svg, ico, woff2, mp3, ogg, wav, wgsl
+- [x] URL printed to stdout with rich formatted banner
+- [x] SPA fallback (routes without extensions serve index.html)
+- [x] Embedded favicon fallback
+- [x] Directory traversal protection
+- [x] COOP/COEP headers for SharedArrayBuffer support
+- [x] HTTP proxy support (`--proxy prefix=url`)
+- [x] Platform-specific socket I/O (Windows + POSIX)
 
-`zunk run` should compile, generate, and serve -- then keep running and watch for changes.
+### 2.4 File watcher + live reload -- DONE
 
-Requirements:
-- HTTP server using `std.net` that serves `dist/` on localhost
-- Correct MIME types for .html, .js, .wasm, .css, images
-- Print the URL to stdout
+**Done:**
+- [x] Watch `src/` and `build.zig*` for changes via mtime-based fingerprinting (500ms polling)
+- [x] Watch `dist/` for output changes separately
+- [x] Debounce: 500ms polling interval + 100ms post-change delay before rebuild
+- [x] WebSocket server on `/__zunk_ws` endpoint with client registry
+- [x] Reload script auto-injected into HTML responses by the server (not baked into GenOptions)
+- [x] Build error overlay displayed in browser on compile failure
+- [x] `--no-watch` flag to disable source watching
 
-### 2.4 File watcher + live reload
-
-**Priority: Medium**
-
-Rebuild on source changes and refresh the browser.
-
-Requirements:
-- Watch `src/` for .zig file changes
-- Debounce rebuilds (avoid thrashing on rapid saves)
-- Inject a small WebSocket/SSE client into the generated HTML that triggers page reload
-- The `autoreload` plumbing in `GenOptions` already exists, just needs wiring
-
-### 2.5 bridge.js auto-discovery and merging
+### 2.5 bridge.js auto-discovery and merging -- PARTIALLY DONE
 
 **Priority: Medium**
 
 The escape hatch for APIs zunk doesn't support natively.
 
-Requirements:
-- Look for `bridge.js` or `js/bridge.js` in the user project root
-- Look for `bridge.js` in Zig package dependencies
-- Merge discovered JS into the generated output (the `bridge_js` field in GenOptions exists)
-- Document the format: bridge.js should export an object whose keys become env imports
+**Done:**
+- [x] `GenOptions.bridge_js` field exists -- `gen/js_gen.zig`
+- [x] Merging: if bridge_js is provided, it is inserted into generated JS output
+- [x] Build report suggests `bridge.js` or `js/bridge.js` paths when stubs are present
 
-### 2.6 `zunk deploy`
+**Remaining:**
+- [ ] Auto-discover `bridge.js` or `js/bridge.js` from user project root in `buildCommand()`
+- [ ] Scan Zig package dependencies for `bridge.js` files
+- [ ] Document the format: bridge.js should export an object whose keys become env imports
+
+### 2.6 `zunk deploy` -- NOT STARTED
 
 **Priority: Medium**
 
 Production build with content-hashed filenames and optimized output.
 
-Requirements:
-- Content-hash .js and .wasm filenames (e.g., `app-a1b2c3.js`)
-- Subresource integrity attributes on script/link tags
-- Preload hints for the .wasm file
-- Copy assets/ to dist/ with hashed filenames
-- Strip debug info from WASM (`-Doptimize=ReleaseSmall` or wasm-opt)
-- Output a clean `dist/` directory ready for any static file server
+**Existing infrastructure:**
+- [x] XxHash3 fingerprint computed for generated JS (used in build report header, not filenames)
+- [x] Asset copying from `src/assets/` to `dist/assets/` exists
+
+**Remaining:**
+- [ ] Add `deploy` command to CLI dispatcher in `main.zig`
+- [ ] Content-hash .js and .wasm filenames (e.g., `app-a1b2c3.js`)
+- [ ] Subresource integrity attributes on script/link tags
+- [ ] Preload hints for the .wasm file
+- [ ] Copy assets/ to dist/ with hashed filenames
+- [ ] Strip debug info from WASM (`-Doptimize=ReleaseSmall` or wasm-opt)
+- [ ] Output a clean `dist/` directory ready for any static file server
 
 ---
 
@@ -99,9 +119,9 @@ Requirements:
 
 Scaffold a new project: create `src/main.zig` with a minimal example, `build.zig` if needed, and a `.gitignore`.
 
-### 3.2 Diagnostic error overlay
+### 3.2 Diagnostic error overlay -- DONE (implemented in Phase 2)
 
-When a build fails, show the error in the browser instead of a blank page. Inject an error overlay HTML/CSS into the served page that displays compiler output.
+Build errors are displayed in the browser via WebSocket. The server captures `zig build` stderr and broadcasts an `"error:"` message; the injected reload script renders it as a fixed overlay with red text on black background. Cleared automatically on successful rebuild.
 
 ### 3.3 Build caching
 
@@ -178,9 +198,9 @@ Instead of full page reload on changes, swap the WASM module in place. Requires:
 
 Generate multiple HTML pages from a single project, each with its own WASM entry point. Useful for apps with distinct views (editor, preview, settings).
 
-### 5.3 Proxy support for API backends
+### 5.3 Proxy support for API backends -- DONE (implemented in Phase 2)
 
-During development, proxy certain URL patterns to a backend server. Useful for apps that need a real API during dev without CORS issues.
+The dev server supports `--proxy prefix=url` to forward matching requests to a backend server. Implemented in `gen/serve.zig`.
 
 ### 5.4 Asset pipeline
 
