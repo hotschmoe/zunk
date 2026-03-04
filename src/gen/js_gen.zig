@@ -6,12 +6,16 @@ pub const GenOptions = struct {
     public_url: []const u8 = "/",
     wasm_filename: []const u8,
     bridge_js: ?[]const u8 = null,
+    js_filename: []const u8 = "app.js",
+    wasm_preload: bool = false,
+    js_integrity: ?[]const u8 = null,
 };
 
 pub const GenResult = struct {
     js: []const u8,
     html: []const u8,
     report: []const u8,
+    js_hash: [16]u8,
 
     pub fn deinit(self: *GenResult, allocator: std.mem.Allocator) void {
         allocator.free(self.js);
@@ -214,6 +218,7 @@ pub fn generate(
         .js = try js.toOwnedSlice(allocator),
         .html = try html.toOwnedSlice(allocator),
         .report = try report.toOwnedSlice(allocator),
+        .js_hash = hex,
     };
 }
 
@@ -517,13 +522,23 @@ fn generateHtml(
         );
     }
 
-    try w.writeAll("  </style>\n</head>\n<body>\n");
+    try w.writeAll("  </style>\n");
+
+    if (opts.wasm_preload) {
+        try w.print("  <link rel=\"preload\" href=\"{s}{s}\" as=\"fetch\" type=\"application/wasm\" crossorigin>\n", .{ opts.public_url, opts.wasm_filename });
+    }
+
+    try w.writeAll("</head>\n<body>\n");
 
     if (has_canvas) {
         try w.writeAll("  <canvas id=\"app\"></canvas>\n");
     }
 
-    try w.print("  <script src=\"{s}app.js\" defer></script>\n", .{opts.public_url});
+    if (opts.js_integrity) |integrity| {
+        try w.print("  <script src=\"{s}{s}\" defer integrity=\"{s}\" crossorigin></script>\n", .{ opts.public_url, opts.js_filename, integrity });
+    } else {
+        try w.print("  <script src=\"{s}{s}\" defer></script>\n", .{ opts.public_url, opts.js_filename });
+    }
 
     try w.writeAll("</body>\n</html>\n");
 }

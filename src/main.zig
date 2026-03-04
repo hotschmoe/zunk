@@ -25,6 +25,8 @@ pub fn main() !void {
         try buildCommand(allocator, args[2..], false, &console);
     } else if (std.mem.eql(u8, cmd, "run")) {
         try buildCommand(allocator, args[2..], true, &console);
+    } else if (std.mem.eql(u8, cmd, "deploy")) {
+        try deployCommand(allocator, args[2..], &console);
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
         try printUsage(&console);
     } else if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version")) {
@@ -46,6 +48,7 @@ fn printUsage(console: *rich.Console) !void {
     try console.print("  [bold]Commands:[/]");
     try console.print("    [green]build[/]      Compile .wasm, analyze, generate JS + HTML");
     try console.print("    [green]run[/]        Build + serve on localhost");
+    try console.print("    [green]deploy[/]     Production build with hashed filenames + SRI");
     try console.print("    [green]help[/]       Show this help");
     try console.print("    [green]version[/]    Show version");
     try console.print("");
@@ -106,7 +109,17 @@ fn parseProxy(arg: ?[]const u8) ProxyConfig {
 fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve: bool, console: *rich.Console) !void {
     const parsed = parseBuildArgs(args);
     const wasm_path = parsed.wasm_path orelse {
-        try console.print("[bold red]error:[/] --wasm <path> required (auto-compile not yet implemented)");
+        try console.print("[bold red]error:[/] no --wasm path provided");
+        try console.print("");
+        try console.print("  [bold]Recommended:[/] use installApp() in your build.zig:");
+        try console.print("    [cyan]const zunk = @import(\"zunk\");[/]");
+        try console.print("    [cyan]zunk.installApp(b, zunk_dep, exe, .{});[/]");
+        try console.print("");
+        try console.print("  Then run: [green]zig build[/]        (build)");
+        try console.print("            [green]zig build run[/]    (build + serve)");
+        try console.print("");
+        try console.print("  Or pass a .wasm file directly:");
+        try console.print("    [yellow]zunk build --wasm path/to/app.wasm[/]");
         return;
     };
 
@@ -123,8 +136,12 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
 
     const wasm_basename = std.fs.path.basename(wasm_path);
 
+    const bridge_js = discoverBridgeJs(allocator, console);
+    defer if (bridge_js) |b| allocator.free(b);
+
     var result = try js_gen.generate(allocator, &analysis, .{
         .wasm_filename = wasm_basename,
+        .bridge_js = bridge_js,
     });
     defer result.deinit(allocator);
 
@@ -161,6 +178,127 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
             .proxy_target = proxy.target,
         }, console);
     }
+}
+
+fn deployCommand(allocator: std.mem.Allocator, args: []const []const u8, console: *rich.Console) !void {
+    const parsed = parseBuildArgs(args);
+    const wasm_path = parsed.wasm_path orelse {
+        try console.print("[bold red]error:[/] no --wasm path provided");
+        try console.print("");
+        try console.print("  [bold]Usage:[/] [yellow]zunk deploy --wasm path/to/app.wasm[/]");
+        return;
+    };
+
+    const wasm = std.fs.cwd().readFileAlloc(allocator, wasm_path, 10 * 1024 * 1024) catch |err| {
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "error: could not read '{s}': {}", .{ wasm_path, err }) catch "error: could not read wasm file";
+        try console.printStyled(msg, rich.Style.empty.foreground(rich.Color.red));
+        return;
+    };
+    defer allocator.free(wasm);
+
+    var analysis = try wa.analyze(allocator, wasm);
+    defer analysis.deinit(allocator);
+
+    const bridge_js = discoverBridgeJs(allocator, console);
+    defer if (bridge_js) |b| allocator.free(b);
+
+    const wasm_basename = std.fs.path.basename(wasm_path);
+
+    // Content-hashed WASM filename (stable -- doesn't depend on JS)
+    const wasm_content_hash = std.hash.XxHash3.hash(0, wasm);
+    var wasm_fp: [8]u8 = undefined;
+    std.mem.writeInt(u64, &wasm_fp, wasm_content_hash, .big);
+    const wasm_hex = std.fmt.bytesToHex(wasm_fp, .lower);
+    const wasm_ext = std.fs.path.extension(wasm_basename);
+    const wasm_stem = wasm_basename[0 .. wasm_basename.len - wasm_ext.len];
+    const hashed_wasm_name = try std.fmt.allocPrint(allocator, "{s}-{s}.wasm", .{ wasm_stem, wasm_hex[0..8] });
+    defer allocator.free(hashed_wasm_name);
+
+    // First pass: generate JS with hashed WASM name (so fetch() references correct file)
+    const result = try js_gen.generate(allocator, &analysis, .{
+        .wasm_filename = hashed_wasm_name,
+        .bridge_js = bridge_js,
+    });
+    const js_output = result.js;
+    defer allocator.free(js_output);
+    allocator.free(result.html);
+    allocator.free(result.report);
+
+    // Content-hashed JS filename
+    const js_content_hash = std.hash.XxHash3.hash(0, js_output);
+    var js_fp: [8]u8 = undefined;
+    std.mem.writeInt(u64, &js_fp, js_content_hash, .big);
+    const js_hex = std.fmt.bytesToHex(js_fp, .lower);
+    const hashed_js_name = try std.fmt.allocPrint(allocator, "app-{s}.js", .{js_hex[0..8]});
+    defer allocator.free(hashed_js_name);
+
+    // SRI: SHA-384 of JS content, base64-encoded
+    const Sha384 = std.crypto.hash.sha2.Sha384;
+    var sha_digest: [Sha384.digest_length]u8 = undefined;
+    Sha384.hash(js_output, &sha_digest, .{});
+    const b64_enc = std.base64.standard.Encoder;
+    var b64_buf: [b64_enc.calcSize(Sha384.digest_length)]u8 = undefined;
+    _ = b64_enc.encode(&b64_buf, &sha_digest);
+    const sri = try std.fmt.allocPrint(allocator, "sha384-{s}", .{&b64_buf});
+    defer allocator.free(sri);
+
+    // Second pass: generate HTML with deploy options (hashed filenames, SRI, preload)
+    var deploy_result = try js_gen.generate(allocator, &analysis, .{
+        .wasm_filename = hashed_wasm_name,
+        .bridge_js = bridge_js,
+        .js_filename = hashed_js_name,
+        .wasm_preload = true,
+        .js_integrity = sri,
+    });
+    defer deploy_result.deinit(allocator);
+
+    // Write output
+    std.fs.cwd().makePath(parsed.output_dir) catch {};
+    var out_dir = try std.fs.cwd().openDir(parsed.output_dir, .{});
+    defer out_dir.close();
+
+    try out_dir.writeFile(.{ .sub_path = "index.html", .data = deploy_result.html });
+    try out_dir.writeFile(.{ .sub_path = hashed_js_name, .data = js_output });
+    try out_dir.writeFile(.{ .sub_path = hashed_wasm_name, .data = wasm });
+
+    copyAssets(allocator, out_dir, console);
+
+    try console.print("");
+    const report_panel = rich.Panel.fromText(allocator, deploy_result.report)
+        .withTitle("Deploy Report")
+        .withBorderStyle(rich.Style.empty.foreground(rich.Color.cyan));
+    try console.printRenderable(report_panel);
+
+    try console.print("");
+    try console.printStyled("Deploy artifacts:", rich.Style.empty.bold().foreground(rich.Color.green));
+    {
+        var pbuf: [256]u8 = undefined;
+        const m1 = std.fmt.bufPrint(&pbuf, "  {s}/index.html", .{parsed.output_dir}) catch "";
+        try console.print(m1);
+        const m2 = std.fmt.bufPrint(&pbuf, "  {s}/{s}", .{ parsed.output_dir, hashed_js_name }) catch "";
+        try console.print(m2);
+        const m3 = std.fmt.bufPrint(&pbuf, "  {s}/{s}", .{ parsed.output_dir, hashed_wasm_name }) catch "";
+        try console.print(m3);
+    }
+
+    try console.print("");
+    var complete_buf: [256]u8 = undefined;
+    const complete_msg = std.fmt.bufPrint(&complete_buf, "Deploy build complete: {s}/", .{parsed.output_dir}) catch "Deploy complete";
+    try console.printStyled(complete_msg, rich.Style.empty.bold().foreground(rich.Color.green));
+}
+
+fn discoverBridgeJs(allocator: std.mem.Allocator, console: *rich.Console) ?[]const u8 {
+    const paths = [_][]const u8{ "bridge.js", "js/bridge.js" };
+    for (paths) |path| {
+        if (std.fs.cwd().readFileAlloc(allocator, path, 1 * 1024 * 1024)) |contents| {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Found {s}", .{path}) catch "Found bridge.js";
+            console.printStyled(msg, rich.Style.empty.foreground(rich.Color.cyan)) catch {};
+            return contents;
+        } else |_| {}
+    }
+    return null;
 }
 
 fn copyAssets(allocator: std.mem.Allocator, out_dir: std.fs.Dir, console: *rich.Console) void {

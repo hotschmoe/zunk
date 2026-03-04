@@ -13,15 +13,11 @@ The core architecture is implemented and functional.
 
 ---
 
-## Phase 2 -- Complete the Build Pipeline
+## Phase 2 -- Complete the Build Pipeline (DONE)
 
-The CLI works end-to-end on pre-compiled WASM. These items close the gap to "one command."
+The CLI works end-to-end on pre-compiled WASM. One-command builds are achieved via `installApp()`.
 
-### 2.1 Auto-compilation -- NEEDS WORK
-
-**Priority: Critical**
-
-The CLI currently requires `--wasm <path>` pointing to a pre-compiled binary. It should invoke `zig build` (or `zig build-exe -target wasm32-freestanding`) to compile the user's Zig source to WASM automatically.
+### 2.1 Auto-compilation -- DONE (via installApp pattern)
 
 **Done:**
 - [x] `ServeConfig.build_cmd` field defined (defaults to `{ "zig", "build" }`) -- `gen/serve.zig`
@@ -29,8 +25,9 @@ The CLI currently requires `--wasm <path>` pointing to a pre-compiled binary. It
 - [x] All 5 example projects have working `build.zig` + `build.zig.zon`
 - [x] `installApp()` helper in zunk's `build.zig` wires up the full pipeline as a build step
 - [x] Compiler error capture and display in browser error overlay
+- [x] Helpful error message when `--wasm` is missing, guiding users to `installApp()`
 
-**Remaining:**
+**Deferred to Phase 3 (nice-to-have):**
 - [ ] Detect user project structure (look for `build.zig` or `src/main.zig`) in `buildCommand()`
 - [ ] Initial auto-compilation: run `zig build` before WASM analysis instead of requiring `--wasm`
 - [ ] If only `src/main.zig` exists (no `build.zig`), invoke zig directly with wasm32-freestanding target
@@ -76,40 +73,32 @@ The CLI currently requires `--wasm <path>` pointing to a pre-compiled binary. It
 - [x] Build error overlay displayed in browser on compile failure
 - [x] `--no-watch` flag to disable source watching
 
-### 2.5 bridge.js auto-discovery and merging -- PARTIALLY DONE
-
-**Priority: Medium**
-
-The escape hatch for APIs zunk doesn't support natively.
+### 2.5 bridge.js auto-discovery and merging -- DONE
 
 **Done:**
 - [x] `GenOptions.bridge_js` field exists -- `gen/js_gen.zig`
 - [x] Merging: if bridge_js is provided, it is inserted into generated JS output
 - [x] Build report suggests `bridge.js` or `js/bridge.js` paths when stubs are present
+- [x] Auto-discover `bridge.js` or `js/bridge.js` from user project root in `buildCommand()`
 
-**Remaining:**
-- [ ] Auto-discover `bridge.js` or `js/bridge.js` from user project root in `buildCommand()`
+**Deferred to Phase 4.3:**
 - [ ] Scan Zig package dependencies for `bridge.js` files
 - [ ] Document the format: bridge.js should export an object whose keys become env imports
 
-### 2.6 `zunk deploy` -- NOT STARTED
+### 2.6 `zunk deploy` -- DONE
 
-**Priority: Medium**
-
-Production build with content-hashed filenames and optimized output.
-
-**Existing infrastructure:**
-- [x] XxHash3 fingerprint computed for generated JS (used in build report header, not filenames)
+**Done:**
+- [x] XxHash3 fingerprint computed for generated JS (used in build report header and deploy filenames)
 - [x] Asset copying from `src/assets/` to `dist/assets/` exists
+- [x] `deploy` command added to CLI dispatcher in `main.zig`
+- [x] Content-hashed .js and .wasm filenames (e.g., `app-a1b2c3d4.js`)
+- [x] Subresource integrity (SHA-384) on script tag
+- [x] Preload hint for .wasm file
+- [x] Output a clean `dist/` directory ready for any static file server
 
-**Remaining:**
-- [ ] Add `deploy` command to CLI dispatcher in `main.zig`
-- [ ] Content-hash .js and .wasm filenames (e.g., `app-a1b2c3.js`)
-- [ ] Subresource integrity attributes on script/link tags
-- [ ] Preload hints for the .wasm file
-- [ ] Copy assets/ to dist/ with hashed filenames
+**Deferred (nice-to-have):**
+- [ ] Copy assets with hashed filenames + manifest
 - [ ] Strip debug info from WASM (`-Doptimize=ReleaseSmall` or wasm-opt)
-- [ ] Output a clean `dist/` directory ready for any static file server
 
 ---
 
