@@ -303,7 +303,7 @@ trunk is the direct inspiration for zunk's build tool. It uses an HTML-driven as
 
 ## Status
 
-The core architecture is implemented and functional (~2,400 lines of Zig). The WASM analyzer, 5-tier resolution engine, JS/HTML code generator, binding system, and Layer 2 web modules are all working. What remains is completing the build tool CLI (auto-compilation, dev server, deploy) and end-to-end validation.
+Phase 1 (Foundation) and Phase 2 (Build Pipeline) are complete. The WASM analyzer, 5-tier resolution engine, JS/HTML code generator, binding system, Layer 2 web modules, dev server with live reload, `bridge.js` auto-discovery, and `zunk deploy` (content-hashed filenames, SRI, WASM preload) are all working. Five example projects compile and run end-to-end.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap.
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deep dive on design decisions.
@@ -326,12 +326,12 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deep dive on design decis
 
 ## Contributing
 
-The core modules are implemented. The highest-impact contributions right now:
+Phases 1 and 2 are complete. The highest-impact contributions right now:
 
-1. **Auto-compilation** — making the CLI invoke `zig build` to compile user Zig source to WASM
-2. **End-to-end validation** — compiling real projects through the full pipeline and verifying the generated JS runs correctly in a browser
-3. **Dev server** — HTTP server + file watcher for the `zunk run` workflow
-4. **WebGPU bindings** — the resolution engine has WebGPU prefix rules but generators need real implementations
+1. **WebGPU bindings** -- the resolution engine has WebGPU prefix rules but generators need real implementations
+2. **More Web API coverage** -- WebXR, WebRTC, Web Workers, IndexedDB, Gamepad, Pointer Lock, Fullscreen
+3. **`zunk init`** -- project scaffolding command
+4. **Source maps** -- mapping generated JS back to Zig source via DWARF debug info
 
 ---
 

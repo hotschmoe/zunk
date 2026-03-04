@@ -11,11 +11,14 @@ pub const GenOptions = struct {
     js_integrity: ?[]const u8 = null,
 };
 
+pub const Categories = std.enums.EnumSet(resolver.Category);
+
 pub const GenResult = struct {
     js: []const u8,
     html: []const u8,
     report: []const u8,
     js_hash: [16]u8,
+    categories: Categories,
 
     pub fn deinit(self: *GenResult, allocator: std.mem.Allocator) void {
         allocator.free(self.js);
@@ -36,7 +39,7 @@ pub fn generate(
     }
 
     var needs = Features{};
-    var categories_used = std.enums.EnumSet(resolver.Category).initEmpty();
+    var categories_used = Categories.initEmpty();
     var stub_count: usize = 0;
 
     for (analysis.imports, 0..) |*imp, i| {
@@ -219,6 +222,7 @@ pub fn generate(
         .html = try html.toOwnedSlice(allocator),
         .report = try report.toOwnedSlice(allocator),
         .js_hash = hex,
+        .categories = categories_used,
     };
 }
 
@@ -477,11 +481,11 @@ fn emitUISystem(w: anytype) !void {
     );
 }
 
-fn generateHtml(
+pub fn generateHtml(
     w: anytype,
     analysis: *const wa.Analysis,
     opts: GenOptions,
-    categories: std.enums.EnumSet(resolver.Category),
+    categories: Categories,
 ) !void {
     const has_canvas = categories.contains(.canvas2d) or categories.contains(.webgpu);
     const has_frame = analysis.hasExport("frame");

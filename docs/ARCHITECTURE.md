@@ -248,8 +248,10 @@ Takes an `Analysis` and `GenOptions`, produces complete JS + HTML output.
 **GenOptions**:
 - `wasm_filename` -- filename of the .wasm binary
 - `public_url` -- URL prefix for assets (default: "/")
-- `autoreload` / `autoreload_port` -- dev mode live reload (not yet wired up)
 - `bridge_js` -- optional custom JS to merge in
+- `js_filename` -- output JS filename (default: "app.js", deploy uses hashed names)
+- `wasm_preload` -- emit `<link rel="preload">` for the WASM file (deploy mode)
+- `js_integrity` -- SRI hash for the script tag (deploy mode)
 
 **Generation steps:**
 
@@ -265,17 +267,30 @@ Takes an `Analysis` and `GenOptions`, produces complete JS + HTML output.
 
 ### main.zig -- CLI Entry Point
 
-Currently supports: `build`, `run` (same as build for now), `help`, `version`.
+Supports: `build`, `run`, `deploy`, `help`, `version`.
+
+Shared infrastructure via `prepareBuild()`:
+1. Parses CLI args (--wasm, --output-dir, --port, --proxy, --no-watch)
+2. Reads the .wasm binary
+3. Runs `wasm_analyze.analyze()` to parse imports/exports/types
+4. Auto-discovers `bridge.js` from project root or `js/` directory
 
 The `build` command:
-1. Reads a pre-compiled .wasm file (via `--wasm <path>`)
-2. Calls `wasm_analyze.analyze()` to parse the binary
-3. Calls `js_gen.generate()` to produce JS + HTML
-4. Writes output to `dist/index.html`, `dist/app.js`, and the .wasm file
-5. Copies `src/assets/` to `dist/assets/` if the directory exists
-6. Prints the resolution diagnostic report
+1. Calls `js_gen.generate()` to produce JS + HTML
+2. Writes `dist/index.html`, `dist/app.js`, and the .wasm file
+3. Copies `src/assets/` to `dist/assets/` if the directory exists
+4. Prints the resolution diagnostic report
 
-Auto-compilation (invoking `zig build` on user source) is not yet implemented.
+The `run` command: same as `build`, then launches the dev server with live reload.
+
+The `deploy` command (production build):
+1. Computes content hashes (XxHash3) for WASM and JS filenames
+2. Generates JS with the hashed WASM filename embedded in the fetch() call
+3. Computes SHA-384 SRI hash for the JS output
+4. Generates HTML with hashed script/wasm references, SRI integrity attribute, and WASM preload hint
+5. Writes content-hashed files to `dist/`
+
+Auto-compilation is handled by `installApp()` in the user's `build.zig`.
 
 ## Memory Model
 
