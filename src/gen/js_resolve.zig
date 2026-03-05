@@ -100,7 +100,7 @@ const ExactEntry = struct {
     desc: []const u8,
 };
 
-const exact_db = [_]ExactEntry{
+pub const exact_db = [_]ExactEntry{
     .{ .name = "console_log", .js = "const s = readStr(arguments[0], arguments[1]); console.log(s);", .needs_strings = true, .category = .console, .desc = "console.log with string" },
     .{ .name = "console_error", .js = "const s = readStr(arguments[0], arguments[1]); console.error(s);", .needs_strings = true, .category = .console, .desc = "console.error with string" },
     .{ .name = "console_warn", .js = "const s = readStr(arguments[0], arguments[1]); console.warn(s);", .needs_strings = true, .category = .console, .desc = "console.warn with string" },
@@ -157,7 +157,7 @@ const PrefixRule = struct {
     ) ?Resolution,
 };
 
-const prefix_rules = [_]PrefixRule{
+pub const prefix_rules = [_]PrefixRule{
     .{ .prefix = "zunk_canvas_", .category = .canvas2d, .generator = &genCanvas },
     .{ .prefix = "zunk_c2d_", .category = .canvas2d, .generator = &genCanvas2D },
     .{ .prefix = "zunk_dom_", .category = .dom, .generator = &genDom },

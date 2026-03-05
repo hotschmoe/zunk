@@ -9,6 +9,8 @@ pub const GenOptions = struct {
     js_filename: []const u8 = "app.js",
     wasm_preload: bool = false,
     js_integrity: ?[]const u8 = null,
+    verbose_report: bool = false,
+    json_report: bool = false,
 };
 
 pub const Categories = std.enums.EnumSet(resolver.Category);
@@ -215,7 +217,7 @@ pub fn generate(
 
     var report: std.ArrayList(u8) = .empty;
     defer report.deinit(allocator);
-    try generateReport(report.writer(allocator), analysis, resolutions, stub_count, hex[0..8]);
+    try generateReport(report.writer(allocator), analysis, resolutions, stub_count, hex[0..8], opts);
 
     return .{
         .js = try js.toOwnedSlice(allocator),
@@ -553,17 +555,72 @@ fn generateReport(
     resolutions: []const resolver.Resolution,
     stub_count: usize,
     build_fingerprint: []const u8,
+    opts: GenOptions,
 ) !void {
+    // Category counts (used by both modes)
+    var counts: [std.enums.values(resolver.Category).len]usize = .{0} ** std.enums.values(resolver.Category).len;
+    for (resolutions) |r| {
+        counts[@intFromEnum(r.category)] += 1;
+    }
+
+    const lifecycle_fns = [_][]const u8{ "init", "frame", "resize", "cleanup" };
+
+    // JSON mode: structured output, return early
+    if (opts.json_report) {
+        try w.writeAll("{");
+        try w.print("\"build_fingerprint\":\"{s}\",", .{build_fingerprint});
+        try w.print("\"total_imports\":{d},", .{analysis.imports.len});
+        try w.print("\"total_exports\":{d},", .{analysis.exports.len});
+        try w.print("\"stubs\":{d},", .{stub_count});
+
+        try w.writeAll("\"resolutions\":[");
+        for (analysis.imports, 0..) |imp, i| {
+            if (i > 0) try w.writeAll(",");
+            const r = &resolutions[i];
+            try w.print("{{\"module\":\"{s}\",\"name\":\"{s}\",\"confidence\":\"{s}\",\"category\":\"{s}\"", .{
+                imp.module, imp.name, @tagName(r.confidence), @tagName(r.category),
+            });
+            if (r.confidence == .stub) {
+                if (suggestMatch(imp.name)) |suggestion| {
+                    try w.print(",\"suggestion\":\"{s}\"", .{suggestion});
+                }
+            }
+            try w.writeAll("}");
+        }
+        try w.writeAll("],");
+
+        try w.writeAll("\"categories\":{");
+        var first_cat = true;
+        for (std.enums.values(resolver.Category)) |cat| {
+            const c = counts[@intFromEnum(cat)];
+            if (c > 0) {
+                if (!first_cat) try w.writeAll(",");
+                try w.print("\"{s}\":{d}", .{ @tagName(cat), c });
+                first_cat = false;
+            }
+        }
+        try w.writeAll("},");
+
+        try w.writeAll("\"lifecycle\":{");
+        for (lifecycle_fns, 0..) |fname, li| {
+            if (li > 0) try w.writeAll(",");
+            try w.print("\"{s}\":{s}", .{ fname, if (analysis.hasExport(fname)) "true" else "false" });
+        }
+        try w.writeAll("}}");
+        return;
+    }
+
+    // Rich text mode
     try w.print("=== zunk binding resolution report === [build:{s}]\n\n", .{build_fingerprint});
     try w.print("Total imports: {d}\n", .{analysis.imports.len});
     try w.print("Total exports: {d}\n", .{analysis.exports.len});
     try w.print("Unresolved (stubs): {d}\n\n", .{stub_count});
 
     if (stub_count > 0) {
-        try w.writeAll("WARNING: UNRESOLVED IMPORTS -- these need a bridge.js or zunk naming convention:\n");
+        try w.writeAll("[red]WARNING: UNRESOLVED IMPORTS[/] -- these need a bridge.js or zunk naming convention:\n");
         for (analysis.imports, 0..) |imp, i| {
             if (resolutions[i].confidence == .stub) {
-                try w.print("   * {s}.{s}", .{ imp.module, imp.name });
+                try w.print("   [red]*[/] {s}.{s}", .{ imp.module, imp.name });
                 if (analysis.getImportSignature(&imp)) |ft| {
                     try w.print(" (", .{});
                     for (ft.params, 0..) |p, j| {
@@ -580,6 +637,9 @@ fn generateReport(
                         }
                     }
                 }
+                if (suggestMatch(imp.name)) |suggestion| {
+                    try w.print(" [dim](did you mean: {s}?)[/]", .{suggestion});
+                }
                 try w.print("\n", .{});
             }
         }
@@ -589,24 +649,150 @@ fn generateReport(
         try w.writeAll("  3. Use the Layer 2 web modules: @import(\"zunk\").web.*\n\n");
     }
 
-    try w.writeAll("Resolved bindings by category:\n");
-    var counts: [std.enums.values(resolver.Category).len]usize = .{0} ** std.enums.values(resolver.Category).len;
-    for (resolutions) |r| {
-        counts[@intFromEnum(r.category)] += 1;
+    // Verbose mode: list ALL resolutions grouped by category
+    if (opts.verbose_report) {
+        try w.writeAll("All resolutions:\n");
+        for (std.enums.values(resolver.Category)) |cat| {
+            if (counts[@intFromEnum(cat)] == 0) continue;
+            try w.print("\n  [{s}] {s}:\n", .{ categoryColor(cat), @tagName(cat) });
+            for (analysis.imports, 0..) |imp, i| {
+                const r = &resolutions[i];
+                if (r.category != cat) continue;
+                const conf_color = confidenceColor(r.confidence);
+                try w.print("    [{s}]{s}[/] {s}.{s}", .{
+                    conf_color, @tagName(r.confidence), imp.module, imp.name,
+                });
+                if (r.description.len > 0) {
+                    try w.print(" -- {s}", .{r.description});
+                }
+                try w.print("\n", .{});
+            }
+        }
+        try w.writeAll("\n");
     }
+
+    try w.writeAll("Resolved bindings by category:\n");
     for (std.enums.values(resolver.Category)) |cat| {
         const c = counts[@intFromEnum(cat)];
         if (c > 0) {
-            try w.print("  {s}: {d}\n", .{ @tagName(cat), c });
+            try w.print("  [{s}]{s}[/]: {d}\n", .{ categoryColor(cat), @tagName(cat), c });
         }
     }
 
     try w.writeAll("\nLifecycle exports detected:\n");
-    const lifecycle_fns = [_][]const u8{ "init", "frame", "resize", "cleanup" };
     for (lifecycle_fns) |fname| {
         const found = analysis.hasExport(fname);
-        try w.print("  {s}: {s}\n", .{ fname, if (found) "[yes]" else "[no]" });
+        if (found) {
+            try w.print("  [green]{s}[/]: yes\n", .{fname});
+        } else {
+            try w.print("  [dim]{s}[/]: no\n", .{fname});
+        }
     }
+}
+
+fn confidenceColor(conf: resolver.Confidence) []const u8 {
+    return switch (conf) {
+        .exact, .high => "green",
+        .medium => "yellow",
+        .low => "yellow",
+        .stub => "red",
+    };
+}
+
+fn categoryColor(cat: resolver.Category) []const u8 {
+    return switch (cat) {
+        .unknown => "red",
+        .zunk_internal => "dim",
+        else => "cyan",
+    };
+}
+
+pub fn editDistance(a: []const u8, b: []const u8) usize {
+    if (a.len == 0) return b.len;
+    if (b.len == 0) return a.len;
+
+    const max_len = 64;
+    if (a.len > max_len or b.len > max_len) return max_len;
+
+    var prev: [max_len + 1]usize = undefined;
+    var curr: [max_len + 1]usize = undefined;
+
+    for (0..b.len + 1) |j| prev[j] = j;
+
+    for (a, 0..) |ca, i| {
+        curr[0] = i + 1;
+        for (b, 0..) |cb, j| {
+            const cost: usize = if (ca == cb) 0 else 1;
+            curr[j + 1] = @min(@min(curr[j] + 1, prev[j + 1] + 1), prev[j] + cost);
+        }
+        @memcpy(prev[0 .. b.len + 1], curr[0 .. b.len + 1]);
+    }
+
+    return prev[b.len];
+}
+
+fn suggestMatch(name: []const u8) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_dist: usize = 4; // threshold: must be <= 3
+
+    // Check exact_db names
+    for (resolver.exact_db) |entry| {
+        const d = editDistance(name, entry.name);
+        if (d < best_dist) {
+            best_dist = d;
+            best = entry.name;
+        }
+    }
+
+    // Check known prefix rules (suggest the prefix itself)
+    for (resolver.prefix_rules) |rule| {
+        if (name.len > rule.prefix.len) {
+            const d = editDistance(name[0..@min(name.len, rule.prefix.len)], rule.prefix);
+            if (d <= 1 and d < best_dist) {
+                best_dist = d;
+                best = rule.prefix;
+            }
+        }
+    }
+
+    return best;
+}
+
+test "editDistance identical" {
+    try std.testing.expectEqual(@as(usize, 0), editDistance("hello", "hello"));
+}
+
+test "editDistance single char" {
+    try std.testing.expectEqual(@as(usize, 1), editDistance("hello", "hallo"));
+}
+
+test "editDistance insert" {
+    try std.testing.expectEqual(@as(usize, 1), editDistance("hell", "hello"));
+}
+
+test "editDistance delete" {
+    try std.testing.expectEqual(@as(usize, 1), editDistance("hello", "hell"));
+}
+
+test "editDistance empty" {
+    try std.testing.expectEqual(@as(usize, 5), editDistance("", "hello"));
+    try std.testing.expectEqual(@as(usize, 0), editDistance("", ""));
+}
+
+test "editDistance completely different" {
+    try std.testing.expectEqual(@as(usize, 3), editDistance("abc", "xyz"));
+}
+
+test "suggestMatch close to known name" {
+    // "console_lg" is 1 edit from "console_log"
+    const suggestion = suggestMatch("console_lg");
+    try std.testing.expect(suggestion != null);
+    try std.testing.expectEqualStrings("console_log", suggestion.?);
+}
+
+test "suggestMatch no match" {
+    const suggestion = suggestMatch("zzzzzzzzzzzzz");
+    try std.testing.expect(suggestion == null);
 }
 
 test "generate compiles" {
