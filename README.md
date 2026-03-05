@@ -202,23 +202,35 @@ If you export `frame`, zunk generates a render loop. If you don't, it doesn't. I
 ```
 zunk/
 ├── src/
-│   ├── zunk.zig                  # Root module — the single import for developers
+│   ├── root.zig                  # Root module -- the single import for developers
+│   ├── main.zig                  # CLI entry point (build/run/deploy/init/doctor/help/version)
 │   ├── bind/
 │   │   └── bind.zig              # Core binding system: Handle, CallbackFn, string exchange,
 │   │                             #   callback table, comptime manifest serializer
-│   ├── web/                      # Layer 2: Optional ergonomic Web API wrappers
-│   │   ├── canvas.zig            #   Canvas 2D, DOM manipulation
+│   ├── web/                      # Layer 2: Ergonomic Web API wrappers
+│   │   ├── canvas.zig            #   Canvas 2D (27 extern fns)
 │   │   ├── input.zig             #   Keyboard, mouse, touch, gamepad (polling model)
-│   │   ├── audio.zig             #   Web Audio, spatial audio, AudioWorklet
-│   │   └── app.zig               #   Lifecycle, timing, fetch, clipboard, window control
+│   │   ├── audio.zig             #   Web Audio API
+│   │   ├── asset.zig             #   Generic URL-based asset loading
+│   │   ├── app.zig               #   Lifecycle, timing, clipboard, window control
+│   │   ├── gpu.zig               #   WebGPU bindings (33 extern fns, typed handles)
+│   │   ├── ui.zig                #   HTML overlay UI (panels, sliders, checkboxes, buttons)
+│   │   ├── imgui.zig             #   Immediate-mode canvas UI (comptime generic backend)
+│   │   └── render_backend.zig    #   Render backend abstraction (Canvas2DBackend)
 │   └── gen/                      # Build tool: WASM analysis + JS generation
 │       ├── wasm_analyze.zig      #   Full WASM binary parser (imports, exports, types, names)
 │       ├── js_resolve.zig        #   5-tier auto-resolution engine + Web API knowledge base
-│       └── js_gen.zig            #   JS + HTML code generator (minimal, adaptive output)
+│       ├── js_gen.zig            #   JS + HTML code generator (minimal, adaptive output)
+│       └── serve.zig             #   Dev server, file watcher, live reload, WebSocket
 ├── examples/
-│   └── bouncing-balls/
-│       └── src/main.zig          # Complete example: pure Zig, no HTML, no JS
-├── ARCHITECTURE.md               # Deep dive on design decisions
+│   ├── input-demo/               # Keyboard, mouse, touch input
+│   ├── imgui-demo/               # Canvas-based immediate-mode UI
+│   ├── audio-demo-1-assets-bundled/  # Web Audio with bundled assets
+│   ├── audio-demo-2-assets-cached/   # Web Audio with cached asset loading
+│   └── particle-life/            # WebGPU compute + render pipeline
+├── docs/
+│   ├── ARCHITECTURE.md           # Deep dive on design decisions
+│   └── ROADMAP.md                # Development roadmap
 ├── LICENSE
 └── README.md
 ```
@@ -239,11 +251,14 @@ zig build -Doptimize=ReleaseSafe
 ### Create a project
 
 ```bash
-mkdir my-app && cd my-app
+zunk init my-app
+cd my-app
 ```
 
+This creates `build.zig`, `build.zig.zon`, `src/main.zig`, and `.gitignore`. Or create files manually:
+
 ```zig
-// src/main.zig — this is the ONLY file you need
+// src/main.zig -- this is the ONLY file you need
 extern "env" fn console_log(ptr: [*]const u8, len: u32) void;
 
 fn log(msg: []const u8) void {
@@ -303,7 +318,9 @@ trunk is the direct inspiration for zunk's build tool. It uses an HTML-driven as
 
 ## Status
 
-Phase 1 (Foundation) and Phase 2 (Build Pipeline) are complete. The WASM analyzer, 5-tier resolution engine, JS/HTML code generator, binding system, Layer 2 web modules, dev server with live reload, `bridge.js` auto-discovery, and `zunk deploy` (content-hashed filenames, SRI, WASM preload) are all working. Five example projects compile and run end-to-end.
+Phases 1-3 (Foundation, Build Pipeline, Developer Experience) and Phase 4.1 (WebGPU) are complete. The WASM analyzer, 5-tier resolution engine, JS/HTML code generator, binding system, Layer 2 web modules (canvas, input, audio, asset, app, gpu, ui), dev server with live reload, `bridge.js` auto-discovery, and `zunk deploy` (content-hashed filenames, SRI, WASM preload) are all working. Five example projects compile and run end-to-end, including a WebGPU particle simulation with compute shaders.
+
+Developer experience tooling is in place: `zunk init` scaffolds new projects, `zunk doctor` diagnoses environment issues, build caching skips unchanged rebuilds, and the resolution report has color-coded output with fuzzy "did you mean?" suggestions (`--verbose` and `--report-json` flags available).
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap.
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deep dive on design decisions.
@@ -326,12 +343,13 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deep dive on design decis
 
 ## Contributing
 
-Phases 1 and 2 are complete. The highest-impact contributions right now:
+Phases 1-3 and 4.1 (WebGPU) are complete. The highest-impact contributions right now:
 
-1. **WebGPU bindings** -- the resolution engine has WebGPU prefix rules but generators need real implementations
-2. **More Web API coverage** -- WebXR, WebRTC, Web Workers, IndexedDB, Gamepad, Pointer Lock, Fullscreen
-3. **`zunk init`** -- project scaffolding command
-4. **Source maps** -- mapping generated JS back to Zig source via DWARF debug info
+1. **More Web API coverage** -- WebXR, WebRTC, Web Workers, IndexedDB, Gamepad, WebMIDI
+2. **WebGPU gaps** -- sampler support, vertex buffer layouts, depth/stencil state, error handling
+3. **Source maps** -- mapping generated JS back to Zig source via DWARF debug info
+4. **Auto-compilation** -- detect `build.zig`, run `zig build` automatically, locate `.wasm` output
+5. **Automated smoke tests** -- compile examples and validate generated JS in CI
 
 ---
 

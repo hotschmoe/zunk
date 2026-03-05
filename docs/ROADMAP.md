@@ -102,60 +102,90 @@ The CLI works end-to-end on pre-compiled WASM. One-command builds are achieved v
 
 ---
 
-## Phase 3 -- Developer Experience
+## Phase 3 -- Developer Experience (DONE)
 
-### 3.1 `zunk init`
+### 3.1 `zunk init` -- DONE
 
-Scaffold a new project: create `src/main.zig` with a minimal example, `build.zig` if needed, and a `.gitignore`.
+Scaffolds a new project with 4 files: `build.zig`, `build.zig.zon`, `src/main.zig` (minimal canvas hello-world), and `.gitignore`. Accepts an optional subdirectory name. Guards against re-initialization if `build.zig` already exists.
 
 ### 3.2 Diagnostic error overlay -- DONE (implemented in Phase 2)
 
 Build errors are displayed in the browser via WebSocket. The server captures `zig build` stderr and broadcasts an `"error:"` message; the injected reload script renders it as a fixed overlay with red text on black background. Cleared automatically on successful rebuild.
 
-### 3.3 Build caching
+### 3.3 Build caching -- DONE
 
-Skip recompilation if source files haven't changed. Compare mtimes or content hashes of `src/` against the last build timestamp.
+Mtime-based fingerprinting of `src/*.zig`, `build.zig`, `build.zig.zon`, the WASM binary, and `bridge.js`. Fingerprint stored as 16-byte i128 in `{output_dir}/.zunk_cache`. Skips rebuild when fingerprint matches. `--force` flag bypasses cache. Applied to both `build` and `deploy` commands.
 
-### 3.4 `zunk doctor`
+### 3.4 `zunk doctor` -- DONE
 
-Diagnose common issues: check zig version meets minimum, verify wasm32-freestanding target is available, check for common misconfigurations.
+Checks zig version (spawns `zig version`, parses semver, validates >= 0.15.2), wasm32 target availability, project structure (`build.zig`, `build.zig.zon`, `src/main.zig`), and `.gitignore` presence. Color-coded output with OK/WARN/FAIL status per check and a summary line.
 
-### 3.5 Resolution report improvements
+### 3.5 Resolution report improvements -- DONE
 
-The build report currently prints to stderr. Improvements:
-- Color-coded output (green for exact, yellow for high, red for stubs)
-- Suggestion text for each stub ("did you mean `canvas_fill_rect`?")
-- Optional `--verbose` flag showing all resolutions, not just stubs
-- Machine-readable output format (JSON) for tooling integration
+- Color-coded output: green for exact/high confidence, yellow for medium, red for stubs
+- "Did you mean?" suggestions via Levenshtein edit distance (threshold <= 3) against the exact match database and prefix rules
+- `--verbose` / `-v` flag shows all resolutions grouped by category with confidence tags
+- `--report-json` flag emits machine-readable JSON (build fingerprint, resolutions array, category counts, lifecycle exports)
 
 ---
 
 ## Phase 4 -- WebGPU and Ecosystem
 
-### 4.1 WebGPU bindings
+### 4.1 WebGPU bindings -- DONE
 
-The resolution engine has `zunk_gpu_*` prefix rules but the generator functions are stubs. Real WebGPU operations (adapter/device request, pipeline creation, buffer management, render pass encoding) need substantial JS implementations.
+Full WebGPU bindings are implemented and working. The particle-life example uses them end-to-end with compute shaders and render pipelines.
 
-Requirements:
-- Adapter and device acquisition
-- Shader module creation from WGSL source
-- Buffer creation and data upload
-- Render pipeline creation
-- Render pass encoding and submission
-- Texture and sampler management
-- Compute pipeline support
+**Done:**
+- [x] Adapter and device acquisition (auto-init in generated JS when WebGPU imports detected)
+- [x] Shader module creation from WGSL source -- `gpu_create_shader_module`
+- [x] Buffer creation, data upload, and destruction -- `gpu_create_buffer`, `gpu_buffer_write`, `gpu_buffer_destroy`
+- [x] Buffer-to-buffer copy in command encoder -- `gpu_copy_buffer_in_encoder`
+- [x] Texture creation, view creation, and destruction -- `gpu_create_texture`, `gpu_create_texture_view`, `gpu_destroy_texture`
+- [x] HDR texture support (`rgba16float` format) -- `gpu.createHDRTexture()`
+- [x] Asset-to-texture loading (fetch image, decode, upload) -- `gpu_create_texture_from_asset`, `gpu_is_texture_ready`
+- [x] Bind group layout and bind group creation (buffer + texture view entries) -- `gpu_create_bind_group_layout`, `gpu_create_bind_group`
+- [x] Pipeline layout creation -- `gpu_create_pipeline_layout`
+- [x] Compute pipeline creation -- `gpu_create_compute_pipeline`
+- [x] Render pipeline creation (with alpha blending) -- `gpu_create_render_pipeline`
+- [x] HDR render pipeline creation (configurable format + blend modes) -- `gpu_create_render_pipeline_hdr`
+- [x] Command encoder creation and submission -- `gpu_create_command_encoder`, `gpu_encoder_finish`, `gpu_queue_submit`
+- [x] Compute pass encoding (set pipeline, set bind group, dispatch, end) -- 5 functions
+- [x] Render pass encoding (begin with clear color, set pipeline, set bind group, draw, end) -- 5 functions
+- [x] HDR render pass (render to texture view) -- `gpu_begin_render_pass_hdr`
+- [x] Present (flush command encoder to screen) -- `gpu_present`
+- [x] DPR-aware resize handler for WebGPU canvas
+- [x] Layer 2 ergonomic wrappers with typed handles in `web/gpu.zig` (33 extern fns, typed Device/Buffer/Texture/Pipeline aliases, convenience constructors)
+- [x] ABI-matched struct layouts (`BindGroupLayoutEntry` = 40 bytes, `BindGroupEntry` = 32 bytes)
+- [x] Texture format enum (rgba16float, rgba32float, bgra8unorm, rgba8unorm, rgba8unorm_srgb, depth24plus, depth32float)
+- [x] Usage flag constants matching WebGPU spec (`BufferUsage`, `TextureUsage`, `ShaderVisibility`)
 
-### 4.2 Expand the knowledge base
+**Not yet implemented:**
+- [ ] Sampler creation and sampling
+- [ ] Vertex buffer layouts (vertex attributes, step mode)
+- [ ] Render pipeline depth/stencil state
+- [ ] Multiple color attachment targets
+- [ ] Render bundles
+- [ ] Timestamp queries / pipeline statistics
+- [ ] Error handling (device lost, validation errors)
 
-Add resolution rules for more Web APIs:
-- WebXR (VR/AR headset access)
-- WebRTC (peer-to-peer communication)
-- Web Workers (background threads)
-- IndexedDB (structured storage)
-- WebMIDI (musical instruments)
-- Gamepad API (beyond current basic support)
-- Pointer Lock API (FPS-style mouse capture)
-- Fullscreen API
+### 4.2 Expand the knowledge base -- PARTIALLY DONE
+
+**Done:**
+- [x] WebSocket API -- `ws_connect`, `ws_send`, `ws_close`, `ws_on_message`
+- [x] Storage API -- `storage_set`, `storage_get`, `storage_remove`, `storage_clear`
+- [x] Fetch API -- `fetch_get`, `fetch_get_response_ptr`, `fetch_get_response_len`
+- [x] DOM manipulation -- `dom_set_text`, `dom_set_html`, `dom_set_attr`, `dom_query`, `dom_create_element`, `dom_append_child`, `dom_remove`, `dom_set_style`, `dom_add_class`, `dom_remove_class`
+- [x] Pointer Lock -- `input_lock_pointer`, `input_unlock_pointer`
+- [x] Fullscreen -- `ui_request_fullscreen`
+- [x] HTML UI system -- panels, sliders, checkboxes, buttons, separators, status bar (full `web/ui.zig` + resolution support)
+
+**Not yet implemented:**
+- [ ] WebXR (VR/AR headset access)
+- [ ] WebRTC (peer-to-peer communication)
+- [ ] Web Workers (background threads)
+- [ ] IndexedDB (structured storage)
+- [ ] WebMIDI (musical instruments)
+- [ ] Gamepad API (beyond current basic support -- gamepad section exists in InputState but JS flush skips it)
 
 ### 4.3 Library convention for bridge.js
 
@@ -171,6 +201,23 @@ Integrate wasm-opt or implement custom optimization passes:
 - Strip debug sections for release builds
 - Remove unused function types
 - Optimize memory layout
+
+---
+
+## Phase 4.5 -- Canvas-based Immediate-Mode UI (IN PROGRESS)
+
+A WebGPU/Canvas2D immediate-mode UI system for building debug panels and tools, rendered entirely from WASM. Separate from the HTML-based `web/ui.zig` overlay system.
+
+**Done:**
+- [x] `web/imgui.zig` -- generic `Ui(Backend)` with comptime backend selection
+- [x] `web/render_backend.zig` -- `Canvas2DBackend` implementation, backend validation, `Rect`/`Color` types
+- [x] Theme system with configurable colors, sizes, fonts
+- [x] Layout system (vertical/horizontal, nested up to 16 levels)
+
+**Needs polish:**
+- [ ] Widget coverage: verify slider, checkbox, button, text, separator all work end-to-end
+- [ ] The imgui-demo example exists -- verify it runs correctly
+- [ ] WebGPU render backend (for rendering UI on GPU canvas instead of Canvas2D overlay)
 
 ---
 

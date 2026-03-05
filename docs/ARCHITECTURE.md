@@ -45,7 +45,7 @@ Developer's Zig Source
 ```
 src/
   root.zig                  Public API -- the "zunk" module users import
-  main.zig                  CLI entry point (build/run/help/version)
+  main.zig                  CLI entry point (build/run/deploy/init/doctor/help/version)
   bind/
     bind.zig                FFI descriptor system, Handle, string exchange, callbacks
   web/
@@ -54,10 +54,15 @@ src/
     audio.zig               Web Audio API wrappers
     asset.zig               Generic URL-based asset loading
     app.zig                 Lifecycle utilities, logging, clipboard
+    gpu.zig                 WebGPU bindings (33 extern fns, typed handles)
+    ui.zig                  HTML overlay UI (panels, sliders, checkboxes, buttons)
+    imgui.zig               Immediate-mode canvas UI (comptime generic backend)
+    render_backend.zig      Render backend abstraction (Canvas2DBackend)
   gen/
     wasm_analyze.zig        WASM binary parser
     js_resolve.zig          5-tier auto-resolution engine
     js_gen.zig              JS + HTML code generator
+    serve.zig               Dev server, file watcher, live reload, WebSocket
 ```
 
 There are two distinct halves: the **runtime library** (bind/, web/) that user code imports and compiles into WASM, and the **build tool** (gen/, main.zig) that runs natively and processes the resulting WASM binary.
@@ -168,6 +173,45 @@ Public API: `fetch(url)`, `isReady(handle)`, `getLen(handle)`, `getBytes(handle,
 
 The asset handle stores a raw `ArrayBuffer` in the JS handle table. Type-specific modules (like `audio.decodeAsset`) consume these raw buffers for further processing. This separation means new asset types (images, JSON, binary data) only need a decoder function, not new fetch plumbing.
 
+### web/gpu.zig -- WebGPU Bindings
+
+Comprehensive WebGPU API wrappers with 33 extern function declarations covering the full render and compute pipeline:
+
+- **Resources**: `createBuffer`, `createShaderModule`, `createTexture`, `createTextureView`, `createHDRTexture`, `createTextureFromAsset`
+- **Buffer ops**: `bufferWrite`, `bufferWriteTyped`, `bufferDestroy`, `copyBufferInEncoder`
+- **Bind groups**: `createBindGroupLayout`, `createBindGroup`, `createPipelineLayout`
+- **Pipelines**: `createComputePipeline`, `createRenderPipeline`, `createRenderPipelineHDR`
+- **Command encoding**: `createCommandEncoder`, `encoderFinish`, `queueSubmit`
+- **Compute pass**: `beginComputePass`, `computePassSetPipeline`, `computePassSetBindGroup`, `computePassDispatch`, `computePassEnd`
+- **Render pass**: `beginRenderPass`, `beginRenderPassHDR`, `renderPassSetPipeline`, `renderPassSetBindGroup`, `renderPassDraw`, `renderPassEnd`
+- **Present**: `present` (flushes encoder to screen)
+
+Type-safe handles: `Device`, `Buffer`, `ShaderModule`, `Texture`, `TextureView`, `BindGroupLayout`, `BindGroup`, `PipelineLayout`, `ComputePipeline`, `RenderPipeline`, `CommandEncoder`, `ComputePassEncoder`, `RenderPassEncoder`, `CommandBuffer` -- all `bind.Handle` underneath.
+
+ABI-matched structs `BindGroupLayoutEntry` (40 bytes) and `BindGroupEntry` (32 bytes) are read directly by JS via DataView for zero-copy bind group creation.
+
+### web/ui.zig -- HTML UI Overlay
+
+A DOM-based overlay UI for debug panels and controls, rendered via generated JavaScript:
+
+- **Panels**: `createPanel`, `showPanel`, `hidePanel`, `togglePanel`
+- **Controls**: `addSlider`, `addCheckbox`, `addButton`, `addSeparator`
+- **Reading values**: `getFloat`, `getBool`, `isClicked`
+- **Labels/status**: `setLabel`, `setStatus`
+- **Fullscreen**: `requestFullscreen`
+
+Styled with CSS injected into the generated HTML when UI imports are detected.
+
+### web/imgui.zig -- Immediate-Mode Canvas UI
+
+A comptime-generic `Ui(Backend)` that renders immediate-mode widgets directly on a Canvas2D (or future WebGPU) surface. Unlike `web/ui.zig` which creates DOM elements, this draws everything from WASM.
+
+Includes a `Theme` struct with configurable colors, sizing, and fonts. Layout system supports vertical/horizontal nesting up to 16 levels deep.
+
+### web/render_backend.zig -- Render Backend Abstraction
+
+Defines the `Canvas2DBackend` and a `validateBackend` comptime function that checks for required methods (`drawFilledRect`, `drawText`, `measureText`, `setClipRect`, etc.). This allows `imgui.zig` to work with different renderers.
+
 ### web/app.zig -- Lifecycle Utilities
 
 `setTitle()`, `openUrl()`, `setCursor()`, `performanceNow()`, `clipboardWrite()`, and leveled logging (`logDebug/Info/Warn/Err`).
@@ -252,6 +296,8 @@ Takes an `Analysis` and `GenOptions`, produces complete JS + HTML output.
 - `js_filename` -- output JS filename (default: "app.js", deploy uses hashed names)
 - `wasm_preload` -- emit `<link rel="preload">` for the WASM file (deploy mode)
 - `js_integrity` -- SRI hash for the script tag (deploy mode)
+- `verbose_report` -- show all resolutions grouped by category (not just stubs)
+- `json_report` -- emit machine-readable JSON instead of rich text
 
 **Generation steps:**
 
@@ -267,28 +313,44 @@ Takes an `Analysis` and `GenOptions`, produces complete JS + HTML output.
 
 ### main.zig -- CLI Entry Point
 
-Supports: `build`, `run`, `deploy`, `help`, `version`.
+Supports: `build`, `run`, `deploy`, `init`, `doctor`, `help`, `version`.
 
 Shared infrastructure via `prepareBuild()`:
-1. Parses CLI args (--wasm, --output-dir, --port, --proxy, --no-watch)
+1. Parses CLI args (--wasm, --output-dir, --port, --proxy, --no-watch, --verbose, --report-json, --force)
 2. Reads the .wasm binary
 3. Runs `wasm_analyze.analyze()` to parse imports/exports/types
 4. Auto-discovers `bridge.js` from project root or `js/` directory
 
 The `build` command:
-1. Calls `js_gen.generate()` to produce JS + HTML
-2. Writes `dist/index.html`, `dist/app.js`, and the .wasm file
-3. Copies `src/assets/` to `dist/assets/` if the directory exists
-4. Prints the resolution diagnostic report
+1. Checks build cache (mtime fingerprint of src/*.zig, build.zig*, wasm, bridge.js); skips if up-to-date (unless `--force`)
+2. Calls `js_gen.generate()` to produce JS + HTML
+3. Writes `dist/index.html`, `dist/app.js`, and the .wasm file
+4. Copies `src/assets/` to `dist/assets/` if the directory exists
+5. Prints the resolution diagnostic report (color-coded, with "did you mean?" suggestions for stubs)
+6. Writes cache fingerprint on success
 
 The `run` command: same as `build`, then launches the dev server with live reload.
 
 The `deploy` command (production build):
-1. Computes content hashes (XxHash3) for WASM and JS filenames
-2. Generates JS with the hashed WASM filename embedded in the fetch() call
-3. Computes SHA-384 SRI hash for the JS output
-4. Generates HTML with hashed script/wasm references, SRI integrity attribute, and WASM preload hint
-5. Writes content-hashed files to `dist/`
+1. Checks build cache (same as build); skips if up-to-date (unless `--force`)
+2. Computes content hashes (XxHash3) for WASM and JS filenames
+3. Generates JS with the hashed WASM filename embedded in the fetch() call
+4. Computes SHA-384 SRI hash for the JS output
+5. Generates HTML with hashed script/wasm references, SRI integrity attribute, and WASM preload hint
+6. Writes content-hashed files to `dist/`
+7. Writes cache fingerprint on success
+
+The `init` command:
+1. Accepts optional subdirectory name (defaults to current directory)
+2. Guards against re-initialization (aborts if `build.zig` exists)
+3. Scaffolds 4 files from comptime templates: `build.zig`, `build.zig.zon`, `src/main.zig`, `.gitignore`
+
+The `doctor` command:
+1. Checks zig version (spawns `zig version`, parses semver, validates >= 0.15.2)
+2. Reports wasm32 target availability (bundled with zig)
+3. Checks project structure (`build.zig`, `build.zig.zon`, `src/main.zig`)
+4. Checks `.gitignore` presence (warns about dist/ being committed)
+5. Prints color-coded OK/WARN/FAIL status per check with a summary line
 
 Auto-compilation is handled by `installApp()` in the user's `build.zig`.
 

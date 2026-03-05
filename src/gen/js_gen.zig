@@ -217,7 +217,10 @@ pub fn generate(
 
     var report: std.ArrayList(u8) = .empty;
     defer report.deinit(allocator);
-    try generateReport(report.writer(allocator), analysis, resolutions, stub_count, hex[0..8], opts);
+    try generateReport(report.writer(allocator), analysis, resolutions, stub_count, hex[0..8], .{
+        .verbose = opts.verbose_report,
+        .json = opts.json_report,
+    });
 
     return .{
         .js = try js.toOwnedSlice(allocator),
@@ -549,13 +552,18 @@ pub fn generateHtml(
     try w.writeAll("</body>\n</html>\n");
 }
 
+const ReportMode = struct {
+    verbose: bool = false,
+    json: bool = false,
+};
+
 fn generateReport(
     w: anytype,
     analysis: *const wa.Analysis,
     resolutions: []const resolver.Resolution,
     stub_count: usize,
     build_fingerprint: []const u8,
-    opts: GenOptions,
+    mode: ReportMode,
 ) !void {
     // Category counts (used by both modes)
     var counts: [std.enums.values(resolver.Category).len]usize = .{0} ** std.enums.values(resolver.Category).len;
@@ -566,7 +574,7 @@ fn generateReport(
     const lifecycle_fns = [_][]const u8{ "init", "frame", "resize", "cleanup" };
 
     // JSON mode: structured output, return early
-    if (opts.json_report) {
+    if (mode.json) {
         try w.writeAll("{");
         try w.print("\"build_fingerprint\":\"{s}\",", .{build_fingerprint});
         try w.print("\"total_imports\":{d},", .{analysis.imports.len});
@@ -650,7 +658,7 @@ fn generateReport(
     }
 
     // Verbose mode: list ALL resolutions grouped by category
-    if (opts.verbose_report) {
+    if (mode.verbose) {
         try w.writeAll("All resolutions:\n");
         for (std.enums.values(resolver.Category)) |cat| {
             if (counts[@intFromEnum(cat)] == 0) continue;

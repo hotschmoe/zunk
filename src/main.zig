@@ -124,6 +124,8 @@ fn parseProxy(arg: ?[]const u8) ProxyConfig {
     };
 }
 
+const bridge_js_paths = [_][]const u8{ "bridge.js", "js/bridge.js" };
+
 const BuildContext = struct {
     wasm: []const u8,
     analysis: wa.Analysis,
@@ -211,10 +213,12 @@ fn printReport(console: *rich.Console, allocator: std.mem.Allocator, report: []c
 fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve: bool, console: *rich.Console) !void {
     const parsed = parseBuildArgs(args);
 
+    // Compute fingerprint once (used for both cache check and write)
+    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(wasm_path) else null;
+
     // Cache check (non-serve mode only)
     if (!do_serve and !parsed.force) {
-        if (parsed.wasm_path) |wasm_path| {
-            const fp = computeSourceFingerprint(wasm_path);
+        if (source_fp) |fp| {
             if (readCacheFingerprint(parsed.output_dir)) |cached| {
                 if (fp == cached) {
                     try console.printStyled("Build is up to date (use --force to rebuild)", rich.Style.empty.bold().foreground(rich.Color.green));
@@ -245,12 +249,8 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
     copyAssets(allocator, out_dir, console);
     try printReport(console, allocator, result.report, "Build Report", parsed.json_report);
 
-    // Write cache fingerprint after successful build
     if (!do_serve) {
-        if (parsed.wasm_path) |wasm_path| {
-            const fp = computeSourceFingerprint(wasm_path);
-            writeCacheFingerprint(parsed.output_dir, fp);
-        }
+        if (source_fp) |fp| writeCacheFingerprint(parsed.output_dir, fp);
     }
 
     if (!parsed.json_report) {
@@ -277,10 +277,10 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
 fn deployCommand(allocator: std.mem.Allocator, args: []const []const u8, console: *rich.Console) !void {
     const parsed = parseBuildArgs(args);
 
-    // Cache check
+    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(wasm_path) else null;
+
     if (!parsed.force) {
-        if (parsed.wasm_path) |wasm_path| {
-            const fp = computeSourceFingerprint(wasm_path);
+        if (source_fp) |fp| {
             if (readCacheFingerprint(parsed.output_dir)) |cached| {
                 if (fp == cached) {
                     try console.printStyled("Deploy is up to date (use --force to rebuild)", rich.Style.empty.bold().foreground(rich.Color.green));
@@ -341,11 +341,7 @@ fn deployCommand(allocator: std.mem.Allocator, args: []const []const u8, console
     copyAssets(allocator, out_dir, console);
     try printReport(console, allocator, result.report, "Deploy Report", parsed.json_report);
 
-    // Write cache fingerprint after successful deploy
-    if (parsed.wasm_path) |wasm_path| {
-        const fp = computeSourceFingerprint(wasm_path);
-        writeCacheFingerprint(parsed.output_dir, fp);
-    }
+    if (source_fp) |fp| writeCacheFingerprint(parsed.output_dir, fp);
 
     if (!parsed.json_report) {
         try console.print("");
@@ -368,8 +364,7 @@ fn deployCommand(allocator: std.mem.Allocator, args: []const []const u8, console
 }
 
 fn discoverBridgeJs(allocator: std.mem.Allocator, console: *rich.Console) ?[]const u8 {
-    const paths = [_][]const u8{ "bridge.js", "js/bridge.js" };
-    for (paths) |path| {
+    for (bridge_js_paths) |path| {
         if (std.fs.cwd().readFileAlloc(allocator, path, 1 * 1024 * 1024)) |contents| {
             var buf: [128]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Found {s}", .{path}) catch "Found bridge.js";
@@ -436,8 +431,7 @@ fn computeSourceFingerprint(wasm_path: []const u8) i128 {
     }
 
     // bridge.js (if present)
-    const bridge_paths = [_][]const u8{ "bridge.js", "js/bridge.js" };
-    for (bridge_paths) |bp| {
+    for (bridge_js_paths) |bp| {
         const file = std.fs.cwd().openFile(bp, .{}) catch continue;
         defer file.close();
         const stat = file.stat() catch continue;
@@ -544,7 +538,6 @@ fn doctorCommand(allocator: std.mem.Allocator, console: *rich.Console) !void {
         .{ .name = "build.zig", .required = true },
         .{ .name = "build.zig.zon", .required = true },
         .{ .name = "src/main.zig", .required = false },
-        .{ .name = ".gitignore", .required = false },
     };
     var found_count: usize = 0;
     var missing_optional: ?[]const u8 = null;
@@ -688,7 +681,7 @@ fn initCommand(allocator: std.mem.Allocator, args: []const []const u8, console: 
     const name = project_dir orelse "my-app";
 
     // build.zig
-    base.writeFile(.{ .sub_path = "build.zig", .data = buildZigTemplate(name) }) catch |err| {
+    base.writeFile(.{ .sub_path = "build.zig", .data = buildZigTemplate() }) catch |err| {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "[bold red]error:[/] could not write build.zig: {}", .{err}) catch "error writing build.zig";
         try console.print(msg);
@@ -696,7 +689,7 @@ fn initCommand(allocator: std.mem.Allocator, args: []const []const u8, console: 
     };
 
     // build.zig.zon
-    base.writeFile(.{ .sub_path = "build.zig.zon", .data = buildZigZonTemplate(name) }) catch {};
+    base.writeFile(.{ .sub_path = "build.zig.zon", .data = buildZigZonTemplate() }) catch {};
 
     // src/main.zig
     base.makePath("src") catch {};
@@ -722,8 +715,7 @@ fn initCommand(allocator: std.mem.Allocator, args: []const []const u8, console: 
     try console.print("");
 }
 
-fn buildZigTemplate(name: []const u8) []const u8 {
-    _ = name;
+fn buildZigTemplate() []const u8 {
     return
         \\const std = @import("std");
         \\const zunk = @import("zunk");
@@ -768,8 +760,7 @@ fn buildZigTemplate(name: []const u8) []const u8 {
     ;
 }
 
-fn buildZigZonTemplate(name: []const u8) []const u8 {
-    _ = name;
+fn buildZigZonTemplate() []const u8 {
     return
         \\.{
         \\    .name = .app,
