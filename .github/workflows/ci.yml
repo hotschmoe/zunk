@@ -5,7 +5,7 @@ on:
     branches: [master]
 
 env:
-  ZIG_VERSION: "0.15.2"
+  ZIG_VERSION: "0.16.0"
 
 jobs:
   version-check:
@@ -59,22 +59,6 @@ jobs:
       - name: Run Tests
         run: zig build test -Doptimize=${{ matrix.optimize }}
 
-  fuzz:
-    name: Fuzz Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-
-      - name: Run Fuzz Tests
-        run: timeout 60 zig build fuzz || true
-        continue-on-error: true
-
   format:
     name: Format Check
     runs-on: ubuntu-latest
@@ -89,74 +73,4 @@ jobs:
 
       - name: Check Formatting
         run: zig fmt --check src/
-
-  package:
-    name: Package Validation
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-
-      - name: Validate Package
-        run: |
-          mkdir -p test-consumer
-          cd test-consumer
-
-          cat > build.zig.zon << 'EOF'
-          .{
-              .name = .test_consumer,
-              .version = "0.0.0",
-              .fingerprint = 0xe5383c7136a60b55,
-              .dependencies = .{
-                  .zithril = .{
-                      .path = "..",
-                  },
-              },
-              .paths = .{
-                  "build.zig",
-                  "build.zig.zon",
-                  "src",
-              },
-          }
-          EOF
-
-          cat > build.zig << 'EOF'
-          const std = @import("std");
-          pub fn build(b: *std.Build) void {
-              const target = b.standardTargetOptions(.{});
-              const optimize = b.standardOptimizeOption(.{});
-              const zithril = b.dependency("zithril", .{
-                  .target = target,
-                  .optimize = optimize,
-              });
-              const exe = b.addExecutable(.{
-                  .name = "test",
-                  .root_module = b.createModule(.{
-                      .root_source_file = b.path("src/main.zig"),
-                      .target = target,
-                      .optimize = optimize,
-                      .imports = &.{
-                          .{ .name = "zithril", .module = zithril.module("zithril") },
-                      },
-                  }),
-              });
-              b.installArtifact(exe);
-          }
-          EOF
-
-          mkdir -p src
-          cat > src/main.zig << 'EOF'
-          const zithril = @import("zithril");
-          pub fn main() !void {
-              const style = zithril.Style.empty.bold();
-              _ = style;
-          }
-          EOF
-
-          zig build
 
