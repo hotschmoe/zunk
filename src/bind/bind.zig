@@ -259,7 +259,7 @@ test "Handle round-trip" {
 test "manifest serialization compiles" {
     const descs = comptime [_]FuncDesc{
         func("getContext", "canvas", &.{param("sel", .string)}, ret(.handle), .dom),
-        func("clear", "canvas", &.{param("r", .f32), param("g", .f32)}, ret(.void), .dom),
+        func("clear", "canvas", &.{ param("r", .f32), param("g", .f32) }, ret(.void), .dom),
     };
     const m = comptime serializeManifest(&descs);
     try std.testing.expect(m.len > 0);

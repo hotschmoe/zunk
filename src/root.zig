@@ -43,7 +43,6 @@
 ///   - `export fn resize(w: u32, h: u32) void` -- Called on window resize
 ///   - `export fn cleanup() void` -- Called on page unload (optional)
 ///
-
 pub const bind = @import("bind/bind.zig");
 
 pub const web = struct {

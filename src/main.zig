@@ -705,110 +705,110 @@ fn initCommand(io: std.Io, args: []const []const u8, console: *rich.Console) !vo
 
 fn buildZigTemplate() []const u8 {
     return
-        \\const std = @import("std");
-        \\const zunk = @import("zunk");
-        \\
-        \\pub fn build(b: *std.Build) void {
-        \\    const optimize = b.option(
-        \\        std.builtin.OptimizeMode,
-        \\        "optimize",
-        \\        "Optimization mode (default: ReleaseFast)",
-        \\    ) orelse .ReleaseFast;
-        \\
-        \\    const wasm_target = b.resolveTargetQuery(.{
-        \\        .cpu_arch = .wasm32,
-        \\        .os_tag = .freestanding,
-        \\        .abi = .none,
-        \\    });
-        \\
-        \\    const zunk_dep = b.dependency("zunk", .{
-        \\        .target = wasm_target,
-        \\        .optimize = optimize,
-        \\    });
-        \\
-        \\    const exe = b.addExecutable(.{
-        \\        .name = "app",
-        \\        .root_module = b.createModule(.{
-        \\            .root_source_file = b.path("src/main.zig"),
-        \\            .target = wasm_target,
-        \\            .optimize = optimize,
-        \\            .imports = &.{
-        \\                .{ .name = "zunk", .module = zunk_dep.module("zunk") },
-        \\            },
-        \\        }),
-        \\    });
-        \\
-        \\    exe.rdynamic = true;
-        \\    exe.entry = .disabled;
-        \\    exe.export_memory = true;
-        \\
-        \\    zunk.installApp(b, zunk_dep, exe, .{});
-        \\}
-        \\
+    \\const std = @import("std");
+    \\const zunk = @import("zunk");
+    \\
+    \\pub fn build(b: *std.Build) void {
+    \\    const optimize = b.option(
+    \\        std.builtin.OptimizeMode,
+    \\        "optimize",
+    \\        "Optimization mode (default: ReleaseFast)",
+    \\    ) orelse .ReleaseFast;
+    \\
+    \\    const wasm_target = b.resolveTargetQuery(.{
+    \\        .cpu_arch = .wasm32,
+    \\        .os_tag = .freestanding,
+    \\        .abi = .none,
+    \\    });
+    \\
+    \\    const zunk_dep = b.dependency("zunk", .{
+    \\        .target = wasm_target,
+    \\        .optimize = optimize,
+    \\    });
+    \\
+    \\    const exe = b.addExecutable(.{
+    \\        .name = "app",
+    \\        .root_module = b.createModule(.{
+    \\            .root_source_file = b.path("src/main.zig"),
+    \\            .target = wasm_target,
+    \\            .optimize = optimize,
+    \\            .imports = &.{
+    \\                .{ .name = "zunk", .module = zunk_dep.module("zunk") },
+    \\            },
+    \\        }),
+    \\    });
+    \\
+    \\    exe.rdynamic = true;
+    \\    exe.entry = .disabled;
+    \\    exe.export_memory = true;
+    \\
+    \\    zunk.installApp(b, zunk_dep, exe, .{});
+    \\}
+    \\
     ;
 }
 
 fn buildZigZonTemplate() []const u8 {
     return
-        \\.{
-        \\    .name = .app,
-        \\    .version = "0.0.0",
-        \\    .minimum_zig_version = "0.16.0",
-        \\    .dependencies = .{
-        \\        // TODO: replace with git URL once zunk is published
-        \\        .zunk = .{ .path = "../.." },
-        \\    },
-        \\    .paths = .{
-        \\        "build.zig",
-        \\        "build.zig.zon",
-        \\        "src",
-        \\    },
-        \\}
-        \\
+    \\.{
+    \\    .name = .app,
+    \\    .version = "0.0.0",
+    \\    .minimum_zig_version = "0.16.0",
+    \\    .dependencies = .{
+    \\        // TODO: replace with git URL once zunk is published
+    \\        .zunk = .{ .path = "../.." },
+    \\    },
+    \\    .paths = .{
+    \\        "build.zig",
+    \\        "build.zig.zon",
+    \\        "src",
+    \\    },
+    \\}
+    \\
     ;
 }
 
 fn mainZigTemplate() []const u8 {
     return
-        \\const zunk = @import("zunk");
-        \\const canvas = zunk.web.canvas;
-        \\
-        \\var ctx: canvas.Ctx2D = undefined;
-        \\
-        \\export fn init() void {
-        \\    ctx = canvas.getContext2D("app");
-        \\}
-        \\
-        \\export fn frame(_: f32) void {
-        \\    const vp = zunk.web.input.getViewportSize();
-        \\    const w: f32 = @floatFromInt(vp.w);
-        \\    const h: f32 = @floatFromInt(vp.h);
-        \\
-        \\    canvas.setFillColor(ctx, .{ .r = 20, .g = 20, .b = 30 });
-        \\    canvas.fillRect(ctx, 0, 0, w, h);
-        \\
-        \\    canvas.setFillColor(ctx, .{ .r = 100, .g = 200, .b = 120 });
-        \\    canvas.fillRect(ctx, w / 2 - 50, h / 2 - 50, 100, 100);
-        \\
-        \\    canvas.setFillColor(ctx, .{ .r = 220, .g = 220, .b = 220 });
-        \\    canvas.setFont(ctx, "20px monospace");
-        \\    canvas.fillText(ctx, "hello, zunk!", w / 2 - 70, h / 2 + 80);
-        \\}
-        \\
-        \\export fn resize(w: u32, h: u32) void {
-        \\    canvas.setSize(ctx, w, h);
-        \\}
-        \\
+    \\const zunk = @import("zunk");
+    \\const canvas = zunk.web.canvas;
+    \\
+    \\var ctx: canvas.Ctx2D = undefined;
+    \\
+    \\export fn init() void {
+    \\    ctx = canvas.getContext2D("app");
+    \\}
+    \\
+    \\export fn frame(_: f32) void {
+    \\    const vp = zunk.web.input.getViewportSize();
+    \\    const w: f32 = @floatFromInt(vp.w);
+    \\    const h: f32 = @floatFromInt(vp.h);
+    \\
+    \\    canvas.setFillColor(ctx, .{ .r = 20, .g = 20, .b = 30 });
+    \\    canvas.fillRect(ctx, 0, 0, w, h);
+    \\
+    \\    canvas.setFillColor(ctx, .{ .r = 100, .g = 200, .b = 120 });
+    \\    canvas.fillRect(ctx, w / 2 - 50, h / 2 - 50, 100, 100);
+    \\
+    \\    canvas.setFillColor(ctx, .{ .r = 220, .g = 220, .b = 220 });
+    \\    canvas.setFont(ctx, "20px monospace");
+    \\    canvas.fillText(ctx, "hello, zunk!", w / 2 - 70, h / 2 + 80);
+    \\}
+    \\
+    \\export fn resize(w: u32, h: u32) void {
+    \\    canvas.setSize(ctx, w, h);
+    \\}
+    \\
     ;
 }
 
 fn gitignoreTemplate() []const u8 {
     return
-        \\.zig-cache/
-        \\zig-out/
-        \\dist/
-        \\.zunk_cache
-        \\
+    \\.zig-cache/
+    \\zig-out/
+    \\dist/
+    \\.zunk_cache
+    \\
     ;
 }
 

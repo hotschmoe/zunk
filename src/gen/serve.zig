@@ -570,7 +570,8 @@ fn proxyRequest(
 
 fn sendResponse(io: Io, stream: net.Stream, status: []const u8, content_type: []const u8, body: []const u8) !void {
     var header_buf: [512]u8 = undefined;
-    const header = std.fmt.bufPrint(&header_buf,
+    const header = std.fmt.bufPrint(
+        &header_buf,
         "HTTP/1.1 {s}\r\n" ++
             "Content-Type: {s}\r\n" ++
             "Content-Length: {d}\r\n" ++
