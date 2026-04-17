@@ -5,12 +5,12 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .webzocket = .{
-            .url = "git+https://github.com/hotschmoe/webzocket.git#954579ad469a08d3d6cb578b2be62498265c945e",
-            .hash = "webzocket-0.1.0-qU6sG0EIAwB7rOOeFxMKQ1bJ6ec8G7T2TIMDHhygOC3l",
+            .url = "git+https://github.com/hotschmoe/webzocket.git#7d7c64fb6b2ee05a267f9f835c7cbdb8b30a3ba3",
+            .hash = "webzocket-0.2.2-qU6sG1WxAwDb37P8CGR4V16cmoRyL7KZ-iLwm32O8YS4",
         },
         .rich_zig = .{
-            .url = "git+https://github.com/hotschmoe/rich_zig.git#cd37c050cc7ce0414b81fa61e1e14f702ee04563",
-            .hash = "rich_zig-1.4.1-cZcAnKdFDACT8IHmL0fvgpUUnI1rcaAP7IsB66Qh7zpY",
+            .url = "git+https://github.com/hotschmoe/rich_zig.git#768b5bfd4b542da849c0efda8b585e1f28560451",
+            .hash = "rich_zig-2.0.1-cZcAnJFZDAB_mhWB525wIbBMY95SNa3MdGAuDaok_vLk",
         },
     },
     .paths = .{
