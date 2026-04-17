@@ -1,7 +1,7 @@
 .{
-    .name = .audio_demo_1_assets_bundled,
+    .name = .imgui_demo,
     .version = "0.0.0",
-    .fingerprint = 0xda682f78606a3a12,
+    .fingerprint = 0x65947125c5e8e426,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zunk = .{ .path = "../.." },

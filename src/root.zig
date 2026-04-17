@@ -43,7 +43,6 @@
 ///   - `export fn resize(w: u32, h: u32) void` -- Called on window resize
 ///   - `export fn cleanup() void` -- Called on page unload (optional)
 ///
-
 pub const bind = @import("bind/bind.zig");
 
 pub const web = struct {
@@ -54,6 +53,8 @@ pub const web = struct {
     pub const asset = @import("web/asset.zig");
     pub const gpu = @import("web/gpu.zig");
     pub const ui = @import("web/ui.zig");
+    pub const imgui = @import("web/imgui.zig");
+    pub const render_backend = @import("web/render_backend.zig");
 };
 
 pub const Handle = bind.Handle;

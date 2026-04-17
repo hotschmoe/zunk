@@ -100,7 +100,7 @@ const ExactEntry = struct {
     desc: []const u8,
 };
 
-const exact_db = [_]ExactEntry{
+pub const exact_db = [_]ExactEntry{
     .{ .name = "console_log", .js = "const s = readStr(arguments[0], arguments[1]); console.log(s);", .needs_strings = true, .category = .console, .desc = "console.log with string" },
     .{ .name = "console_error", .js = "const s = readStr(arguments[0], arguments[1]); console.error(s);", .needs_strings = true, .category = .console, .desc = "console.error with string" },
     .{ .name = "console_warn", .js = "const s = readStr(arguments[0], arguments[1]); console.warn(s);", .needs_strings = true, .category = .console, .desc = "console.warn with string" },
@@ -157,7 +157,7 @@ const PrefixRule = struct {
     ) ?Resolution,
 };
 
-const prefix_rules = [_]PrefixRule{
+pub const prefix_rules = [_]PrefixRule{
     .{ .prefix = "zunk_canvas_", .category = .canvas2d, .generator = &genCanvas },
     .{ .prefix = "zunk_c2d_", .category = .canvas2d, .generator = &genCanvas2D },
     .{ .prefix = "zunk_dom_", .category = .dom, .generator = &genDom },
@@ -207,8 +207,8 @@ fn genCanvas(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         if (std.mem.eql(u8, method, entry[0])) {
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
-                .needs_handles = std.mem.indexOf(u8, entry[1], "H.") != null,
-                .needs_string_helper = std.mem.indexOf(u8, entry[1], "readStr") != null,
+                .needs_handles = std.mem.find(u8, entry[1], "H.") != null,
+                .needs_string_helper = std.mem.find(u8, entry[1], "readStr") != null,
                 .confidence = .exact,
                 .category = .canvas2d,
                 .description = "Canvas: " ++ entry[0],
@@ -243,10 +243,13 @@ fn genCanvas2D(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncTy
         .{ "scale", "H.get(arguments[0]).scale(arguments[1], arguments[2]);" },
         .{ "draw_image", "H.get(arguments[0]).drawImage(H.get(arguments[1]), arguments[2], arguments[3]);" },
         .{ "set_global_alpha", "H.get(arguments[0]).globalAlpha = arguments[1];" },
+        .{ "measure_text", "return H.get(arguments[0]).measureText(readStr(arguments[1], arguments[2])).width;" },
+        .{ "clip", "H.get(arguments[0]).clip();" },
+        .{ "set_text_baseline", "H.get(arguments[0]).textBaseline = readStr(arguments[1], arguments[2]);" },
     };
     inline for (js_map) |entry| {
         if (std.mem.eql(u8, method, entry[0])) {
-            const needs_str = std.mem.indexOf(u8, entry[1], "readStr") != null;
+            const needs_str = std.mem.find(u8, entry[1], "readStr") != null;
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
                 .needs_handles = true,
@@ -302,8 +305,8 @@ fn genInput(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType)
         if (std.mem.eql(u8, method, entry[0])) {
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
-                .needs_handles = std.mem.indexOf(u8, entry[1], "H.get") != null,
-                .needs_memory_view = std.mem.indexOf(u8, entry[1], "zunkInput") != null,
+                .needs_handles = std.mem.find(u8, entry[1], "H.get") != null,
+                .needs_memory_view = std.mem.find(u8, entry[1], "zunkInput") != null,
                 .confidence = .exact,
                 .category = .input,
             };
@@ -359,7 +362,7 @@ fn genApp(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?
         if (std.mem.eql(u8, method, entry[0])) {
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
-                .needs_string_helper = std.mem.indexOf(u8, entry[1], "readStr") != null,
+                .needs_string_helper = std.mem.find(u8, entry[1], "readStr") != null,
                 .confidence = .exact,
                 .category = .lifecycle,
             };
@@ -405,16 +408,13 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         .{ "create_shader_module", "return H.store(H.get(1).createShaderModule({code:readStr(arguments[0],arguments[1])}));", true, false, true },
 
         // Texture
-        .{ "create_texture",
-            "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
-            "return H.store(H.get(1).createTexture({size:[arguments[0],arguments[1]],format:fmts[arguments[2]],usage:arguments[3]}));",
-            false, false, true },
+        .{ "create_texture", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
+            "return H.store(H.get(1).createTexture({size:[arguments[0],arguments[1]],format:fmts[arguments[2]],usage:arguments[3]}));", false, false, true },
         .{ "create_texture_view", "return H.store(H.get(arguments[0]).createView());", false, false, true },
         .{ "destroy_texture", "H.get(arguments[0]).destroy();", false, false, true },
 
         // Bind group layout / bind group
-        .{ "create_bind_group_layout",
-            "const v=new DataView(memory.buffer,arguments[0],arguments[1]*40);" ++
+        .{ "create_bind_group_layout", "const v=new DataView(memory.buffer,arguments[0],arguments[1]*40);" ++
             "const entries=[];for(let i=0;i<arguments[1];i++){const o=i*40;" ++
             "const e={binding:v.getUint32(o,true),visibility:v.getUint32(o+4,true)};" ++
             "const t=v.getUint32(o+8,true);" ++
@@ -422,52 +422,41 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "hasDynamicOffset:!!v.getUint32(o+20,true)};" ++
             "if(v.getUint32(o+16,true))e.buffer.minBindingSize=Number(v.getBigUint64(o+24,true));}" ++
             "else if(t===1){e.texture={sampleType:'float'};}entries.push(e);}" ++
-            "return H.store(H.get(1).createBindGroupLayout({entries}));",
-            false, true, true },
+            "return H.store(H.get(1).createBindGroupLayout({entries}));", false, true, true },
 
-        .{ "create_bind_group",
-            "const v=new DataView(memory.buffer,arguments[1],arguments[2]*32);" ++
+        .{ "create_bind_group", "const v=new DataView(memory.buffer,arguments[1],arguments[2]*32);" ++
             "const entries=[];for(let i=0;i<arguments[2];i++){const o=i*32;" ++
             "const e={binding:v.getUint32(o,true)};" ++
             "const t=v.getUint32(o+4,true);" ++
             "if(t===0){e.resource={buffer:H.get(v.getUint32(o+8,true))," ++
             "offset:Number(v.getBigUint64(o+16,true)),size:Number(v.getBigUint64(o+24,true))};" ++
             "}else{e.resource=H.get(v.getUint32(o+8,true));}entries.push(e);}" ++
-            "return H.store(H.get(1).createBindGroup({layout:H.get(arguments[0]),entries}));",
-            false, true, true },
+            "return H.store(H.get(1).createBindGroup({layout:H.get(arguments[0]),entries}));", false, true, true },
 
         // Pipeline layout / pipelines
-        .{ "create_pipeline_layout",
-            "const v=new DataView(memory.buffer,arguments[0],arguments[1]*4);" ++
+        .{ "create_pipeline_layout", "const v=new DataView(memory.buffer,arguments[0],arguments[1]*4);" ++
             "const layouts=[];for(let i=0;i<arguments[1];i++)layouts.push(H.get(v.getInt32(i*4,true)));" ++
-            "return H.store(H.get(1).createPipelineLayout({bindGroupLayouts:layouts}));",
-            false, true, true },
+            "return H.store(H.get(1).createPipelineLayout({bindGroupLayouts:layouts}));", false, true, true },
 
-        .{ "create_compute_pipeline",
-            "return H.store(H.get(1).createComputePipeline({layout:H.get(arguments[0])," ++
-            "compute:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}}));",
-            true, false, true },
+        .{ "create_compute_pipeline", "return H.store(H.get(1).createComputePipeline({layout:H.get(arguments[0])," ++
+            "compute:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}}));", true, false, true },
 
-        .{ "create_render_pipeline",
-            "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
+        .{ "create_render_pipeline", "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
             "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}," ++
             "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
             "targets:[{format:zunkGPUFormat,blend:{" ++
             "color:{srcFactor:'src-alpha',dstFactor:'one-minus-src-alpha'}," ++
             "alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha'}}}]}," ++
-            "primitive:{topology:'triangle-list'}}));",
-            true, false, true },
+            "primitive:{topology:'triangle-list'}}));", true, false, true },
 
-        .{ "create_render_pipeline_hdr",
-            "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
+        .{ "create_render_pipeline_hdr", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
             "const t={format:fmts[arguments[6]]};" ++
             "if(arguments[7]){t.blend={color:{srcFactor:'src-alpha',dstFactor:'one',operation:'add'}," ++
             "alpha:{srcFactor:'one',dstFactor:'one',operation:'add'}};}" ++
             "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
             "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}," ++
             "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
-            "targets:[t]},primitive:{topology:'triangle-list'}}));",
-            true, false, true },
+            "targets:[t]},primitive:{topology:'triangle-list'}}));", true, false, true },
 
         // Command encoder
         .{ "create_command_encoder", "return H.store(H.get(1).createCommandEncoder());", false, false, true },
@@ -483,20 +472,16 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         .{ "compute_pass_end", "H.get(arguments[0]).end();", false, false, true },
 
         // Render pass
-        .{ "begin_render_pass",
-            "if(!zunkGPUEncoder)zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
+        .{ "begin_render_pass", "if(!zunkGPUEncoder)zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
             "const v=zunkGPUContext.getCurrentTexture().createView();" ++
             "return H.store(zunkGPUEncoder.beginRenderPass({colorAttachments:[{view:v," ++
             "clearValue:{r:arguments[0],g:arguments[1],b:arguments[2],a:arguments[3]}," ++
-            "loadOp:'clear',storeOp:'store'}]}));",
-            false, false, true },
+            "loadOp:'clear',storeOp:'store'}]}));", false, false, true },
 
-        .{ "begin_render_pass_hdr",
-            "if(!zunkGPUEncoder)zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
+        .{ "begin_render_pass_hdr", "if(!zunkGPUEncoder)zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
             "return H.store(zunkGPUEncoder.beginRenderPass({colorAttachments:[{view:H.get(arguments[0])," ++
             "clearValue:{r:arguments[1],g:arguments[2],b:arguments[3],a:arguments[4]}," ++
-            "loadOp:'clear',storeOp:'store'}]}));",
-            false, false, true },
+            "loadOp:'clear',storeOp:'store'}]}));", false, false, true },
 
         .{ "render_pass_set_pipeline", "H.get(arguments[0]).setPipeline(H.get(arguments[1]));", false, false, true },
         .{ "render_pass_set_bind_group", "H.get(arguments[0]).setBindGroup(arguments[1],H.get(arguments[2]));", false, false, true },
@@ -507,8 +492,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         .{ "present", "if(zunkGPUEncoder){H.get(1).queue.submit([zunkGPUEncoder.finish()]);zunkGPUEncoder=null;}", false, false, true },
 
         // Asset texture
-        .{ "create_texture_from_asset",
-            "const buf=H.get(arguments[0]);" ++
+        .{ "create_texture_from_asset", "const buf=H.get(arguments[0]);" ++
             "if(!(buf instanceof ArrayBuffer))return 0;" ++
             "const h=H.nextId();" ++
             "createImageBitmap(new Blob([buf]),{colorSpaceConversion:'none'})" ++
@@ -517,8 +501,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "size:[bmp.width,bmp.height],usage:0x16});" ++
             "H.get(1).queue.copyExternalImageToTexture(" ++
             "{source:bmp},{texture:tex},{width:bmp.width,height:bmp.height});" ++
-            "H.set(h,tex);});return h;",
-            false, false, true },
+            "H.set(h,tex);});return h;", false, false, true },
         .{ "is_texture_ready", "const t=H.get(arguments[0]);return(t instanceof GPUTexture)?1:0;", false, false, true },
     };
     inline for (js_map) |entry| {
@@ -617,8 +600,8 @@ fn genWebSocket(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncT
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
                 .needs_handles = true,
                 .needs_string_helper = true,
-                .needs_callbacks = std.mem.indexOf(u8, entry[1], "invoke_callback") != null,
-                .needs_memory_view = std.mem.indexOf(u8, entry[1], "memory.buffer") != null,
+                .needs_callbacks = std.mem.find(u8, entry[1], "invoke_callback") != null,
+                .needs_memory_view = std.mem.find(u8, entry[1], "memory.buffer") != null,
                 .confidence = .exact,
                 .category = .websocket,
             };
@@ -640,7 +623,7 @@ fn genStorage(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncTyp
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
                 .needs_string_helper = true,
-                .needs_memory_view = std.mem.indexOf(u8, entry[1], "memory.buffer") != null,
+                .needs_memory_view = std.mem.find(u8, entry[1], "memory.buffer") != null,
                 .confidence = .exact,
                 .category = .storage,
             };
@@ -664,7 +647,8 @@ fn signatureInference(
     {
         if (containsAny(name, &.{ "log", "print", "write", "output", "trace", "debug" })) {
             return .{
-                .js_body = try std.fmt.allocPrint(allocator,
+                .js_body = try std.fmt.allocPrint(
+                    allocator,
                     "console.log('[{s}]', readStr(arguments[0], arguments[1]));",
                     .{name},
                 ),
@@ -682,7 +666,8 @@ fn signatureInference(
     {
         if (containsAny(name, &.{ "query", "select", "find", "get_element", "get_el" })) {
             return .{
-                .js_body = try std.fmt.allocPrint(allocator,
+                .js_body = try std.fmt.allocPrint(
+                    allocator,
                     "const el = document.querySelector(readStr(arguments[0], arguments[1])); return el ? H.store(el) : 0;",
                     .{},
                 ),
@@ -749,7 +734,8 @@ fn paramNameInference(
             const is_html = containsAny(param_names[2], &.{"html"});
             const prop = if (is_html) "innerHTML" else "textContent";
             return .{
-                .js_body = try std.fmt.allocPrint(allocator,
+                .js_body = try std.fmt.allocPrint(
+                    allocator,
                     "document.querySelector(readStr(arguments[0],arguments[1])).{s} = readStr(arguments[2],arguments[3]);",
                     .{prop},
                 ),
@@ -765,7 +751,8 @@ fn paramNameInference(
         if (containsAny(param_names[0], &.{ "url", "uri", "href", "path", "endpoint" })) {
             if (containsAny(name, &.{ "fetch", "request", "get", "load", "http" })) {
                 return .{
-                    .js_body = try std.fmt.allocPrint(allocator,
+                    .js_body = try std.fmt.allocPrint(
+                        allocator,
                         "fetch(readStr(arguments[0],arguments[1])).then(r=>r.text()).then(t=>console.log('[{s}]',t));",
                         .{name},
                     ),
@@ -782,9 +769,9 @@ fn paramNameInference(
 }
 
 fn generateStub(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncType) !Resolution {
-    var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(allocator);
-    const w = body.writer(allocator);
+    var body_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer body_aw.deinit();
+    const w = &body_aw.writer;
 
     try w.print("console.warn('[zunk] unresolved import: {s}", .{name});
 
@@ -814,7 +801,7 @@ fn generateStub(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncTyp
     }
 
     return .{
-        .js_body = try body.toOwnedSlice(allocator),
+        .js_body = try body_aw.toOwnedSlice(),
         .confidence = .stub,
         .category = .unknown,
         .description = "Unresolved -- provide a bridge.js or use zunk naming conventions",
@@ -823,7 +810,7 @@ fn generateStub(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncTyp
 
 fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
     for (needles) |needle| {
-        if (std.mem.indexOf(u8, haystack, needle) != null) return true;
+        if (std.mem.find(u8, haystack, needle) != null) return true;
     }
     return false;
 }
@@ -846,7 +833,7 @@ test "stub for unknown" {
     const res = try generateStub(std.testing.allocator, "some_custom_thing", null);
     defer std.testing.allocator.free(res.js_body);
     try std.testing.expect(res.confidence == .stub);
-    try std.testing.expect(std.mem.indexOf(u8, res.js_body, "unresolved") != null);
+    try std.testing.expect(std.mem.find(u8, res.js_body, "unresolved") != null);
 }
 
 test "prefix match webgpu create_buffer" {

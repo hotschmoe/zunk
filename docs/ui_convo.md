@@ -174,6 +174,45 @@ need better text rendering (SDF), anti-aliased vector shapes, or complex
 compositing that canvas cannot deliver efficiently.
 
 
+#### Implementation (Phase A)
+
+Built: `src/web/imgui.zig`, `src/web/render_backend.zig`, and canvas extensions.
+
+**What exists:**
+
+- `imgui.zig` -- Generic `Ui(Backend)` struct with egui-inspired immediate-mode
+  API. Widgets: `label`, `button`, `slider`, `checkbox`, `separator`. Containers:
+  `beginPanel`/`endPanel`, `beginHorizontal`/`endHorizontal`.
+- `render_backend.zig` -- Comptime render backend interface (`validateBackend`)
+  with `Canvas2DBackend` implementation wrapping `web/canvas.zig`.
+- Canvas extensions: `measureText`, `clip`, `setTextBaseline` added to
+  `canvas.zig` with corresponding JS resolutions in `js_resolve.zig`.
+
+**Comptime backend pattern:**
+
+```zig
+// Any type satisfying the backend interface works:
+//   drawFilledRect, drawStrokedRect, drawText, measureText,
+//   setClipRect, clearClipRect, pushState, popState, setFont
+pub fn Ui(comptime Backend: type) type { ... }
+
+// Phase A uses Canvas 2D:
+pub const CanvasUi = Ui(Canvas2DBackend);
+
+// Phase B swap: implement GpuBackend, use Ui(GpuBackend) -- no API changes.
+```
+
+**Zero heap allocation.** Layout via fixed-size stack (max depth 16). ID system
+uses FNV-1a hash with `"Label##unique"` disambiguator syntax. Dark theme with
+customizable `Theme` struct.
+
+**Recommended first exercise:** A standalone settings/dashboard demo -- a control
+panel with sliders, checkboxes, buttons, and nested panels that exercises all
+widgets without needing app logic. This becomes a living reference for the
+widget API. After that, demo 9 (Spreadsheet from `more_demos.md`) is the ideal
+stress test since it demands every widget type plus virtual scrolling.
+
+
 ### Phase B: Hard Pivot to GPU-Accelerated UI (Option 4)
 
 When Canvas 2D hits its ceiling, we pivot to a full GPU-rendered UI. Not a
@@ -261,6 +300,6 @@ clipping, maybe basic 3D for effects. This dramatically reduces scope.
 - [ ] Study Iced's widget trait system and how they separate layout from
       rendering
 - [ ] Evaluate SDF font rendering approaches for WebGPU
-- [ ] Prototype a minimal comptime render backend interface in Zig
+- [x] Prototype a minimal comptime render backend interface in Zig
 - [ ] Survey vulkan-zig bindings maturity and ergonomics
 - [ ] Benchmark Canvas 2D fillText vs SDF atlas rendering for text-heavy UIs
