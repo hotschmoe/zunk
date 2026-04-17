@@ -1,8 +1,8 @@
 .{
     .name = .audio_demo_1_assets_bundled,
     .version = "0.0.0",
-    .fingerprint = 0x99f3c3fc495e3454,
-    .minimum_zig_version = "0.15.2",
+    .fingerprint = 0xda682f78606a3a12,
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zunk = .{ .path = "../.." },
     },
