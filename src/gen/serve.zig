@@ -470,17 +470,19 @@ fn streamWriteAll(io: Io, stream: net.Stream, data: []const u8) !void {
     var buf: [4096]u8 = undefined;
     var writer = stream.writer(io, &buf);
     const w = &writer.interface;
-    w.writeAll(data) catch |err| switch (err) {
-        error.WriteFailed => if (writer.err) |e| return switch (e) {
-            error.ConnectionResetByPeer, error.SocketUnconnected => return,
+    try reifyWriteErr(&writer, w.writeAll(data));
+    try reifyWriteErr(&writer, w.flush());
+}
+
+/// Convert `error.WriteFailed` into the underlying transport error, silently
+/// absorbing peer-disconnect cases so we don't spam logs on normal closes.
+fn reifyWriteErr(writer: *net.Stream.Writer, result: anyerror!void) !void {
+    result catch |err| switch (err) {
+        error.WriteFailed => if (writer.err) |e| switch (e) {
+            error.ConnectionResetByPeer, error.SocketUnconnected => {},
             else => return e,
         } else return error.WriteFailed,
-    };
-    w.flush() catch |err| switch (err) {
-        error.WriteFailed => if (writer.err) |e| return switch (e) {
-            error.ConnectionResetByPeer, error.SocketUnconnected => return,
-            else => return e,
-        } else return error.WriteFailed,
+        else => return err,
     };
 }
 

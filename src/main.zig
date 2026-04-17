@@ -498,28 +498,19 @@ fn doctorCommand(allocator: std.mem.Allocator, io: std.Io, console: *rich.Consol
     var checks: [4]DoctorCheck = undefined;
     var check_count: usize = 0;
 
-    // 1. Zig version
+    // 1. Zig version. We copy the trimmed version into a static buffer because
+    // `result.stdout` is freed before `checks` is printed below.
     var zig_ver_buf: [64]u8 = undefined;
-    var zig_ver_len: usize = 0;
     var zig_check = DoctorCheck{ .name = "zig version", .status = .fail, .detail = "not found" };
-    const zig_result = std.process.run(allocator, io, .{
-        .argv = &.{ "zig", "version" },
-    });
-    if (zig_result) |result| {
+    if (std.process.run(allocator, io, .{ .argv = &.{ "zig", "version" } })) |result| {
         defer allocator.free(result.stdout);
         defer allocator.free(result.stderr);
         const ver = std.mem.trim(u8, result.stdout, " \t\r\n");
         if (ver.len > 0) {
-            zig_ver_len = @min(ver.len, zig_ver_buf.len);
-            @memcpy(zig_ver_buf[0..zig_ver_len], ver[0..zig_ver_len]);
-            const ver_slice = zig_ver_buf[0..zig_ver_len];
-            if (checkZigVersion(ver_slice)) {
-                zig_check.status = .ok;
-                zig_check.detail = ver_slice;
-            } else {
-                zig_check.status = .fail;
-                zig_check.detail = ver_slice;
-            }
+            const n = @min(ver.len, zig_ver_buf.len);
+            @memcpy(zig_ver_buf[0..n], ver[0..n]);
+            zig_check.detail = zig_ver_buf[0..n];
+            zig_check.status = if (checkZigVersion(zig_check.detail)) .ok else .fail;
         }
     } else |_| {}
     checks[check_count] = zig_check;
