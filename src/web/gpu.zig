@@ -61,6 +61,61 @@ pub const BufferBindingType = enum(u32) {
     read_only_storage = 2,
 };
 
+pub const VertexFormat = enum(u32) {
+    float32 = 0,
+    float32x2 = 1,
+    float32x3 = 2,
+    float32x4 = 3,
+    uint32 = 4,
+    uint32x2 = 5,
+    uint32x3 = 6,
+    uint32x4 = 7,
+    sint32 = 8,
+    sint32x2 = 9,
+    sint32x3 = 10,
+    sint32x4 = 11,
+};
+
+pub const VertexStepMode = enum(u32) {
+    vertex = 0,
+    instance = 1,
+};
+
+// 16 bytes, ABI-matched with JS DataView reader in js_resolve.zig
+pub const VertexAttribute = extern struct {
+    format: u32, // VertexFormat
+    offset: u32,
+    shader_location: u32,
+    _padding: u32 = 0,
+
+    pub fn init(loc: u32, format: VertexFormat, offset: u32) VertexAttribute {
+        return .{
+            .format = @intFromEnum(format),
+            .offset = offset,
+            .shader_location = loc,
+        };
+    }
+};
+
+// 16 bytes, ABI-matched with JS DataView reader in js_resolve.zig.
+// attributes_ptr / attributes_len are read in WASM address space; JS walks
+// them via DataView on memory.buffer.
+pub const VertexBufferLayout = extern struct {
+    array_stride: u32,
+    step_mode: u32, // VertexStepMode
+    attributes_ptr: u32, // pointer into wasm memory
+    attributes_len: u32,
+
+    pub fn init(stride: u32, step: VertexStepMode, attributes: []const VertexAttribute) VertexBufferLayout {
+        return .{
+            .array_stride = stride,
+            .step_mode = @intFromEnum(step),
+            .attributes_ptr = @intFromPtr(attributes.ptr),
+            .attributes_len = @intCast(attributes.len),
+        };
+    }
+};
+
 // 40 bytes, ABI-matched with JS DataView reader in js_resolve.zig
 pub const BindGroupLayoutEntry = extern struct {
     binding: u32,
@@ -156,8 +211,8 @@ extern "env" fn zunk_gpu_create_bind_group_layout(entries_ptr: [*]const u8, entr
 extern "env" fn zunk_gpu_create_bind_group(layout_h: i32, entries_ptr: [*]const u8, entries_len: u32) i32;
 extern "env" fn zunk_gpu_create_pipeline_layout(layouts_ptr: [*]const u8, layouts_len: u32) i32;
 extern "env" fn zunk_gpu_create_compute_pipeline(layout_h: i32, shader_h: i32, entry_ptr: [*]const u8, entry_len: u32) i32;
-extern "env" fn zunk_gpu_create_render_pipeline(layout_h: i32, shader_h: i32, vert_ptr: [*]const u8, vert_len: u32, frag_ptr: [*]const u8, frag_len: u32) i32;
-extern "env" fn zunk_gpu_create_render_pipeline_hdr(layout_h: i32, shader_h: i32, vert_ptr: [*]const u8, vert_len: u32, frag_ptr: [*]const u8, frag_len: u32, format: u32, blending: u32) i32;
+extern "env" fn zunk_gpu_create_render_pipeline(layout_h: i32, shader_h: i32, vert_ptr: [*]const u8, vert_len: u32, frag_ptr: [*]const u8, frag_len: u32, vbuf_layouts_ptr: [*]const u8, vbuf_layouts_len: u32) i32;
+extern "env" fn zunk_gpu_create_render_pipeline_hdr(layout_h: i32, shader_h: i32, vert_ptr: [*]const u8, vert_len: u32, frag_ptr: [*]const u8, frag_len: u32, format: u32, blending: u32, vbuf_layouts_ptr: [*]const u8, vbuf_layouts_len: u32) i32;
 extern "env" fn zunk_gpu_create_command_encoder() i32;
 extern "env" fn zunk_gpu_begin_compute_pass(encoder_h: i32) i32;
 extern "env" fn zunk_gpu_compute_pass_set_pipeline(pass_h: i32, pipeline_h: i32) void;
@@ -171,6 +226,7 @@ extern "env" fn zunk_gpu_begin_render_pass(r: f32, g: f32, b: f32, a: f32) i32;
 extern "env" fn zunk_gpu_begin_render_pass_hdr(texture_view_h: i32, r: f32, g: f32, b: f32, a: f32) i32;
 extern "env" fn zunk_gpu_render_pass_set_pipeline(pass_h: i32, pipeline_h: i32) void;
 extern "env" fn zunk_gpu_render_pass_set_bind_group(pass_h: i32, index: u32, group_h: i32) void;
+extern "env" fn zunk_gpu_render_pass_set_vertex_buffer(pass_h: i32, slot: u32, buffer_h: i32, offset_lo: u32, offset_hi: u32, size_lo: u32, size_hi: u32) void;
 extern "env" fn zunk_gpu_render_pass_draw(pass_h: i32, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void;
 extern "env" fn zunk_gpu_render_pass_end(pass_h: i32) void;
 extern "env" fn zunk_gpu_present() void;
@@ -260,7 +316,13 @@ pub fn createComputePipeline(layout: PipelineLayout, shader: ShaderModule, entry
     ));
 }
 
-pub fn createRenderPipeline(layout: PipelineLayout, shader: ShaderModule, vertex_entry: []const u8, fragment_entry: []const u8) RenderPipeline {
+pub fn createRenderPipeline(
+    layout: PipelineLayout,
+    shader: ShaderModule,
+    vertex_entry: []const u8,
+    fragment_entry: []const u8,
+    vertex_buffers: []const VertexBufferLayout,
+) RenderPipeline {
     return bind.Handle.fromInt(zunk_gpu_create_render_pipeline(
         layout.toInt(),
         shader.toInt(),
@@ -268,10 +330,20 @@ pub fn createRenderPipeline(layout: PipelineLayout, shader: ShaderModule, vertex
         @intCast(vertex_entry.len),
         fragment_entry.ptr,
         @intCast(fragment_entry.len),
+        @ptrCast(vertex_buffers.ptr),
+        @intCast(vertex_buffers.len),
     ));
 }
 
-pub fn createRenderPipelineHDR(layout: PipelineLayout, shader: ShaderModule, vertex_entry: []const u8, fragment_entry: []const u8, format: TextureFormat, blending: bool) RenderPipeline {
+pub fn createRenderPipelineHDR(
+    layout: PipelineLayout,
+    shader: ShaderModule,
+    vertex_entry: []const u8,
+    fragment_entry: []const u8,
+    format: TextureFormat,
+    blending: bool,
+    vertex_buffers: []const VertexBufferLayout,
+) RenderPipeline {
     return bind.Handle.fromInt(zunk_gpu_create_render_pipeline_hdr(
         layout.toInt(),
         shader.toInt(),
@@ -281,6 +353,8 @@ pub fn createRenderPipelineHDR(layout: PipelineLayout, shader: ShaderModule, ver
         @intCast(fragment_entry.len),
         @intFromEnum(format),
         @intFromBool(blending),
+        @ptrCast(vertex_buffers.ptr),
+        @intCast(vertex_buffers.len),
     ));
 }
 
@@ -336,6 +410,18 @@ pub fn renderPassSetBindGroup(pass: RenderPassEncoder, index: u32, group: BindGr
     zunk_gpu_render_pass_set_bind_group(pass.toInt(), index, group.toInt());
 }
 
+pub fn renderPassSetVertexBuffer(pass: RenderPassEncoder, slot: u32, buffer: Buffer, offset: u64, size: u64) void {
+    zunk_gpu_render_pass_set_vertex_buffer(
+        pass.toInt(),
+        slot,
+        buffer.toInt(),
+        @truncate(offset),
+        @truncate(offset >> 32),
+        @truncate(size),
+        @truncate(size >> 32),
+    );
+}
+
 pub fn renderPassDraw(pass: RenderPassEncoder, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void {
     zunk_gpu_render_pass_draw(pass.toInt(), vertex_count, instance_count, first_vertex, first_instance);
 }
@@ -362,6 +448,14 @@ test "struct layout BindGroupLayoutEntry" {
 
 test "struct layout BindGroupEntry" {
     try std.testing.expectEqual(@as(usize, 32), @sizeOf(BindGroupEntry));
+}
+
+test "struct layout VertexAttribute" {
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(VertexAttribute));
+}
+
+test "struct layout VertexBufferLayout" {
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(VertexBufferLayout));
 }
 
 test {

@@ -1,0 +1,79 @@
+// Vertex-buffer acceptance demo: uploads three interleaved {pos: vec2, color: vec3}
+// vertices to a VERTEX|COPY_DST buffer, binds them via setVertexBuffer, and draws
+// a solid triangle. Exercises the vertex_buffers parameter on createRenderPipeline
+// and the new renderPassSetVertexBuffer entry point.
+
+const zunk = @import("zunk");
+const gpu = zunk.web.gpu;
+const input = zunk.web.input;
+const app = zunk.web.app;
+
+const Vertex = extern struct {
+    pos: [2]f32,
+    color: [3]f32,
+};
+
+const vertices = [_]Vertex{
+    .{ .pos = .{ 0.0, 0.6 }, .color = .{ 1.0, 0.2, 0.2 } },
+    .{ .pos = .{ -0.6, -0.6 }, .color = .{ 0.2, 1.0, 0.2 } },
+    .{ .pos = .{ 0.6, -0.6 }, .color = .{ 0.2, 0.2, 1.0 } },
+};
+
+const shader_src =
+    \\struct VSOut {
+    \\  @builtin(position) pos: vec4f,
+    \\  @location(0) color: vec3f,
+    \\};
+    \\
+    \\@vertex fn vertexMain(
+    \\  @location(0) in_pos: vec2f,
+    \\  @location(1) in_color: vec3f,
+    \\) -> VSOut {
+    \\  var o: VSOut;
+    \\  o.pos = vec4f(in_pos, 0.0, 1.0);
+    \\  o.color = in_color;
+    \\  return o;
+    \\}
+    \\
+    \\@fragment fn fragmentMain(in: VSOut) -> @location(0) vec4f {
+    \\  return vec4f(in.color, 1.0);
+    \\}
+;
+
+var vertex_buffer: gpu.Buffer = undefined;
+var pipeline: gpu.RenderPipeline = undefined;
+
+export fn init() void {
+    input.init();
+    app.setTitle("zunk vertex-triangle");
+
+    const shader = gpu.createShaderModule(shader_src);
+    const pl = gpu.createPipelineLayout(&.{});
+
+    const attrs = [_]gpu.VertexAttribute{
+        gpu.VertexAttribute.init(0, .float32x2, 0),
+        gpu.VertexAttribute.init(1, .float32x3, 8),
+    };
+    const layouts = [_]gpu.VertexBufferLayout{
+        gpu.VertexBufferLayout.init(@sizeOf(Vertex), .vertex, &attrs),
+    };
+
+    pipeline = gpu.createRenderPipeline(pl, shader, "vertexMain", "fragmentMain", &layouts);
+
+    const bytes: u32 = @intCast(@sizeOf(@TypeOf(vertices)));
+    vertex_buffer = gpu.createBuffer(bytes, gpu.BufferUsage.VERTEX | gpu.BufferUsage.COPY_DST);
+    gpu.bufferWriteTyped(Vertex, vertex_buffer, 0, &vertices);
+}
+
+export fn frame(_: f32) void {
+    input.poll();
+
+    const pass = gpu.beginRenderPass(0.05, 0.07, 0.09, 1.0);
+    gpu.renderPassSetPipeline(pass, pipeline);
+    gpu.renderPassSetVertexBuffer(pass, 0, vertex_buffer, 0, @sizeOf(@TypeOf(vertices)));
+    gpu.renderPassDraw(pass, 3, 1, 0, 0);
+    gpu.renderPassEnd(pass);
+    gpu.present();
+}
+
+export fn resize(_: u32, _: u32) void {}

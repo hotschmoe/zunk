@@ -1,0 +1,14 @@
+.{
+    .name = .vertex_triangle,
+    .version = "0.0.0",
+    .fingerprint = 0xd5ac5ce62118bae4,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zunk = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
