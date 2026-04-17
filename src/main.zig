@@ -118,7 +118,7 @@ const ProxyConfig = struct {
 
 fn parseProxy(arg: ?[]const u8) ProxyConfig {
     const proxy_arg = arg orelse return .{};
-    const eq_pos = std.mem.indexOfScalar(u8, proxy_arg, '=') orelse return .{};
+    const eq_pos = std.mem.findScalar(u8, proxy_arg, '=') orelse return .{};
     return .{
         .prefix = proxy_arg[0..eq_pos],
         .target = proxy_arg[eq_pos + 1 ..],

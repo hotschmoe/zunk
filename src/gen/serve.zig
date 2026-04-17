@@ -277,7 +277,7 @@ fn isWsUpgrade(request: []const u8) bool {
 fn findHeader(request: []const u8, name: []const u8) ?[]const u8 {
     var iter = std.mem.splitSequence(u8, request, "\r\n");
     while (iter.next()) |line| {
-        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const colon = std.mem.findScalar(u8, line, ':') orelse continue;
         if (std.ascii.eqlIgnoreCase(line[0..colon], name)) {
             return std.mem.trimStart(u8, line[colon + 1 ..], " ");
         }
@@ -489,7 +489,7 @@ fn reifyWriteErr(writer: *net.Stream.Writer, result: anyerror!void) !void {
 fn parsePath(request: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, request, "GET ")) return null;
     const rest = request[4..];
-    const end = std.mem.indexOfScalar(u8, rest, ' ') orelse return null;
+    const end = std.mem.findScalar(u8, rest, ' ') orelse return null;
     return rest[0..end];
 }
 
@@ -526,10 +526,10 @@ fn proxyRequest(
 
     var host: []const u8 = rest;
     var port: u16 = 80;
-    if (std.mem.indexOfScalar(u8, rest, ':')) |colon| {
+    if (std.mem.findScalar(u8, rest, ':')) |colon| {
         host = rest[0..colon];
         port = std.fmt.parseInt(u16, rest[colon + 1 ..], 10) catch 80;
-    } else if (std.mem.indexOfScalar(u8, rest, '/')) |slash| {
+    } else if (std.mem.findScalar(u8, rest, '/')) |slash| {
         host = rest[0..slash];
     }
 
@@ -545,9 +545,9 @@ fn proxyRequest(
     var rewritten_aw: std.Io.Writer.Allocating = .init(allocator);
     defer rewritten_aw.deinit();
 
-    const method_end = std.mem.indexOfScalar(u8, request[0..first_line_end], ' ') orelse return error.InvalidRequest;
+    const method_end = std.mem.findScalar(u8, request[0..first_line_end], ' ') orelse return error.InvalidRequest;
     const method = request[0..method_end];
-    const version_start = std.mem.lastIndexOfScalar(u8, request[0..first_line_end], ' ') orelse return error.InvalidRequest;
+    const version_start = std.mem.findScalarLast(u8, request[0..first_line_end], ' ') orelse return error.InvalidRequest;
     const version = request[version_start..first_line_end];
 
     try rewritten_aw.writer.print("{s} {s}{s}\r\n", .{ method, path, version });

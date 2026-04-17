@@ -207,8 +207,8 @@ fn genCanvas(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         if (std.mem.eql(u8, method, entry[0])) {
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
-                .needs_handles = std.mem.indexOf(u8, entry[1], "H.") != null,
-                .needs_string_helper = std.mem.indexOf(u8, entry[1], "readStr") != null,
+                .needs_handles = std.mem.find(u8, entry[1], "H.") != null,
+                .needs_string_helper = std.mem.find(u8, entry[1], "readStr") != null,
                 .confidence = .exact,
                 .category = .canvas2d,
                 .description = "Canvas: " ++ entry[0],
@@ -249,7 +249,7 @@ fn genCanvas2D(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncTy
     };
     inline for (js_map) |entry| {
         if (std.mem.eql(u8, method, entry[0])) {
-            const needs_str = std.mem.indexOf(u8, entry[1], "readStr") != null;
+            const needs_str = std.mem.find(u8, entry[1], "readStr") != null;
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
                 .needs_handles = true,
@@ -305,8 +305,8 @@ fn genInput(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType)
         if (std.mem.eql(u8, method, entry[0])) {
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
-                .needs_handles = std.mem.indexOf(u8, entry[1], "H.get") != null,
-                .needs_memory_view = std.mem.indexOf(u8, entry[1], "zunkInput") != null,
+                .needs_handles = std.mem.find(u8, entry[1], "H.get") != null,
+                .needs_memory_view = std.mem.find(u8, entry[1], "zunkInput") != null,
                 .confidence = .exact,
                 .category = .input,
             };
@@ -362,7 +362,7 @@ fn genApp(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?
         if (std.mem.eql(u8, method, entry[0])) {
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
-                .needs_string_helper = std.mem.indexOf(u8, entry[1], "readStr") != null,
+                .needs_string_helper = std.mem.find(u8, entry[1], "readStr") != null,
                 .confidence = .exact,
                 .category = .lifecycle,
             };
@@ -620,8 +620,8 @@ fn genWebSocket(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncT
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
                 .needs_handles = true,
                 .needs_string_helper = true,
-                .needs_callbacks = std.mem.indexOf(u8, entry[1], "invoke_callback") != null,
-                .needs_memory_view = std.mem.indexOf(u8, entry[1], "memory.buffer") != null,
+                .needs_callbacks = std.mem.find(u8, entry[1], "invoke_callback") != null,
+                .needs_memory_view = std.mem.find(u8, entry[1], "memory.buffer") != null,
                 .confidence = .exact,
                 .category = .websocket,
             };
@@ -643,7 +643,7 @@ fn genStorage(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncTyp
             return .{
                 .js_body = allocator.dupe(u8, entry[1]) catch return null,
                 .needs_string_helper = true,
-                .needs_memory_view = std.mem.indexOf(u8, entry[1], "memory.buffer") != null,
+                .needs_memory_view = std.mem.find(u8, entry[1], "memory.buffer") != null,
                 .confidence = .exact,
                 .category = .storage,
             };
@@ -826,7 +826,7 @@ fn generateStub(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncTyp
 
 fn containsAny(haystack: []const u8, needles: []const []const u8) bool {
     for (needles) |needle| {
-        if (std.mem.indexOf(u8, haystack, needle) != null) return true;
+        if (std.mem.find(u8, haystack, needle) != null) return true;
     }
     return false;
 }
@@ -849,7 +849,7 @@ test "stub for unknown" {
     const res = try generateStub(std.testing.allocator, "some_custom_thing", null);
     defer std.testing.allocator.free(res.js_body);
     try std.testing.expect(res.confidence == .stub);
-    try std.testing.expect(std.mem.indexOf(u8, res.js_body, "unresolved") != null);
+    try std.testing.expect(std.mem.find(u8, res.js_body, "unresolved") != null);
 }
 
 test "prefix match webgpu create_buffer" {
