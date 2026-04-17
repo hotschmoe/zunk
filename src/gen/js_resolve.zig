@@ -785,9 +785,9 @@ fn paramNameInference(
 }
 
 fn generateStub(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncType) !Resolution {
-    var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(allocator);
-    const w = body.writer(allocator);
+    var body_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer body_aw.deinit();
+    const w = &body_aw.writer;
 
     try w.print("console.warn('[zunk] unresolved import: {s}", .{name});
 
@@ -817,7 +817,7 @@ fn generateStub(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncTyp
     }
 
     return .{
-        .js_body = try body.toOwnedSlice(allocator),
+        .js_body = try body_aw.toOwnedSlice(),
         .confidence = .stub,
         .category = .unknown,
         .description = "Unresolved -- provide a bridge.js or use zunk naming conventions",

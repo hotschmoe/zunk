@@ -1,12 +1,16 @@
 const std = @import("std");
 const webzocket = @import("webzocket");
 const rich = @import("rich_zig");
-const native_os = @import("builtin").os.tag;
-const windows = std.os.windows;
+
+const net = std.Io.net;
+const Io = std.Io;
 
 const default_favicon = @embedFile("favicon.ico");
 
-const Handle = std.net.Stream.Handle;
+// Raw handle type for WS registry (tracks active WebSocket connections across threads).
+// Using the socket handle directly keeps the registry cheap -- we only need identity
+// and the ability to write frames out of a shared `Io`.
+const SockHandle = std.posix.fd_t;
 
 fn reloadScript(port: u16) [reload_script_max]u8 {
     var buf: [reload_script_max]u8 = undefined;
@@ -46,38 +50,46 @@ pub const ServeConfig = struct {
     proxy_target: ?[]const u8 = null,
 };
 
-const WsRegistry = struct {
-    mutex: std.Thread.Mutex = .{},
-    handles: [16]?Handle = .{null} ** 16,
+/// A WebSocket connection registered for broadcasts. The stream is shared across
+/// threads (the connection thread parks in a read loop, the watcher threads push
+/// `reload` / `clear` / `error:` frames), so the mutex protects the slot list itself.
+const WsSlot = struct {
+    id: SockHandle,
+    stream: net.Stream,
+};
 
-    fn add(self: *WsRegistry, handle: Handle) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        for (&self.handles) |*slot| {
+const WsRegistry = struct {
+    mutex: Io.Mutex = .init,
+    slots: [16]?WsSlot = .{null} ** 16,
+
+    fn add(self: *WsRegistry, io: Io, stream: net.Stream) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        for (&self.slots) |*slot| {
             if (slot.* == null) {
-                slot.* = handle;
+                slot.* = .{ .id = stream.socket.handle, .stream = stream };
                 return;
             }
         }
     }
 
-    fn remove(self: *WsRegistry, handle: Handle) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        for (&self.handles) |*slot| {
-            if (slot.* == handle) {
+    fn remove(self: *WsRegistry, io: Io, id: SockHandle) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        for (&self.slots) |*slot| {
+            if (slot.* != null and slot.*.?.id == id) {
                 slot.* = null;
                 return;
             }
         }
     }
 
-    fn broadcast(self: *WsRegistry, msg: []const u8) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        for (&self.handles) |*slot| {
-            if (slot.*) |handle| {
-                wsWriteText(handle, msg) catch {
+    fn broadcast(self: *WsRegistry, io: Io, msg: []const u8) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        for (&self.slots) |*slot| {
+            if (slot.*) |ws| {
+                wsWriteText(io, ws.stream, msg) catch {
                     slot.* = null;
                 };
             }
@@ -85,28 +97,35 @@ const WsRegistry = struct {
     }
 };
 
-pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16, config: ServeConfig, console: *rich.Console) !void {
-    var root_dir = try std.fs.cwd().openDir(root_dir_path, .{});
-    defer root_dir.close();
+pub fn serve(
+    allocator: std.mem.Allocator,
+    io: Io,
+    root_dir_path: []const u8,
+    port: u16,
+    config: ServeConfig,
+    console: *rich.Console,
+) !void {
+    var root_dir = try std.Io.Dir.cwd().openDir(io, root_dir_path, .{});
+    defer root_dir.close(io);
 
     var ws_reg = WsRegistry{};
 
     if (config.autoreload) {
-        spawnDetached(watcherThread, .{ root_dir_path, &ws_reg, console }, "file watcher", console);
+        spawnDetached(watcherThread, .{ io, root_dir_path, &ws_reg, console }, "file watcher", console);
     }
 
     if (config.autoreload and config.watch_sources) {
-        spawnDetached(sourceWatcherThread, .{ allocator, &config, &ws_reg, console }, "source watcher", console);
+        spawnDetached(sourceWatcherThread, .{ allocator, io, &config, &ws_reg, console }, "source watcher", console);
     }
 
-    const addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port);
-    var server = addr.listen(.{ .reuse_address = true }) catch |err| {
+    const addr: net.IpAddress = .{ .ip4 = .loopback(port) };
+    var server = addr.listen(io, .{}) catch |err| {
         if (err == error.AddressInUse) {
             logErr("error: port {d} is already in use", .{port}, console);
         }
         return err;
     };
-    defer server.deinit();
+    defer server.deinit(io);
 
     var banner_buf: [512]u8 = undefined;
     const banner_content = std.fmt.bufPrint(&banner_buf, "http://127.0.0.1:{d}{s}{s}", .{
@@ -123,71 +142,94 @@ pub fn serve(allocator: std.mem.Allocator, root_dir_path: []const u8, port: u16,
     try console.print("");
 
     while (true) {
-        const conn = server.accept() catch |err| {
+        const stream = server.accept(io) catch |err| {
             logErr("accept error: {}", .{err}, console);
             continue;
         };
-        const thread = std.Thread.spawn(.{}, connectionThread, .{ allocator, conn.stream, root_dir, &ws_reg, &config, console });
-        if (thread) |t| t.detach() else |_| conn.stream.close();
+        const thread = std.Thread.spawn(.{}, connectionThread, .{ allocator, io, stream, root_dir, &ws_reg, &config, console });
+        if (thread) |t| t.detach() else |_| stream.close(io);
     }
 }
 
-fn connectionThread(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, ws_reg: *WsRegistry, config: *const ServeConfig, console: *rich.Console) void {
-    defer stream.close();
+fn connectionThread(
+    allocator: std.mem.Allocator,
+    io: Io,
+    stream: net.Stream,
+    root_dir: std.Io.Dir,
+    ws_reg: *WsRegistry,
+    config: *const ServeConfig,
+    console: *rich.Console,
+) void {
+    defer stream.close(io);
 
-    var buf: [4096]u8 = undefined;
-    const n = socketRead(stream.handle, &buf) catch return;
-    if (n == 0) return;
-    const request = buf[0..n];
+    var read_buf: [4096]u8 = undefined;
+    var reader = stream.reader(io, &read_buf);
+    const r = &reader.interface;
 
-    if (config.autoreload and isWsUpgrade(request)) {
-        wsHandshake(stream.handle, request) catch return;
-        ws_reg.add(stream.handle);
-        wsReadLoop(stream.handle);
-        ws_reg.remove(stream.handle);
+    // Read whatever the client sent in their first packet. We don't try to
+    // parse HTTP framing -- the dev server only handles simple GET requests
+    // that fit in a single TCP segment (no body). 4096 bytes is generous.
+    r.fillMore() catch return;
+    const request_bytes = r.buffered();
+    if (request_bytes.len == 0) return;
+
+    if (config.autoreload and isWsUpgrade(request_bytes)) {
+        wsHandshake(io, stream, request_bytes) catch return;
+        r.tossBuffered();
+        ws_reg.add(io, stream);
+        wsReadLoop(&reader);
+        ws_reg.remove(io, stream.socket.handle);
         return;
     }
 
-    handleHttpRequest(allocator, stream, root_dir, request, config, console) catch |err| {
+    handleHttpRequest(allocator, io, stream, root_dir, request_bytes, config, console) catch |err| {
         logErr("request error: {}", .{err}, console);
     };
 }
 
-fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_dir: std.fs.Dir, request: []const u8, config: *const ServeConfig, console: *rich.Console) !void {
+fn handleHttpRequest(
+    allocator: std.mem.Allocator,
+    io: Io,
+    stream: net.Stream,
+    root_dir: std.Io.Dir,
+    request: []const u8,
+    config: *const ServeConfig,
+    console: *rich.Console,
+) !void {
     const path = parsePath(request) orelse return;
 
     if (config.proxy_prefix) |prefix| {
         if (std.mem.startsWith(u8, path, prefix)) {
-            proxyRequest(allocator, stream, request, path, config.proxy_target.?, console) catch |err| {
+            proxyRequest(allocator, io, stream, request, path, config.proxy_target.?, console) catch |err| {
                 logErr("proxy error: {}", .{err}, console);
-                sendResponse(stream, "502 Bad Gateway", "text/plain", "Bad Gateway") catch {};
+                sendResponse(io, stream, "502 Bad Gateway", "text/plain", "Bad Gateway") catch {};
             };
             return;
         }
     }
 
-    if (std.mem.indexOf(u8, path, "..") != null) {
-        try sendResponse(stream, "403 Forbidden", "text/plain", "Forbidden");
+    if (std.mem.find(u8, path, "..") != null) {
+        try sendResponse(io, stream, "403 Forbidden", "text/plain", "Forbidden");
         return;
     }
 
     const rel_path = if (std.mem.eql(u8, path, "/")) "index.html" else path[1..];
 
-    const file_data = root_dir.readFileAlloc(allocator, rel_path, 50 * 1024 * 1024) catch {
+    const file_data = root_dir.readFileAlloc(io, rel_path, allocator, .limited(50 * 1024 * 1024)) catch {
         if (std.mem.eql(u8, rel_path, "favicon.ico")) {
-            try sendResponse(stream, "200 OK", "image/x-icon", default_favicon);
+            try sendResponse(io, stream, "200 OK", "image/x-icon", default_favicon);
             return;
         }
-        if (std.fs.path.extension(rel_path).len == 0) {
-            const fallback = root_dir.readFileAlloc(allocator, "index.html", 50 * 1024 * 1024) catch {
-                try sendResponse(stream, "404 Not Found", "text/plain", "Not Found");
+        if (std.Io.Dir.path.extension(rel_path).len == 0) {
+            const fallback = root_dir.readFileAlloc(io, "index.html", allocator, .limited(50 * 1024 * 1024)) catch {
+                try sendResponse(io, stream, "404 Not Found", "text/plain", "Not Found");
                 return;
             };
             defer allocator.free(fallback);
-            try sendHtmlWithReload(allocator, stream, fallback, config);
+            try sendHtmlWithReload(allocator, io, stream, fallback, config);
             return;
         }
-        try sendResponse(stream, "404 Not Found", "text/plain", "Not Found");
+        try sendResponse(io, stream, "404 Not Found", "text/plain", "Not Found");
         return;
     };
     defer allocator.free(file_data);
@@ -196,30 +238,34 @@ fn handleHttpRequest(allocator: std.mem.Allocator, stream: std.net.Stream, root_
 
     const mime = mimeType(rel_path);
     if (config.autoreload and std.mem.eql(u8, mime, "text/html")) {
-        try sendHtmlWithReload(allocator, stream, file_data, config);
+        try sendHtmlWithReload(allocator, io, stream, file_data, config);
     } else {
-        try sendResponse(stream, "200 OK", mime, file_data);
+        try sendResponse(io, stream, "200 OK", mime, file_data);
     }
 }
 
-fn sendHtmlWithReload(allocator: std.mem.Allocator, stream: std.net.Stream, html: []const u8, config: *const ServeConfig) !void {
+fn sendHtmlWithReload(
+    allocator: std.mem.Allocator,
+    io: Io,
+    stream: net.Stream,
+    html: []const u8,
+    config: *const ServeConfig,
+) !void {
     const script_buf = reloadScript(config.port);
     const script = std.mem.sliceTo(&script_buf, 0);
 
-    if (std.mem.indexOf(u8, html, "</body>")) |pos| {
-        const body = try allocator.alloc(u8, html.len + script.len);
-        defer allocator.free(body);
+    const body = try allocator.alloc(u8, html.len + script.len);
+    defer allocator.free(body);
+
+    if (std.mem.find(u8, html, "</body>")) |pos| {
         @memcpy(body[0..pos], html[0..pos]);
         @memcpy(body[pos..][0..script.len], script);
         @memcpy(body[pos + script.len ..], html[pos..]);
-        try sendResponse(stream, "200 OK", "text/html", body);
     } else {
-        const body = try allocator.alloc(u8, html.len + script.len);
-        defer allocator.free(body);
         @memcpy(body[0..html.len], html);
         @memcpy(body[html.len..], script);
-        try sendResponse(stream, "200 OK", "text/html", body);
     }
+    try sendResponse(io, stream, "200 OK", "text/html", body);
 }
 
 fn isWsUpgrade(request: []const u8) bool {
@@ -233,66 +279,70 @@ fn findHeader(request: []const u8, name: []const u8) ?[]const u8 {
     while (iter.next()) |line| {
         const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
         if (std.ascii.eqlIgnoreCase(line[0..colon], name)) {
-            return std.mem.trimLeft(u8, line[colon + 1 ..], " ");
+            return std.mem.trimStart(u8, line[colon + 1 ..], " ");
         }
     }
     return null;
 }
 
-fn wsHandshake(handle: Handle, request: []const u8) !void {
+fn wsHandshake(io: Io, stream: net.Stream, request: []const u8) !void {
     const key = findHeader(request, "Sec-WebSocket-Key") orelse return error.MissingHeader;
     var reply_buf: [256]u8 = undefined;
     const reply = try webzocket.Handshake.createReply(key, null, false, &reply_buf);
-    try socketWrite(handle, reply);
+    try streamWriteAll(io, stream, reply);
 }
 
-fn wsWriteText(handle: Handle, msg: []const u8) !void {
+fn wsWriteText(io: Io, stream: net.Stream, msg: []const u8) !void {
     if (msg.len <= 125) {
         var buf: [2 + 125]u8 = undefined;
         const header = webzocket.proto.writeFrameHeader(&buf, .text, msg.len, false);
         @memcpy(buf[header.len..][0..msg.len], msg);
-        try socketWrite(handle, buf[0 .. header.len + msg.len]);
+        try streamWriteAll(io, stream, buf[0 .. header.len + msg.len]);
     } else {
         var header_buf: [14]u8 = undefined;
         const header = webzocket.proto.writeFrameHeader(&header_buf, .text, msg.len, false);
-        try socketWrite(handle, header_buf[0..header.len]);
-        try socketWrite(handle, msg);
+        try streamWriteAll(io, stream, header_buf[0..header.len]);
+        try streamWriteAll(io, stream, msg);
     }
 }
 
-fn wsReadLoop(handle: Handle) void {
-    var buf: [256]u8 = undefined;
+/// Parks until the peer closes. We don't parse client-to-server frames -- the
+/// dev client never sends any. A close frame or EOF drops out of the loop.
+fn wsReadLoop(reader: *net.Stream.Reader) void {
+    const r = &reader.interface;
     while (true) {
-        const n = socketRead(handle, &buf) catch return;
-        if (n == 0) return;
-        if (buf[0] == @intFromEnum(webzocket.OpCode.close)) return;
+        r.fillMore() catch return;
+        const chunk = r.buffered();
+        if (chunk.len == 0) return;
+        if (chunk[0] == @intFromEnum(webzocket.OpCode.close)) return;
+        r.tossBuffered();
     }
 }
 
-fn watcherThread(root_dir_path: []const u8, ws_reg: *WsRegistry, console: *rich.Console) void {
+fn watcherThread(io: Io, root_dir_path: []const u8, ws_reg: *WsRegistry, console: *rich.Console) void {
     var last_fingerprint: i128 = 0;
-    _ = pollDirChanged(root_dir_path, &last_fingerprint);
+    _ = pollDirChanged(io, root_dir_path, &last_fingerprint);
     while (true) {
-        std.Thread.sleep(500 * std.time.ns_per_ms);
-        if (pollDirChanged(root_dir_path, &last_fingerprint)) {
+        io.sleep(Io.Duration.fromMilliseconds(500), .awake) catch return;
+        if (pollDirChanged(io, root_dir_path, &last_fingerprint)) {
             logWarn("reload: dist/ changed, notifying browsers", .{}, console);
-            ws_reg.broadcast("reload");
+            ws_reg.broadcast(io, "reload");
         }
     }
 }
 
-fn pollDirChanged(root_dir_path: []const u8, last_fingerprint: *i128) bool {
-    var dir = std.fs.cwd().openDir(root_dir_path, .{}) catch return false;
-    defer dir.close();
+fn pollDirChanged(io: Io, root_dir_path: []const u8, last_fingerprint: *i128) bool {
+    var dir = std.Io.Dir.cwd().openDir(io, root_dir_path, .{}) catch return false;
+    defer dir.close(io);
 
     var fingerprint: i128 = 0;
     var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        const file = dir.openFile(entry.name, .{}) catch continue;
-        defer file.close();
-        const stat = file.stat() catch continue;
-        fingerprint +%= stat.mtime;
+        const file = dir.openFile(io, entry.name, .{}) catch continue;
+        defer file.close(io);
+        const stat = file.stat(io) catch continue;
+        fingerprint +%= @intCast(stat.mtime.nanoseconds);
     }
 
     if (fingerprint != last_fingerprint.*) {
@@ -302,53 +352,42 @@ fn pollDirChanged(root_dir_path: []const u8, last_fingerprint: *i128) bool {
     return false;
 }
 
-fn sourceWatcherThread(allocator: std.mem.Allocator, config: *const ServeConfig, ws_reg: *WsRegistry, console: *rich.Console) void {
+fn sourceWatcherThread(allocator: std.mem.Allocator, io: Io, config: *const ServeConfig, ws_reg: *WsRegistry, console: *rich.Console) void {
     var last_fingerprint: i128 = 0;
-    _ = pollSourceChanged(config, &last_fingerprint);
+    _ = pollSourceChanged(io, config, &last_fingerprint);
     while (true) {
-        std.Thread.sleep(500 * std.time.ns_per_ms);
-        if (pollSourceChanged(config, &last_fingerprint)) {
-            std.Thread.sleep(100 * std.time.ns_per_ms);
+        io.sleep(Io.Duration.fromMilliseconds(500), .awake) catch return;
+        if (pollSourceChanged(io, config, &last_fingerprint)) {
+            io.sleep(Io.Duration.fromMilliseconds(100), .awake) catch return;
             console.printStyled("watch: source changed, rebuilding...", rich.Style.empty.bold().foreground(rich.Color.cyan)) catch {};
-            runBuild(allocator, config, ws_reg, console);
+            runBuild(allocator, io, config, ws_reg, console);
         }
     }
 }
 
-fn runBuild(allocator: std.mem.Allocator, config: *const ServeConfig, ws_reg: *WsRegistry, console: *rich.Console) void {
-    var child = std.process.Child.init(config.build_cmd, allocator);
-    child.stderr_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-    child.spawn() catch |err| {
-        logErr("build: failed to spawn: {}", .{err}, console);
+fn runBuild(allocator: std.mem.Allocator, io: Io, config: *const ServeConfig, ws_reg: *WsRegistry, console: *rich.Console) void {
+    const result = std.process.run(allocator, io, .{
+        .argv = config.build_cmd,
+    }) catch |err| {
+        logErr("build: failed to run: {}", .{err}, console);
         return;
     };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
-    var stdout_buf: std.ArrayList(u8) = .empty;
-    defer stdout_buf.deinit(allocator);
-    var stderr_buf: std.ArrayList(u8) = .empty;
-    defer stderr_buf.deinit(allocator);
-
-    child.collectOutput(allocator, &stdout_buf, &stderr_buf, 512 * 1024) catch {};
-
-    const result = child.wait() catch |err| {
-        logErr("build: wait failed: {}", .{err}, console);
-        return;
-    };
-
-    const success = switch (result) {
-        .Exited => |code| code == 0,
+    const success = switch (result.term) {
+        .exited => |code| code == 0,
         else => false,
     };
 
     if (success) {
         console.printStyled("build: success", rich.Style.empty.bold().foreground(rich.Color.green)) catch {};
-        ws_reg.broadcast("clear");
+        ws_reg.broadcast(io, "clear");
         return;
     }
 
     console.printStyled("build: failed", rich.Style.empty.bold().foreground(rich.Color.red)) catch {};
-    const err_text = stderr_buf.items;
+    const err_text = result.stderr;
     if (err_text.len == 0) return;
 
     const max_err_len = 60000;
@@ -358,21 +397,21 @@ fn runBuild(allocator: std.mem.Allocator, config: *const ServeConfig, ws_reg: *W
     defer allocator.free(msg);
     @memcpy(msg[0..prefix.len], prefix);
     @memcpy(msg[prefix.len..], truncated);
-    ws_reg.broadcast(msg);
+    ws_reg.broadcast(io, msg);
 }
 
-fn pollSourceChanged(config: *const ServeConfig, last_fingerprint: *i128) bool {
+fn pollSourceChanged(io: Io, config: *const ServeConfig, last_fingerprint: *i128) bool {
     var fingerprint: i128 = 0;
 
     for (config.watch_paths) |watch_path| {
-        pollDirRecursive(watch_path, &fingerprint);
+        pollDirRecursive(io, watch_path, &fingerprint);
     }
 
     for (config.watch_files) |file_path| {
-        const file = std.fs.cwd().openFile(file_path, .{}) catch continue;
-        defer file.close();
-        const stat = file.stat() catch continue;
-        fingerprint +%= stat.mtime;
+        const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch continue;
+        defer file.close(io);
+        const stat = file.stat(io) catch continue;
+        fingerprint +%= @intCast(stat.mtime.nanoseconds);
     }
 
     if (fingerprint != last_fingerprint.*) {
@@ -382,21 +421,21 @@ fn pollSourceChanged(config: *const ServeConfig, last_fingerprint: *i128) bool {
     return false;
 }
 
-fn pollDirRecursive(dir_path: []const u8, fingerprint: *i128) void {
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
-    defer dir.close();
+fn pollDirRecursive(io: Io, dir_path: []const u8, fingerprint: *i128) void {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(io) catch null) |entry| {
         if (entry.kind == .directory) {
-            var sub_buf: [std.fs.max_path_bytes]u8 = undefined;
+            var sub_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
             const sub_path = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
-            pollDirRecursive(sub_path, fingerprint);
+            pollDirRecursive(io, sub_path, fingerprint);
         } else if (entry.kind == .file) {
-            const file = dir.openFile(entry.name, .{}) catch continue;
-            defer file.close();
-            const stat = file.stat() catch continue;
-            fingerprint.* +%= stat.mtime;
+            const file = dir.openFile(io, entry.name, .{}) catch continue;
+            defer file.close(io);
+            const stat = file.stat(io) catch continue;
+            fingerprint.* +%= @intCast(stat.mtime.nanoseconds);
         }
     }
 }
@@ -426,42 +465,23 @@ fn logDim(comptime fmt: []const u8, args: anytype, console: *rich.Console) void 
     console.printStyled(msg, rich.Style.empty.dim()) catch {};
 }
 
-fn socketRead(handle: Handle, buf: []u8) !usize {
-    if (native_os == .windows) {
-        const len: i32 = @intCast(buf.len);
-        const rc = windows.ws2_32.recv(handle, buf.ptr, len, 0);
-        if (rc == windows.ws2_32.SOCKET_ERROR) {
-            return switch (windows.ws2_32.WSAGetLastError()) {
-                .WSAECONNRESET => error.ConnectionResetByPeer,
-                else => |err| windows.unexpectedWSAError(err),
-            };
-        }
-        return @intCast(rc);
-    }
-    return std.posix.read(handle, buf);
-}
-
-fn socketWrite(handle: Handle, data: []const u8) !void {
-    var sent: usize = 0;
-    while (sent < data.len) {
-        const chunk = data[sent..];
-        if (native_os == .windows) {
-            const len: i32 = @intCast(@min(chunk.len, std.math.maxInt(i32)));
-            const rc = windows.ws2_32.send(handle, chunk.ptr, len, 0);
-            if (rc == windows.ws2_32.SOCKET_ERROR) {
-                return switch (windows.ws2_32.WSAGetLastError()) {
-                    .WSAECONNRESET => return,
-                    else => |err| windows.unexpectedWSAError(err),
-                };
-            }
-            sent += @intCast(rc);
-        } else {
-            sent += std.posix.write(handle, chunk) catch |err| switch (err) {
-                error.ConnectionResetByPeer, error.BrokenPipe => return,
-                else => return @errorCast(err),
-            };
-        }
-    }
+/// Blocking write-all over a Stream. Creates a transient writer, writes, flushes.
+fn streamWriteAll(io: Io, stream: net.Stream, data: []const u8) !void {
+    var buf: [4096]u8 = undefined;
+    var writer = stream.writer(io, &buf);
+    const w = &writer.interface;
+    w.writeAll(data) catch |err| switch (err) {
+        error.WriteFailed => if (writer.err) |e| return switch (e) {
+            error.ConnectionResetByPeer, error.SocketUnconnected => return,
+            else => return e,
+        } else return error.WriteFailed,
+    };
+    w.flush() catch |err| switch (err) {
+        error.WriteFailed => if (writer.err) |e| return switch (e) {
+            error.ConnectionResetByPeer, error.SocketUnconnected => return,
+            else => return e,
+        } else return error.WriteFailed,
+    };
 }
 
 fn parsePath(request: []const u8) ?[]const u8 {
@@ -472,7 +492,7 @@ fn parsePath(request: []const u8) ?[]const u8 {
 }
 
 fn mimeType(path: []const u8) []const u8 {
-    const ext = std.fs.path.extension(path);
+    const ext = std.Io.Dir.path.extension(path);
     if (std.mem.eql(u8, ext, ".html")) return "text/html";
     if (std.mem.eql(u8, ext, ".js")) return "application/javascript";
     if (std.mem.eql(u8, ext, ".wasm")) return "application/wasm";
@@ -489,8 +509,16 @@ fn mimeType(path: []const u8) []const u8 {
     return "application/octet-stream";
 }
 
-fn proxyRequest(allocator: std.mem.Allocator, client_stream: std.net.Stream, request: []const u8, path: []const u8, target: []const u8, console: *rich.Console) !void {
-    const scheme_end = std.mem.indexOf(u8, target, "://") orelse return error.InvalidAddress;
+fn proxyRequest(
+    allocator: std.mem.Allocator,
+    io: Io,
+    client_stream: net.Stream,
+    request: []const u8,
+    path: []const u8,
+    target: []const u8,
+    console: *rich.Console,
+) !void {
+    const scheme_end = std.mem.find(u8, target, "://") orelse return error.InvalidAddress;
     const host_start = scheme_end + 3;
     const rest = target[host_start..];
 
@@ -505,33 +533,40 @@ fn proxyRequest(allocator: std.mem.Allocator, client_stream: std.net.Stream, req
 
     logDim("proxy: {s} -> {s}:{d}", .{ path, host, port }, console);
 
-    const backend = std.net.tcpConnectToHost(allocator, host, port) catch return error.ConnectionRefused;
-    defer backend.close();
+    const backend_addr = net.IpAddress.resolve(io, host, port) catch return error.ConnectionRefused;
+    var backend = backend_addr.connect(io, .{ .mode = .stream }) catch return error.ConnectionRefused;
+    defer backend.close(io);
 
-    const first_line_end = std.mem.indexOf(u8, request, "\r\n") orelse return error.InvalidRequest;
-    var rewritten: std.ArrayList(u8) = .empty;
-    defer rewritten.deinit(allocator);
-    const w = rewritten.writer(allocator);
+    // Rewrite request path (strip any host-specific prefix handling the caller would want
+    // -- dev server just forwards the path as-is).
+    const first_line_end = std.mem.find(u8, request, "\r\n") orelse return error.InvalidRequest;
+    var rewritten_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer rewritten_aw.deinit();
 
     const method_end = std.mem.indexOfScalar(u8, request[0..first_line_end], ' ') orelse return error.InvalidRequest;
     const method = request[0..method_end];
     const version_start = std.mem.lastIndexOfScalar(u8, request[0..first_line_end], ' ') orelse return error.InvalidRequest;
     const version = request[version_start..first_line_end];
 
-    try w.print("{s} {s}{s}\r\n", .{ method, path, version });
-    try w.writeAll(request[first_line_end + 2 ..]);
+    try rewritten_aw.writer.print("{s} {s}{s}\r\n", .{ method, path, version });
+    try rewritten_aw.writer.writeAll(request[first_line_end + 2 ..]);
 
-    try backend.writeAll(rewritten.items);
+    try streamWriteAll(io, backend, rewritten_aw.written());
 
-    var response_buf: [8192]u8 = undefined;
+    // Shuttle response bytes backend -> client.
+    var read_buf: [8192]u8 = undefined;
+    var backend_reader = backend.reader(io, &read_buf);
+    const r = &backend_reader.interface;
     while (true) {
-        const n = backend.read(&response_buf) catch break;
-        if (n == 0) break;
-        socketWrite(client_stream.handle, response_buf[0..n]) catch break;
+        r.fillMore() catch break;
+        const chunk = r.buffered();
+        if (chunk.len == 0) break;
+        streamWriteAll(io, client_stream, chunk) catch break;
+        r.tossBuffered();
     }
 }
 
-fn sendResponse(stream: std.net.Stream, status: []const u8, content_type: []const u8, body: []const u8) !void {
+fn sendResponse(io: Io, stream: net.Stream, status: []const u8, content_type: []const u8, body: []const u8) !void {
     var header_buf: [512]u8 = undefined;
     const header = std.fmt.bufPrint(&header_buf,
         "HTTP/1.1 {s}\r\n" ++
@@ -543,6 +578,6 @@ fn sendResponse(stream: std.net.Stream, status: []const u8, content_type: []cons
             "Connection: close\r\n\r\n",
         .{ status, content_type, body.len },
     ) catch return;
-    try socketWrite(stream.handle, header);
-    try socketWrite(stream.handle, body);
+    try streamWriteAll(io, stream, header);
+    try streamWriteAll(io, stream, body);
 }

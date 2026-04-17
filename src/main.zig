@@ -5,14 +5,14 @@ const wa = @import("gen/wasm_analyze.zig");
 const js_gen = @import("gen/js_gen.zig");
 const dev_server = @import("gen/serve.zig");
 
-pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const io = init.io;
 
-    var console = rich.Console.init(allocator);
+    var console = rich.Console.init(gpa, io, init.minimal.environ);
     defer console.deinit();
 
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (args.len < 2) {
         try printUsage(&console);
@@ -20,17 +20,18 @@ pub fn main() !void {
     }
 
     const cmd = args[1];
+    const rest: []const []const u8 = @ptrCast(args[2..]);
 
     if (std.mem.eql(u8, cmd, "build")) {
-        try buildCommand(allocator, args[2..], false, &console);
+        try buildCommand(gpa, io, rest, false, &console);
     } else if (std.mem.eql(u8, cmd, "run")) {
-        try buildCommand(allocator, args[2..], true, &console);
+        try buildCommand(gpa, io, rest, true, &console);
     } else if (std.mem.eql(u8, cmd, "deploy")) {
-        try deployCommand(allocator, args[2..], &console);
+        try deployCommand(gpa, io, rest, &console);
     } else if (std.mem.eql(u8, cmd, "init")) {
-        try initCommand(allocator, args[2..], &console);
+        try initCommand(io, rest, &console);
     } else if (std.mem.eql(u8, cmd, "doctor")) {
-        try doctorCommand(allocator, &console);
+        try doctorCommand(gpa, io, &console);
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
         try printUsage(&console);
     } else if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version")) {
@@ -139,7 +140,7 @@ const BuildContext = struct {
     }
 };
 
-fn prepareBuild(allocator: std.mem.Allocator, parsed: BuildArgs, console: *rich.Console) !?BuildContext {
+fn prepareBuild(allocator: std.mem.Allocator, io: std.Io, parsed: BuildArgs, console: *rich.Console) !?BuildContext {
     const wasm_path = parsed.wasm_path orelse {
         try console.print("[bold red]error:[/] no --wasm path provided");
         try console.print("");
@@ -156,7 +157,7 @@ fn prepareBuild(allocator: std.mem.Allocator, parsed: BuildArgs, console: *rich.
         return null;
     };
 
-    const wasm = std.fs.cwd().readFileAlloc(allocator, wasm_path, 10 * 1024 * 1024) catch |err| {
+    const wasm = std.Io.Dir.cwd().readFileAlloc(io, wasm_path, allocator, .limited(10 * 1024 * 1024)) catch |err| {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "error: could not read '{s}': {}", .{ wasm_path, err }) catch "error: could not read wasm file";
         try console.printStyled(msg, rich.Style.empty.foreground(rich.Color.red));
@@ -170,8 +171,8 @@ fn prepareBuild(allocator: std.mem.Allocator, parsed: BuildArgs, console: *rich.
     return .{
         .wasm = wasm,
         .analysis = analysis,
-        .wasm_basename = std.fs.path.basename(wasm_path),
-        .bridge_js = discoverBridgeJs(allocator, console),
+        .wasm_basename = std.Io.Dir.path.basename(wasm_path),
+        .bridge_js = discoverBridgeJs(allocator, io, console),
     };
 }
 
@@ -193,9 +194,9 @@ fn computeSri(data: []const u8, allocator: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(allocator, "sha384-{s}", .{&b64_buf});
 }
 
-fn openOutputDir(parsed: BuildArgs) !std.fs.Dir {
-    std.fs.cwd().makePath(parsed.output_dir) catch {};
-    return std.fs.cwd().openDir(parsed.output_dir, .{});
+fn openOutputDir(io: std.Io, parsed: BuildArgs) !std.Io.Dir {
+    std.Io.Dir.cwd().createDirPath(io, parsed.output_dir) catch {};
+    return std.Io.Dir.cwd().openDir(io, parsed.output_dir, .{});
 }
 
 fn printReport(console: *rich.Console, allocator: std.mem.Allocator, report: []const u8, title: []const u8, json_mode: bool) !void {
@@ -210,16 +211,16 @@ fn printReport(console: *rich.Console, allocator: std.mem.Allocator, report: []c
     try console.printRenderable(panel);
 }
 
-fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve: bool, console: *rich.Console) !void {
+fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, do_serve: bool, console: *rich.Console) !void {
     const parsed = parseBuildArgs(args);
 
     // Compute fingerprint once (used for both cache check and write)
-    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(wasm_path) else null;
+    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(io, wasm_path) else null;
 
     // Cache check (non-serve mode only)
     if (!do_serve and !parsed.force) {
         if (source_fp) |fp| {
-            if (readCacheFingerprint(parsed.output_dir)) |cached| {
+            if (readCacheFingerprint(io, parsed.output_dir)) |cached| {
                 if (fp == cached) {
                     try console.printStyled("Build is up to date (use --force to rebuild)", rich.Style.empty.bold().foreground(rich.Color.green));
                     return;
@@ -228,7 +229,7 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
         }
     }
 
-    var ctx = try prepareBuild(allocator, parsed, console) orelse return;
+    var ctx = try prepareBuild(allocator, io, parsed, console) orelse return;
     defer ctx.deinit(allocator);
 
     var result = try js_gen.generate(allocator, &ctx.analysis, .{
@@ -239,18 +240,18 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
     });
     defer result.deinit(allocator);
 
-    var out_dir = try openOutputDir(parsed);
-    defer out_dir.close();
+    var out_dir = try openOutputDir(io, parsed);
+    defer out_dir.close(io);
 
-    try out_dir.writeFile(.{ .sub_path = "index.html", .data = result.html });
-    try out_dir.writeFile(.{ .sub_path = "app.js", .data = result.js });
-    try out_dir.writeFile(.{ .sub_path = ctx.wasm_basename, .data = ctx.wasm });
+    try out_dir.writeFile(io, .{ .sub_path = "index.html", .data = result.html });
+    try out_dir.writeFile(io, .{ .sub_path = "app.js", .data = result.js });
+    try out_dir.writeFile(io, .{ .sub_path = ctx.wasm_basename, .data = ctx.wasm });
 
-    copyAssets(allocator, out_dir, console);
+    copyAssets(allocator, io, out_dir, console);
     try printReport(console, allocator, result.report, "Build Report", parsed.json_report);
 
     if (!do_serve) {
-        if (source_fp) |fp| writeCacheFingerprint(parsed.output_dir, fp);
+        if (source_fp) |fp| writeCacheFingerprint(io, parsed.output_dir, fp);
     }
 
     if (!parsed.json_report) {
@@ -264,7 +265,7 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
 
         const proxy = parseProxy(parsed.proxy);
 
-        try dev_server.serve(allocator, parsed.output_dir, parsed.port, .{
+        try dev_server.serve(allocator, io, parsed.output_dir, parsed.port, .{
             .autoreload = true,
             .port = parsed.port,
             .watch_sources = parsed.watch,
@@ -274,14 +275,14 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8, do_serve
     }
 }
 
-fn deployCommand(allocator: std.mem.Allocator, args: []const []const u8, console: *rich.Console) !void {
+fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, console: *rich.Console) !void {
     const parsed = parseBuildArgs(args);
 
-    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(wasm_path) else null;
+    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(io, wasm_path) else null;
 
     if (!parsed.force) {
         if (source_fp) |fp| {
-            if (readCacheFingerprint(parsed.output_dir)) |cached| {
+            if (readCacheFingerprint(io, parsed.output_dir)) |cached| {
                 if (fp == cached) {
                     try console.printStyled("Deploy is up to date (use --force to rebuild)", rich.Style.empty.bold().foreground(rich.Color.green));
                     return;
@@ -290,12 +291,12 @@ fn deployCommand(allocator: std.mem.Allocator, args: []const []const u8, console
         }
     }
 
-    var ctx = try prepareBuild(allocator, parsed, console) orelse return;
+    var ctx = try prepareBuild(allocator, io, parsed, console) orelse return;
     defer ctx.deinit(allocator);
 
     // Content-hashed WASM filename
     const wasm_fp = contentFingerprint(ctx.wasm);
-    const wasm_ext = std.fs.path.extension(ctx.wasm_basename);
+    const wasm_ext = std.Io.Dir.path.extension(ctx.wasm_basename);
     const wasm_stem = ctx.wasm_basename[0 .. ctx.wasm_basename.len - wasm_ext.len];
     const hashed_wasm_name = try std.fmt.allocPrint(allocator, "{s}-{s}.wasm", .{ wasm_stem, &wasm_fp });
     defer allocator.free(hashed_wasm_name);
@@ -318,30 +319,30 @@ fn deployCommand(allocator: std.mem.Allocator, args: []const []const u8, console
     defer allocator.free(sri);
 
     // Generate deploy HTML directly (avoids a redundant second full generation pass)
-    var html: std.ArrayList(u8) = .empty;
-    defer html.deinit(allocator);
-    try js_gen.generateHtml(html.writer(allocator), &ctx.analysis, .{
+    var html_aw: std.Io.Writer.Allocating = .init(allocator);
+    defer html_aw.deinit();
+    try js_gen.generateHtml(&html_aw.writer, &ctx.analysis, .{
         .wasm_filename = hashed_wasm_name,
         .bridge_js = ctx.bridge_js,
         .js_filename = hashed_js_name,
         .wasm_preload = true,
         .js_integrity = sri,
     }, result.categories);
-    const deploy_html = try html.toOwnedSlice(allocator);
+    const deploy_html = try html_aw.toOwnedSlice();
     defer allocator.free(deploy_html);
 
     // Write output
-    var out_dir = try openOutputDir(parsed);
-    defer out_dir.close();
+    var out_dir = try openOutputDir(io, parsed);
+    defer out_dir.close(io);
 
-    try out_dir.writeFile(.{ .sub_path = "index.html", .data = deploy_html });
-    try out_dir.writeFile(.{ .sub_path = hashed_js_name, .data = result.js });
-    try out_dir.writeFile(.{ .sub_path = hashed_wasm_name, .data = ctx.wasm });
+    try out_dir.writeFile(io, .{ .sub_path = "index.html", .data = deploy_html });
+    try out_dir.writeFile(io, .{ .sub_path = hashed_js_name, .data = result.js });
+    try out_dir.writeFile(io, .{ .sub_path = hashed_wasm_name, .data = ctx.wasm });
 
-    copyAssets(allocator, out_dir, console);
+    copyAssets(allocator, io, out_dir, console);
     try printReport(console, allocator, result.report, "Deploy Report", parsed.json_report);
 
-    if (source_fp) |fp| writeCacheFingerprint(parsed.output_dir, fp);
+    if (source_fp) |fp| writeCacheFingerprint(io, parsed.output_dir, fp);
 
     if (!parsed.json_report) {
         try console.print("");
@@ -363,9 +364,9 @@ fn deployCommand(allocator: std.mem.Allocator, args: []const []const u8, console
     }
 }
 
-fn discoverBridgeJs(allocator: std.mem.Allocator, console: *rich.Console) ?[]const u8 {
+fn discoverBridgeJs(allocator: std.mem.Allocator, io: std.Io, console: *rich.Console) ?[]const u8 {
     for (bridge_js_paths) |path| {
-        if (std.fs.cwd().readFileAlloc(allocator, path, 1 * 1024 * 1024)) |contents| {
+        if (std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 * 1024 * 1024))) |contents| {
             var buf: [128]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "Found {s}", .{path}) catch "Found bridge.js";
             console.printStyled(msg, rich.Style.empty.foreground(rich.Color.cyan)) catch {};
@@ -375,26 +376,26 @@ fn discoverBridgeJs(allocator: std.mem.Allocator, console: *rich.Console) ?[]con
     return null;
 }
 
-fn copyAssets(allocator: std.mem.Allocator, out_dir: std.fs.Dir, console: *rich.Console) void {
-    var src_assets = std.fs.cwd().openDir("src/assets", .{ .iterate = true }) catch return;
-    defer src_assets.close();
+fn copyAssets(allocator: std.mem.Allocator, io: std.Io, out_dir: std.Io.Dir, console: *rich.Console) void {
+    var src_assets = std.Io.Dir.cwd().openDir(io, "src/assets", .{ .iterate = true }) catch return;
+    defer src_assets.close(io);
 
-    out_dir.makePath("assets") catch return;
-    var dest_assets = out_dir.openDir("assets", .{}) catch return;
-    defer dest_assets.close();
+    out_dir.createDirPath(io, "assets") catch return;
+    var dest_assets = out_dir.openDir(io, "assets", .{}) catch return;
+    defer dest_assets.close(io);
 
     var walker = src_assets.walk(allocator) catch return;
     defer walker.deinit();
 
     var count: usize = 0;
-    while (walker.next() catch null) |entry| {
+    while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
-        const data = src_assets.readFileAlloc(allocator, entry.path, 50 * 1024 * 1024) catch continue;
+        const data = src_assets.readFileAlloc(io, entry.path, allocator, .limited(50 * 1024 * 1024)) catch continue;
         defer allocator.free(data);
-        if (std.fs.path.dirname(entry.path)) |dir| {
-            dest_assets.makePath(dir) catch continue;
+        if (std.Io.Dir.path.dirname(entry.path)) |dir| {
+            dest_assets.createDirPath(io, dir) catch continue;
         }
-        dest_assets.writeFile(.{ .sub_path = entry.path, .data = data }) catch continue;
+        dest_assets.writeFile(io, .{ .sub_path = entry.path, .data = data }) catch continue;
         count += 1;
     }
 
@@ -407,56 +408,56 @@ fn copyAssets(allocator: std.mem.Allocator, out_dir: std.fs.Dir, console: *rich.
 
 // --- Build caching ---
 
-fn computeSourceFingerprint(wasm_path: []const u8) i128 {
+fn computeSourceFingerprint(io: std.Io, wasm_path: []const u8) i128 {
     var fingerprint: i128 = 0;
 
     // src/ directory recursive mtime sum
-    pollDirRecursive("src", &fingerprint);
+    pollDirRecursive(io, "src", &fingerprint);
 
     // build.zig and build.zig.zon
     const build_files = [_][]const u8{ "build.zig", "build.zig.zon" };
     for (build_files) |file_path| {
-        const file = std.fs.cwd().openFile(file_path, .{}) catch continue;
-        defer file.close();
-        const stat = file.stat() catch continue;
-        fingerprint +%= stat.mtime;
+        const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch continue;
+        defer file.close(io);
+        const stat = file.stat(io) catch continue;
+        fingerprint +%= @intCast(stat.mtime.nanoseconds);
     }
 
     // WASM file itself
     {
-        const file = std.fs.cwd().openFile(wasm_path, .{}) catch return fingerprint;
-        defer file.close();
-        const stat = file.stat() catch return fingerprint;
-        fingerprint +%= stat.mtime;
+        const file = std.Io.Dir.cwd().openFile(io, wasm_path, .{}) catch return fingerprint;
+        defer file.close(io);
+        const stat = file.stat(io) catch return fingerprint;
+        fingerprint +%= @intCast(stat.mtime.nanoseconds);
     }
 
     // bridge.js (if present)
     for (bridge_js_paths) |bp| {
-        const file = std.fs.cwd().openFile(bp, .{}) catch continue;
-        defer file.close();
-        const stat = file.stat() catch continue;
-        fingerprint +%= stat.mtime;
+        const file = std.Io.Dir.cwd().openFile(io, bp, .{}) catch continue;
+        defer file.close(io);
+        const stat = file.stat(io) catch continue;
+        fingerprint +%= @intCast(stat.mtime.nanoseconds);
     }
 
     return fingerprint;
 }
 
-fn pollDirRecursive(dir_path: []const u8, fingerprint: *i128) void {
-    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
-    defer dir.close();
+fn pollDirRecursive(io: std.Io, dir_path: []const u8, fingerprint: *i128) void {
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
 
     var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(io) catch null) |entry| {
         if (entry.kind == .directory) {
-            var sub_buf: [std.fs.max_path_bytes]u8 = undefined;
+            var sub_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
             const sub_path = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
-            pollDirRecursive(sub_path, fingerprint);
+            pollDirRecursive(io, sub_path, fingerprint);
         } else if (entry.kind == .file) {
             if (std.mem.endsWith(u8, entry.name, ".zig")) {
-                const file = dir.openFile(entry.name, .{}) catch continue;
-                defer file.close();
-                const stat = file.stat() catch continue;
-                fingerprint.* +%= stat.mtime;
+                const file = dir.openFile(io, entry.name, .{}) catch continue;
+                defer file.close(io);
+                const stat = file.stat(io) catch continue;
+                fingerprint.* +%= @intCast(stat.mtime.nanoseconds);
             }
         }
     }
@@ -464,23 +465,23 @@ fn pollDirRecursive(dir_path: []const u8, fingerprint: *i128) void {
 
 const cache_filename = ".zunk_cache";
 
-fn readCacheFingerprint(output_dir: []const u8) ?i128 {
-    var dir = std.fs.cwd().openDir(output_dir, .{}) catch return null;
-    defer dir.close();
-    const file = dir.openFile(cache_filename, .{}) catch return null;
-    defer file.close();
+fn readCacheFingerprint(io: std.Io, output_dir: []const u8) ?i128 {
+    var dir = std.Io.Dir.cwd().openDir(io, output_dir, .{}) catch return null;
+    defer dir.close(io);
+    const file = dir.openFile(io, cache_filename, .{}) catch return null;
+    defer file.close(io);
     var buf: [16]u8 = undefined;
-    const n = file.readAll(&buf) catch return null;
+    const n = file.readPositionalAll(io, &buf, 0) catch return null;
     if (n != 16) return null;
     return std.mem.readInt(i128, &buf, .little);
 }
 
-fn writeCacheFingerprint(output_dir: []const u8, fingerprint: i128) void {
-    var dir = std.fs.cwd().openDir(output_dir, .{}) catch return;
-    defer dir.close();
+fn writeCacheFingerprint(io: std.Io, output_dir: []const u8, fingerprint: i128) void {
+    var dir = std.Io.Dir.cwd().openDir(io, output_dir, .{}) catch return;
+    defer dir.close(io);
     var bytes: [16]u8 = undefined;
     std.mem.writeInt(i128, &bytes, fingerprint, .little);
-    dir.writeFile(.{ .sub_path = cache_filename, .data = &bytes }) catch {};
+    dir.writeFile(io, .{ .sub_path = cache_filename, .data = &bytes }) catch {};
 }
 
 // --- Doctor command ---
@@ -493,7 +494,7 @@ const DoctorCheck = struct {
     detail: []const u8,
 };
 
-fn doctorCommand(allocator: std.mem.Allocator, console: *rich.Console) !void {
+fn doctorCommand(allocator: std.mem.Allocator, io: std.Io, console: *rich.Console) !void {
     var checks: [4]DoctorCheck = undefined;
     var check_count: usize = 0;
 
@@ -501,8 +502,7 @@ fn doctorCommand(allocator: std.mem.Allocator, console: *rich.Console) !void {
     var zig_ver_buf: [64]u8 = undefined;
     var zig_ver_len: usize = 0;
     var zig_check = DoctorCheck{ .name = "zig version", .status = .fail, .detail = "not found" };
-    const zig_result = std.process.Child.run(.{
-        .allocator = allocator,
+    const zig_result = std.process.run(allocator, io, .{
         .argv = &.{ "zig", "version" },
     });
     if (zig_result) |result| {
@@ -543,7 +543,7 @@ fn doctorCommand(allocator: std.mem.Allocator, console: *rich.Console) !void {
     var missing_optional: ?[]const u8 = null;
     var missing_required = false;
     for (project_files) |pf| {
-        if (std.fs.cwd().access(pf.name, .{})) |_| {
+        if (std.Io.Dir.cwd().access(io, pf.name, .{})) |_| {
             found_count += 1;
         } else |_| {
             if (pf.required) {
@@ -575,7 +575,7 @@ fn doctorCommand(allocator: std.mem.Allocator, console: *rich.Console) !void {
     check_count += 1;
 
     // 4. .gitignore specifically
-    const gi_exists = if (std.fs.cwd().access(".gitignore", .{})) |_| true else |_| false;
+    const gi_exists = if (std.Io.Dir.cwd().access(io, ".gitignore", .{})) |_| true else |_| false;
     checks[check_count] = .{
         .name = ".gitignore",
         .status = if (gi_exists) .ok else .warn,
@@ -614,7 +614,7 @@ fn doctorCommand(allocator: std.mem.Allocator, console: *rich.Console) !void {
 }
 
 fn checkZigVersion(ver_str: []const u8) bool {
-    // Parse "0.15.2" or "0.15.2-dev.123+abc" -- we only need major.minor.patch
+    // Parse "0.16.0" or "0.16.0-dev.123+abc" -- we only need major.minor.patch
     var parts: [3]u16 = .{ 0, 0, 0 };
     var seg: usize = 0;
     var i: usize = 0;
@@ -626,18 +626,15 @@ fn checkZigVersion(ver_str: []const u8) bool {
             parts[seg] = parts[seg] * 10 + @as(u16, @intCast(ver_str[i] - '0'));
         } else break;
     }
-    // Minimum: 0.15.2
+    // Minimum: 0.16.0
     if (parts[0] > 0) return true;
-    if (parts[1] > 15) return true;
-    if (parts[1] == 15 and parts[2] >= 2) return true;
+    if (parts[1] >= 16) return true;
     return false;
 }
 
 // --- Init command ---
 
-fn initCommand(allocator: std.mem.Allocator, args: []const []const u8, console: *rich.Console) !void {
-    _ = allocator;
-
+fn initCommand(io: std.Io, args: []const []const u8, console: *rich.Console) !void {
     var project_dir: ?[]const u8 = null;
     for (args) |arg| {
         if (!std.mem.startsWith(u8, arg, "-")) {
@@ -646,10 +643,10 @@ fn initCommand(allocator: std.mem.Allocator, args: []const []const u8, console: 
         }
     }
 
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
 
     if (project_dir) |dir_name| {
-        cwd.makePath(dir_name) catch |err| {
+        cwd.createDirPath(io, dir_name) catch |err| {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "[bold red]error:[/] could not create directory '{s}': {}", .{ dir_name, err }) catch "error creating directory";
             try console.print(msg);
@@ -657,10 +654,10 @@ fn initCommand(allocator: std.mem.Allocator, args: []const []const u8, console: 
         };
     }
 
-    var base: std.fs.Dir = undefined;
+    var base: std.Io.Dir = undefined;
     var owns_base = false;
     if (project_dir) |dir_name| {
-        base = cwd.openDir(dir_name, .{}) catch |err| {
+        base = cwd.openDir(io, dir_name, .{}) catch |err| {
             var buf: [256]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, "[bold red]error:[/] could not open '{s}': {}", .{ dir_name, err }) catch "error opening directory";
             try console.print(msg);
@@ -670,10 +667,10 @@ fn initCommand(allocator: std.mem.Allocator, args: []const []const u8, console: 
     } else {
         base = cwd;
     }
-    defer if (owns_base) base.close();
+    defer if (owns_base) base.close(io);
 
     // Guard: abort if build.zig already exists
-    if (base.access("build.zig", .{})) |_| {
+    if (base.access(io, "build.zig", .{})) |_| {
         try console.print("[bold red]error:[/] build.zig already exists -- this directory is already initialized");
         return;
     } else |_| {}
@@ -681,7 +678,7 @@ fn initCommand(allocator: std.mem.Allocator, args: []const []const u8, console: 
     const name = project_dir orelse "my-app";
 
     // build.zig
-    base.writeFile(.{ .sub_path = "build.zig", .data = buildZigTemplate() }) catch |err| {
+    base.writeFile(io, .{ .sub_path = "build.zig", .data = buildZigTemplate() }) catch |err| {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "[bold red]error:[/] could not write build.zig: {}", .{err}) catch "error writing build.zig";
         try console.print(msg);
@@ -689,14 +686,14 @@ fn initCommand(allocator: std.mem.Allocator, args: []const []const u8, console: 
     };
 
     // build.zig.zon
-    base.writeFile(.{ .sub_path = "build.zig.zon", .data = buildZigZonTemplate() }) catch {};
+    base.writeFile(io, .{ .sub_path = "build.zig.zon", .data = buildZigZonTemplate() }) catch {};
 
     // src/main.zig
-    base.makePath("src") catch {};
-    base.writeFile(.{ .sub_path = "src/main.zig", .data = mainZigTemplate() }) catch {};
+    base.createDirPath(io, "src") catch {};
+    base.writeFile(io, .{ .sub_path = "src/main.zig", .data = mainZigTemplate() }) catch {};
 
     // .gitignore
-    base.writeFile(.{ .sub_path = ".gitignore", .data = gitignoreTemplate() }) catch {};
+    base.writeFile(io, .{ .sub_path = ".gitignore", .data = gitignoreTemplate() }) catch {};
 
     try console.print("");
     {
@@ -765,7 +762,7 @@ fn buildZigZonTemplate() []const u8 {
         \\.{
         \\    .name = .app,
         \\    .version = "0.0.0",
-        \\    .minimum_zig_version = "0.15.2",
+        \\    .minimum_zig_version = "0.16.0",
         \\    .dependencies = .{
         \\        // TODO: replace with git URL once zunk is published
         \\        .zunk = .{ .path = "../.." },
