@@ -1,7 +1,6 @@
-// Vertex-buffer acceptance demo: uploads three interleaved {pos: vec2, color: vec3}
-// vertices to a VERTEX|COPY_DST buffer, binds them via setVertexBuffer, and draws
-// a solid triangle. Exercises the vertex_buffers parameter on createRenderPipeline
-// and the new renderPassSetVertexBuffer entry point.
+// Vertex-buffer acceptance demo: exercises createRenderPipeline's vertex_buffers
+// param and renderPassSetVertexBuffer by drawing a triangle from interleaved
+// {pos: vec2, color: vec3} vertices uploaded to a VERTEX|COPY_DST buffer.
 
 const zunk = @import("zunk");
 const gpu = zunk.web.gpu;
@@ -18,6 +17,7 @@ const vertices = [_]Vertex{
     .{ .pos = .{ -0.6, -0.6 }, .color = .{ 0.2, 1.0, 0.2 } },
     .{ .pos = .{ 0.6, -0.6 }, .color = .{ 0.2, 0.2, 1.0 } },
 };
+const vertex_bytes = @sizeOf(@TypeOf(vertices));
 
 const shader_src =
     \\struct VSOut {
@@ -60,8 +60,7 @@ export fn init() void {
 
     pipeline = gpu.createRenderPipeline(pl, shader, "vertexMain", "fragmentMain", &layouts);
 
-    const bytes: u32 = @intCast(@sizeOf(@TypeOf(vertices)));
-    vertex_buffer = gpu.createBuffer(bytes, gpu.BufferUsage.VERTEX | gpu.BufferUsage.COPY_DST);
+    vertex_buffer = gpu.createBuffer(vertex_bytes, gpu.BufferUsage.VERTEX | gpu.BufferUsage.COPY_DST);
     gpu.bufferWriteTyped(Vertex, vertex_buffer, 0, &vertices);
 }
 
@@ -70,7 +69,7 @@ export fn frame(_: f32) void {
 
     const pass = gpu.beginRenderPass(0.05, 0.07, 0.09, 1.0);
     gpu.renderPassSetPipeline(pass, pipeline);
-    gpu.renderPassSetVertexBuffer(pass, 0, vertex_buffer, 0, @sizeOf(@TypeOf(vertices)));
+    gpu.renderPassSetVertexBuffer(pass, 0, vertex_buffer, 0, vertex_bytes);
     gpu.renderPassDraw(pass, 3, 1, 0, 0);
     gpu.renderPassEnd(pass);
     gpu.present();

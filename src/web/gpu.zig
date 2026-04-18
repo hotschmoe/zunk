@@ -98,12 +98,10 @@ pub const VertexAttribute = extern struct {
 };
 
 // 16 bytes, ABI-matched with JS DataView reader in js_resolve.zig.
-// attributes_ptr / attributes_len are read in WASM address space; JS walks
-// them via DataView on memory.buffer.
 pub const VertexBufferLayout = extern struct {
     array_stride: u32,
     step_mode: u32, // VertexStepMode
-    attributes_ptr: u32, // pointer into wasm memory
+    attributes_ptr: u32,
     attributes_len: u32,
 
     pub fn init(stride: u32, step: VertexStepMode, attributes: []const VertexAttribute) VertexBufferLayout {
