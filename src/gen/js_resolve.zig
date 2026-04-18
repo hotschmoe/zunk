@@ -398,6 +398,25 @@ fn genAsset(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType)
 fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
     _ = sig;
     const Entry = struct { []const u8, []const u8, bool, bool, bool };
+
+    // Shared vertex-buffer-layout decoder. Builds a JS snippet that reads a packed
+    // VertexBufferLayout[]/VertexAttribute[] blob from wasm memory (arguments[ptr_idx],
+    // arguments[len_idx]) and produces a `buffers` array consumable by GPUVertexState.
+    const vbuf_decode = struct {
+        fn snippet(comptime ptr_idx: []const u8, comptime len_idx: []const u8) []const u8 {
+            return "const vfmts=['float32','float32x2','float32x3','float32x4','uint32','uint32x2','uint32x3','uint32x4','sint32','sint32x2','sint32x3','sint32x4'];" ++
+                "const steps=['vertex','instance'];" ++
+                "const buffers=[];" ++
+                "if(arguments[" ++ len_idx ++ "]>0){const lv=new DataView(memory.buffer,arguments[" ++ ptr_idx ++ "],arguments[" ++ len_idx ++ "]*16);" ++
+                "for(let i=0;i<arguments[" ++ len_idx ++ "];i++){const bo=i*16;" ++
+                "const aPtr=lv.getUint32(bo+8,true),aLen=lv.getUint32(bo+12,true);" ++
+                "const av=new DataView(memory.buffer,aPtr,aLen*16);const attrs=[];" ++
+                "for(let j=0;j<aLen;j++){const ao=j*16;" ++
+                "attrs.push({format:vfmts[av.getUint32(ao,true)],offset:av.getUint32(ao+4,true),shaderLocation:av.getUint32(ao+8,true)});}" ++
+                "buffers.push({arrayStride:lv.getUint32(bo,true),stepMode:steps[lv.getUint32(bo+4,true)],attributes:attrs});}}";
+        }
+    };
+
     const js_map = [_]Entry{
         // Buffer
         .{ "create_buffer", "return H.store(H.get(1).createBuffer({size:arguments[0],usage:arguments[1],mappedAtCreation:false}));", false, false, true },
@@ -441,22 +460,24 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         .{ "create_compute_pipeline", "return H.store(H.get(1).createComputePipeline({layout:H.get(arguments[0])," ++
             "compute:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}}));", true, false, true },
 
-        .{ "create_render_pipeline", "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
-            "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}," ++
+        .{ "create_render_pipeline", comptime vbuf_decode.snippet("6", "7") ++
+            "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
+            "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3]),buffers}," ++
             "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
             "targets:[{format:zunkGPUFormat,blend:{" ++
             "color:{srcFactor:'src-alpha',dstFactor:'one-minus-src-alpha'}," ++
             "alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha'}}}]}," ++
-            "primitive:{topology:'triangle-list'}}));", true, false, true },
+            "primitive:{topology:'triangle-list'}}));", true, true, true },
 
         .{ "create_render_pipeline_hdr", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
             "const t={format:fmts[arguments[6]]};" ++
             "if(arguments[7]){t.blend={color:{srcFactor:'src-alpha',dstFactor:'one',operation:'add'}," ++
             "alpha:{srcFactor:'one',dstFactor:'one',operation:'add'}};}" ++
-            "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
-            "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}," ++
-            "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
-            "targets:[t]},primitive:{topology:'triangle-list'}}));", true, false, true },
+            comptime vbuf_decode.snippet("8", "9") ++
+                "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
+                "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3]),buffers}," ++
+                "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
+                "targets:[t]},primitive:{topology:'triangle-list'}}));", true, true, true },
 
         // Command encoder
         .{ "create_command_encoder", "return H.store(H.get(1).createCommandEncoder());", false, false, true },
@@ -485,6 +506,9 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
 
         .{ "render_pass_set_pipeline", "H.get(arguments[0]).setPipeline(H.get(arguments[1]));", false, false, true },
         .{ "render_pass_set_bind_group", "H.get(arguments[0]).setBindGroup(arguments[1],H.get(arguments[2]));", false, false, true },
+        .{ "render_pass_set_vertex_buffer", "const off=arguments[3]+arguments[4]*0x100000000;" ++
+            "const sz=arguments[5]+arguments[6]*0x100000000;" ++
+            "H.get(arguments[0]).setVertexBuffer(arguments[1],H.get(arguments[2]),off,sz);", false, false, true },
         .{ "render_pass_draw", "H.get(arguments[0]).draw(arguments[1],arguments[2],arguments[3],arguments[4]);", false, false, true },
         .{ "render_pass_end", "H.get(arguments[0]).end();", false, false, true },
 

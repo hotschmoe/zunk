@@ -228,9 +228,9 @@ pub const Simulation = struct {
 
         const render_pl = gpu.createPipelineLayout(&[_]gpu.BindGroupLayout{ particle_layout, camera_layout });
 
-        self.glow_pipeline = gpu.createRenderPipelineHDR(render_pl, glow_shader, "vertexGlow", "fragmentGlow", .rgba16float, true);
-        self.circle_pipeline = gpu.createRenderPipelineHDR(render_pl, circle_shader, "vertexCircle", "fragmentCircle", .rgba16float, true);
-        self.point_pipeline = gpu.createRenderPipelineHDR(render_pl, point_shader, "vertexPoint", "fragmentPoint", .rgba16float, true);
+        self.glow_pipeline = gpu.createRenderPipelineHDR(render_pl, glow_shader, "vertexGlow", "fragmentGlow", .rgba16float, true, &.{});
+        self.circle_pipeline = gpu.createRenderPipelineHDR(render_pl, circle_shader, "vertexCircle", "fragmentCircle", .rgba16float, true, &.{});
+        self.point_pipeline = gpu.createRenderPipelineHDR(render_pl, point_shader, "vertexPoint", "fragmentPoint", .rgba16float, true, &.{});
 
         const compose_shader_mod = gpu.createShaderModule(shaders.compose_shader);
         self.compose_bind_group_layout = gpu.createBindGroupLayout(&[_]gpu.BindGroupLayoutEntry{
@@ -244,7 +244,7 @@ pub const Simulation = struct {
         });
 
         const compose_pl = gpu.createPipelineLayout(&[_]gpu.BindGroupLayout{self.compose_bind_group_layout});
-        self.compose_pipeline = gpu.createRenderPipeline(compose_pl, compose_shader_mod, "vertexMain", "fragmentMain");
+        self.compose_pipeline = gpu.createRenderPipeline(compose_pl, compose_shader_mod, "vertexMain", "fragmentMain", &.{});
     }
 
     fn setupAdvancePipeline(self: *Simulation) !void {
