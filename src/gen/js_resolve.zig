@@ -474,10 +474,10 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "if(arguments[7]){t.blend={color:{srcFactor:'src-alpha',dstFactor:'one',operation:'add'}," ++
             "alpha:{srcFactor:'one',dstFactor:'one',operation:'add'}};}" ++
             comptime vbuf_decode.snippet("8", "9") ++
-            "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
-            "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3]),buffers}," ++
-            "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
-            "targets:[t]},primitive:{topology:'triangle-list'}}));", true, true, true },
+                "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
+                "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3]),buffers}," ++
+                "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
+                "targets:[t]},primitive:{topology:'triangle-list'}}));", true, true, true },
 
         // Command encoder
         .{ "create_command_encoder", "return H.store(H.get(1).createCommandEncoder());", false, false, true },
