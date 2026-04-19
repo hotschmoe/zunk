@@ -225,12 +225,11 @@ A WebGPU/Canvas2D immediate-mode UI system for building debug panels and tools, 
 
 ## Phase 5 -- Advanced Features
 
-### 5.1 Hot module replacement (HMR)
+### 5.1 Hot module replacement (HMR) -- OPT-IN
 
-Instead of full page reload on changes, swap the WASM module in place. Requires:
-- Preserving JS-side state (handle table, audio context) across reloads
-- Re-calling `init` on the new module
-- Careful handling of WASM memory (old memory must be discarded)
+`zunk run --hmr` swaps the WASM module in place when only the `.wasm` changed (any other `dist/` change still triggers a full reload). JS-side state survives (handle table, WebGPU device & pipelines, audio context, WebSocket connections, etc.). Zig-side state is reset unless the app exports `__zunk_hmr_serialize` / `__zunk_hmr_hydrate`, which round-trip through the existing 64 KB exchange buffer.
+
+Flag stays opt-in until teak validates the protocol end-to-end and reports back (see `docs/hmr.md`). Next steps: a `zunk.bind.exposeHmr` comptime helper, then flip the flag default-on.
 
 ### 5.2 Multi-page app support
 

@@ -20,8 +20,14 @@ fn reloadScript(port: u16) [reload_script_max]u8 {
         \\const ws=new WebSocket('ws://'+location.hostname+':{d}/__zunk_ws');
         \\ws.onmessage=e=>{{
         \\  if(e.data==='reload')location.reload();
-        \\  if(e.data==='clear'){{const o=document.getElementById('zunk-err');if(o)o.remove();}}
-        \\  if(e.data.startsWith('error:')){{
+        \\  else if(e.data.startsWith('hmr:')){{
+        \\    const url=e.data.slice(4);
+        \\    const swap=window.__zunkHmrSwap;
+        \\    if(typeof swap==='function'){{Promise.resolve(swap(url)).catch(()=>location.reload());}}
+        \\    else{{location.reload();}}
+        \\  }}
+        \\  else if(e.data==='clear'){{const o=document.getElementById('zunk-err');if(o)o.remove();}}
+        \\  else if(e.data.startsWith('error:')){{
         \\    let o=document.getElementById('zunk-err');
         \\    if(!o){{o=document.createElement('pre');o.id='zunk-err';
         \\    o.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;background:rgba(0,0,0,0.92);color:#ff6b6b;padding:2rem;margin:0;overflow:auto;font:14px/1.6 monospace;white-space:pre-wrap;';
@@ -37,7 +43,7 @@ fn reloadScript(port: u16) [reload_script_max]u8 {
     return buf;
 }
 
-const reload_script_max = 768;
+const reload_script_max = 1024;
 
 pub const ServeConfig = struct {
     autoreload: bool = true,
@@ -48,6 +54,10 @@ pub const ServeConfig = struct {
     build_cmd: []const []const u8 = &.{ "zig", "build" },
     proxy_prefix: ?[]const u8 = null,
     proxy_target: ?[]const u8 = null,
+    /// When true, wasm-only rebuilds trigger a hot module swap instead of a
+    /// full page reload. Any non-wasm change in `dist/` still triggers a
+    /// full reload.
+    hmr: bool = false,
 };
 
 /// A WebSocket connection registered for broadcasts. The stream is shared across
@@ -111,7 +121,7 @@ pub fn serve(
     var ws_reg = WsRegistry{};
 
     if (config.autoreload) {
-        spawnDetached(watcherThread, .{ io, root_dir_path, &ws_reg, console }, "file watcher", console);
+        spawnDetached(watcherThread, .{ io, root_dir_path, &ws_reg, config.hmr, console }, "file watcher", console);
     }
 
     if (config.autoreload and config.watch_sources) {
@@ -319,37 +329,95 @@ fn wsReadLoop(reader: *net.Stream.Reader) void {
     }
 }
 
-fn watcherThread(io: Io, root_dir_path: []const u8, ws_reg: *WsRegistry, console: *rich.Console) void {
-    var last_fingerprint: i128 = 0;
-    _ = pollDirChanged(io, root_dir_path, &last_fingerprint);
+fn watcherThread(io: Io, root_dir_path: []const u8, ws_reg: *WsRegistry, hmr_enabled: bool, console: *rich.Console) void {
+    var prev: DistFingerprint = .{};
+    _ = pollDistChanged(io, root_dir_path, &prev);
     while (true) {
         io.sleep(Io.Duration.fromMilliseconds(500), .awake) catch return;
-        if (pollDirChanged(io, root_dir_path, &last_fingerprint)) {
+        var change: DistChange = undefined;
+        if (!pollDistChanged(io, root_dir_path, &prev)) continue;
+        change = prev.last_change;
+
+        // HMR only when enabled, a .wasm file is known, and *only* wasm
+        // bytes changed this cycle. Anything else -> full reload.
+        if (hmr_enabled and change.wasm_only and change.wasm_name_len > 0) {
+            var url_buf: [280]u8 = undefined;
+            const msg = std.fmt.bufPrint(&url_buf, "hmr:/{s}", .{change.wasm_name[0..change.wasm_name_len]}) catch {
+                ws_reg.broadcast(io, "reload");
+                continue;
+            };
+            logWarn("hmr: wasm-only change, swapping module", .{}, console);
+            ws_reg.broadcast(io, msg);
+        } else {
             logWarn("reload: dist/ changed, notifying browsers", .{}, console);
             ws_reg.broadcast(io, "reload");
         }
     }
 }
 
-fn pollDirChanged(io: Io, root_dir_path: []const u8, last_fingerprint: *i128) bool {
+/// Two-bucket dist fingerprint: wasm-only vs everything else. Tracks the
+/// last .wasm filename seen so a hot-swap can emit its URL.
+const DistFingerprint = struct {
+    wasm_fp: i128 = 0,
+    other_fp: i128 = 0,
+    wasm_name_buf: [260]u8 = undefined,
+    wasm_name_len: usize = 0,
+    last_change: DistChange = .{},
+};
+
+const DistChange = struct {
+    wasm_only: bool = false,
+    wasm_name: [260]u8 = undefined,
+    wasm_name_len: usize = 0,
+};
+
+fn pollDistChanged(io: Io, root_dir_path: []const u8, prev: *DistFingerprint) bool {
     var dir = std.Io.Dir.cwd().openDir(io, root_dir_path, .{}) catch return false;
     defer dir.close(io);
 
-    var fingerprint: i128 = 0;
+    var wasm_fp: i128 = 0;
+    var other_fp: i128 = 0;
+    var latest_wasm_name_buf: [260]u8 = undefined;
+    var latest_wasm_name_len: usize = 0;
+
     var iter = dir.iterate();
     while (iter.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         const file = dir.openFile(io, entry.name, .{}) catch continue;
         defer file.close(io);
         const stat = file.stat(io) catch continue;
-        fingerprint +%= @intCast(stat.mtime.nanoseconds);
+        const stamp: i128 = @intCast(stat.mtime.nanoseconds);
+
+        if (std.mem.endsWith(u8, entry.name, ".wasm")) {
+            wasm_fp +%= stamp;
+            if (entry.name.len <= latest_wasm_name_buf.len) {
+                @memcpy(latest_wasm_name_buf[0..entry.name.len], entry.name);
+                latest_wasm_name_len = entry.name.len;
+            }
+        } else {
+            other_fp +%= stamp;
+        }
     }
 
-    if (fingerprint != last_fingerprint.*) {
-        last_fingerprint.* = fingerprint;
-        return true;
+    const wasm_changed = wasm_fp != prev.wasm_fp;
+    const other_changed = other_fp != prev.other_fp;
+
+    if (!wasm_changed and !other_changed) return false;
+
+    prev.wasm_fp = wasm_fp;
+    prev.other_fp = other_fp;
+    if (latest_wasm_name_len != 0) {
+        @memcpy(prev.wasm_name_buf[0..latest_wasm_name_len], latest_wasm_name_buf[0..latest_wasm_name_len]);
+        prev.wasm_name_len = latest_wasm_name_len;
     }
-    return false;
+
+    var change: DistChange = .{ .wasm_only = wasm_changed and !other_changed };
+    if (prev.wasm_name_len != 0) {
+        @memcpy(change.wasm_name[0..prev.wasm_name_len], prev.wasm_name_buf[0..prev.wasm_name_len]);
+        change.wasm_name_len = prev.wasm_name_len;
+    }
+    prev.last_change = change;
+    return true;
 }
 
 fn sourceWatcherThread(allocator: std.mem.Allocator, io: Io, config: *const ServeConfig, ws_reg: *WsRegistry, console: *rich.Console) void {

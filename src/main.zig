@@ -64,6 +64,7 @@ fn printUsage(console: *rich.Console) !void {
     try console.print("    [yellow]--output-dir[/] <path>   Output directory (default: dist)");
     try console.print("    [yellow]--port[/] <num>          Server port for 'run' (default: 8080)");
     try console.print("    [yellow]--no-watch[/]             Disable source watching for 'run'");
+    try console.print("    [yellow]--hmr[/]                  Hot-swap WASM on wasm-only rebuilds (opt-in; full reload fallback)");
     try console.print("    [yellow]--proxy[/] <prefix=url>  Proxy requests (e.g. --proxy /api=http://localhost:3000)");
     try console.print("    [yellow]--bridge-dep[/] <path>    Include a dep-provided bridge.js (repeatable; typically wired by installApp)");
     try console.print("    [yellow]--verbose[/] / [yellow]-v[/]        Show all resolutions in build report");
@@ -83,6 +84,7 @@ const BuildArgs = struct {
     verbose: bool = false,
     json_report: bool = false,
     force: bool = false,
+    hmr: bool = false,
     bridge_deps_buf: [max_bridge_deps][]const u8 = undefined,
     bridge_deps_len: usize = 0,
 
@@ -112,6 +114,8 @@ fn parseBuildArgs(args: []const []const u8) BuildArgs {
             result.json_report = true;
         } else if (std.mem.eql(u8, args[i], "--force")) {
             result.force = true;
+        } else if (std.mem.eql(u8, args[i], "--hmr")) {
+            result.hmr = true;
         } else if (std.mem.eql(u8, args[i], "--proxy") and i + 1 < args.len) {
             result.proxy = args[i + 1];
             i += 1;
@@ -310,6 +314,7 @@ fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
             .watch_sources = parsed.watch,
             .proxy_prefix = proxy.prefix,
             .proxy_target = proxy.target,
+            .hmr = parsed.hmr,
         }, console);
     }
 }
