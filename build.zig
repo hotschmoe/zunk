@@ -56,6 +56,13 @@ pub const InstallAppOptions = struct {
     /// JS. The user project's own `bridge.js` (if any) is always emitted last
     /// so it can override dep-provided symbols.
     bridge_deps: []const *std.Build.Dependency = &.{},
+    /// Name of the build-and-serve step registered by `installApp`. Override
+    /// when the host `build.zig` already owns a step named `"run"` (e.g. a
+    /// non-web CLI variant) to avoid a duplicate-step error.
+    run_step_name: []const u8 = "run",
+    /// If non-null, also register a build-only step with this name that
+    /// produces the `dist/` artifacts without starting the dev server.
+    build_step_name: ?[]const u8 = null,
 };
 
 pub fn installApp(
@@ -80,7 +87,12 @@ pub fn installApp(
     gen_cmd.setCwd(b.path("."));
     b.getInstallStep().dependOn(&gen_cmd.step);
 
-    const run_step = b.step("run", "Build and serve on localhost");
+    if (options.build_step_name) |name| {
+        const build_step = b.step(name, "Build the web app (no server)");
+        build_step.dependOn(&gen_cmd.step);
+    }
+
+    const run_step = b.step(options.run_step_name, "Build and serve on localhost");
     const serve_cmd = b.addRunArtifact(cli);
     serve_cmd.addArg("run");
     serve_cmd.addArg("--wasm");
