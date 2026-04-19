@@ -101,6 +101,11 @@ pub fn generate(
     if (categories_used.contains(.fetch)) try w.writeAll("let zunkFetchBuf = null;\n\n");
     if (needs.ui_system) try emitUISystem(w);
 
+    // Mutable WASM bindings. Held at module scope so that HMR can swap the
+    // underlying instance while env methods (which close over this scope
+    // and resolve these names at call time) transparently retarget.
+    try w.writeAll("let instance, exports, memory;\n\n");
+
     try w.writeAll("const env = {\n");
 
     for (analysis.imports, 0..) |*imp, i| {
@@ -133,25 +138,33 @@ pub fn generate(
         });
     }
 
+    // __zunkLoad instantiates or swaps the WASM module. Called once during
+    // startup, and again by __zunkHmrSwap when the dev server signals that
+    // only the .wasm binary changed.
+    try w.writeAll(
+        \\// --- WASM load helper ---
+        \\async function __zunkLoad(wasmUrl) {
+        \\  const response = await fetch(wasmUrl);
+        \\  const result = await WebAssembly.instantiateStreaming(response, { env });
+        \\  instance = result.instance;
+        \\  exports = instance.exports;
+        \\  memory = exports.memory;
+        \\
+    );
+    if (needs.handles) {
+        try w.writeAll("  H._exports = exports;\n  H._memory = memory;\n");
+    }
+    if (needs.strings) {
+        try w.writeAll("  readStr = (ptr, len) => new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, len));\n");
+    }
+    try w.writeAll("  window.wasmBindings = exports;\n  window.wasmMemory = memory;\n");
+    try w.writeAll("}\n\n");
+
     try w.print(
-        \\// --- Load WASM ---
-        \\const importObject = {{ env }};
-        \\const response = await fetch('{s}{s}');
-        \\const {{ instance }} = await WebAssembly.instantiateStreaming(response, importObject);
-        \\const exports = instance.exports;
-        \\const memory = exports.memory;
+        \\await __zunkLoad('{s}{s}');
         \\
         \\
     , .{ opts.public_url, opts.wasm_filename });
-
-    if (needs.strings) {
-        try w.writeAll("readStr = (ptr, len) => new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, len));\n\n");
-    }
-
-    if (needs.handles) {
-        try w.writeAll("H._exports = exports;\n");
-        try w.writeAll("H._memory = memory;\n\n");
-    }
 
     if (needs.webgpu_init) try emitWebGPUInit(w);
 
@@ -219,10 +232,12 @@ pub fn generate(
         try w.writeAll("window.addEventListener('beforeunload', () => exports.cleanup());\n\n");
     }
 
+    try emitHmrSwap(w, needs, has_init, has_cleanup);
+
+    // window.wasmBindings / window.wasmMemory are (re)assigned inside
+    // __zunkLoad so HMR keeps them pointed at the live module.
     try w.writeAll(
-        \\// --- Global bindings ---
-        \\window.wasmBindings = exports;
-        \\window.wasmMemory = memory;
+        \\// --- Startup event ---
         \\dispatchEvent(new CustomEvent('ZunkApplicationStarted', { detail: { wasm: instance, memory } }));
         \\
     );
@@ -287,6 +302,78 @@ const Features = struct {
     webgpu_init: bool = false,
     ui_system: bool = false,
 };
+
+/// Generate the `__zunkHmrSwap(wasmUrl)` function and expose it on
+/// `window`. The dev server calls this via a WebSocket message when only
+/// the .wasm binary changed. On any failure, falls back to a full reload.
+///
+/// State preservation is opt-in: if the WASM exports
+/// `__zunk_hmr_serialize` / `__zunk_hmr_hydrate`, those are used to round-
+/// trip app state through the existing 64 KB exchange buffer. Without
+/// them, the new module gets a fresh `init()`.
+fn emitHmrSwap(w: *std.Io.Writer, needs: Features, has_init: bool, has_cleanup: bool) !void {
+    try w.writeAll("// --- HMR swap ---\n");
+    try w.writeAll("async function __zunkHmrSwap(wasmUrl) {\n");
+    try w.writeAll("  try {\n");
+
+    if (needs.render_loop) {
+        try w.writeAll("    if (zunkFrameId) { cancelAnimationFrame(zunkFrameId); zunkFrameId = 0; }\n");
+    }
+    if (has_cleanup) {
+        try w.writeAll("    try { if (exports.cleanup) exports.cleanup(); } catch (e) { console.warn('[zunk hmr] cleanup threw:', e); }\n");
+    }
+
+    // Optional state snapshot. The exchange buffer pointer is exported as a
+    // WebAssembly global by bind.zig; `.value` reads its current i32.
+    try w.writeAll(
+        \\    let __zunkHmrSnapshot = null;
+        \\    if (exports.__zunk_hmr_serialize && exports.__zunk_string_buf_ptr) {
+        \\      const len = exports.__zunk_hmr_serialize();
+        \\      if (len > 0) {
+        \\        const ptr = exports.__zunk_string_buf_ptr.value;
+        \\        __zunkHmrSnapshot = new Uint8Array(memory.buffer, ptr, len).slice();
+        \\      }
+        \\    }
+        \\
+        \\    await __zunkLoad(wasmUrl);
+        \\
+    );
+
+    if (has_init) {
+        try w.writeAll(
+            \\    if (__zunkHmrSnapshot && exports.__zunk_hmr_hydrate && exports.__zunk_string_buf_ptr) {
+            \\      const ptr = exports.__zunk_string_buf_ptr.value;
+            \\      new Uint8Array(memory.buffer, ptr, __zunkHmrSnapshot.length).set(__zunkHmrSnapshot);
+            \\      exports.__zunk_hmr_hydrate(ptr, __zunkHmrSnapshot.length);
+            \\    } else if (exports.init) {
+            \\      exports.init();
+            \\    }
+            \\
+        );
+    }
+
+    if (needs.render_loop) {
+        try w.writeAll(
+            \\    if (exports.frame) {
+            \\      zunkLastTime = performance.now();
+            \\      zunkFrameId = requestAnimationFrame(zunkFrame);
+            \\    }
+            \\
+        );
+    }
+
+    try w.writeAll(
+        \\    console.info('[zunk hmr] swap complete');
+        \\  } catch (err) {
+        \\    console.error('[zunk hmr] swap failed, falling back to full reload:', err);
+        \\    location.reload();
+        \\  }
+        \\}
+        \\window.__zunkHmrSwap = __zunkHmrSwap;
+        \\
+        \\
+    );
+}
 
 fn emitHandleTable(w: *std.Io.Writer) !void {
     try w.writeAll(

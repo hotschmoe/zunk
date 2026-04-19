@@ -108,7 +108,15 @@ doesn't strictly need a .js.map for *that*. What a .js.map gets us:
 
 ---
 
-## 5.1 -- HMR (THIRD)
+## 5.1 -- HMR (SHIPPED in v0.5.0, opt-in)
+
+Landed as `zunk run --hmr`. Generated JS exposes `__zunkHmrSwap(wasmUrl)`;
+the dev server sends `hmr:<url>` when only `.wasm` changed in `dist/`.
+Optional Zig exports `__zunk_hmr_serialize` / `__zunk_hmr_hydrate`
+preserve app state through the existing 64 KB exchange buffer. Any
+failure in the swap falls back to `location.reload()`. Full protocol is
+in `docs/hmr.md`. Follow-ups: the `zunk.bind.exposeHmr` helper, and
+flipping `--hmr` on by default once teak reports back.
 
 ### Design sketch (MUST WRITE A `docs/hmr.md` BEFORE CODING)
 
