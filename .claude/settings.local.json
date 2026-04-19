@@ -24,7 +24,11 @@
       "WebSearch",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:ziglang.org)"
+      "WebFetch(domain:ziglang.org)",
+      "Bash(curl -s http://127.0.0.1:8999/index.html)",
+      "Bash(curl -s http://127.0.0.1:8999/input-demo.wasm)",
+      "Read(//c/Users/HOTSCH~1/AppData/Local/Temp/claude/C--Users-hotschmoe-Documents-GitHub-zunk/86e855a6-a3c5-4fc2-ae93-334cd1d1a385/tasks/**)",
+      "Bash(sed 's/\\\\x1b\\\\[[0-9;]*m//g' /c/Users/HOTSCH~1/AppData/Local/Temp/claude/C--Users-hotschmoe-Documents-GitHub-zunk/86e855a6-a3c5-4fc2-ae93-334cd1d1a385/tasks/b2rh9gkd6.output)"
     ]
   }
 }
