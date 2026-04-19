@@ -297,7 +297,7 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\  touches: [],
         \\  init(ptr, len) {
         \\    this.ptr = ptr; this.len = len;
-        \\    document.addEventListener('keydown', e => { this.keysDown.add(e.keyCode); this.keysPressed.add(e.keyCode); if(e.key.length===1&&this.typedChars.length<32)this.typedChars.push(e.key.charCodeAt(0)); else if(e.key==='Backspace'&&this.typedChars.length<32)this.typedChars.push(8); else if(e.key==='Enter'&&this.typedChars.length<32)this.typedChars.push(10); e.preventDefault(); });
+        \\    document.addEventListener('keydown', e => { this.keysDown.add(e.keyCode); this.keysPressed.add(e.keyCode); if(e.key.length===1&&e.key.charCodeAt(0)>=0x20&&e.key.charCodeAt(0)!==0x7f&&this.typedChars.length<32)this.typedChars.push(e.key.charCodeAt(0)); e.preventDefault(); });
         \\    document.addEventListener('keyup', e => { this.keysDown.delete(e.keyCode); this.keysReleased.add(e.keyCode); });
         \\    const canvas = document.getElementById('app') || document.querySelector('canvas') || document;
         \\    canvas.addEventListener('mousemove', e => { const sx=canvas.clientWidth?canvas.width/canvas.clientWidth:1,sy=canvas.clientHeight?canvas.height/canvas.clientHeight:1; this.mouseDx+=e.movementX*sx; this.mouseDy+=e.movementY*sy; this.mouseX=(e.offsetX??e.clientX)*sx; this.mouseY=(e.offsetY??e.clientY)*sy; });
