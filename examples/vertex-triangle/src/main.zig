@@ -51,11 +51,11 @@ export fn init() void {
     const pl = gpu.createPipelineLayout(&.{});
 
     const attrs = [_]gpu.VertexAttribute{
-        gpu.VertexAttribute.init(0, .float32x2, 0),
-        gpu.VertexAttribute.init(1, .float32x3, 8),
+        .{ .shader_location = 0, .format = .float32x2, .offset = 0 },
+        .{ .shader_location = 1, .format = .float32x3, .offset = 8 },
     };
     const layouts = [_]gpu.VertexBufferLayout{
-        gpu.VertexBufferLayout.init(@sizeOf(Vertex), .vertex, &attrs),
+        gpu.VertexBufferLayout.fromSlice(@sizeOf(Vertex), .vertex, &attrs),
     };
 
     pipeline = gpu.createRenderPipeline(pl, shader, "vertexMain", "fragmentMain", &layouts);

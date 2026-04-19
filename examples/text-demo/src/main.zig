@@ -63,12 +63,10 @@ export fn init() void {
     const tex = gpu.rasterizeText(label_text, label_font, .{ 1.0, 1.0, 1.0, 1.0 }, text_w, text_h);
     const view = gpu.createTextureView(tex);
 
-    const sampler = gpu.createSampler(gpu.SamplerDescriptor.init(
-        .linear,
-        .linear,
-        .clamp_to_edge,
-        .clamp_to_edge,
-    ));
+    const sampler = gpu.createSampler(.{
+        .mag_filter = .linear,
+        .min_filter = .linear,
+    });
 
     uniform_buffer = gpu.createUniformBuffer(16);
     // Default rect covers the full clip space until resize() fires.

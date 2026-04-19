@@ -84,27 +84,12 @@ pub const TextMetrics = extern struct {
 
 // 24 bytes, ABI-matched with JS DataView reader in js_resolve.zig.
 pub const SamplerDescriptor = extern struct {
-    mag_filter: u32 = 0, // FilterMode
-    min_filter: u32 = 0, // FilterMode
-    address_u: u32 = 0, // AddressMode
-    address_v: u32 = 0, // AddressMode
-    address_w: u32 = 0, // AddressMode
+    mag_filter: FilterMode = .nearest,
+    min_filter: FilterMode = .nearest,
+    address_u: AddressMode = .clamp_to_edge,
+    address_v: AddressMode = .clamp_to_edge,
+    address_w: AddressMode = .clamp_to_edge,
     _padding: u32 = 0,
-
-    pub fn init(
-        mag: FilterMode,
-        min: FilterMode,
-        u: AddressMode,
-        v: AddressMode,
-    ) SamplerDescriptor {
-        return .{
-            .mag_filter = @intFromEnum(mag),
-            .min_filter = @intFromEnum(min),
-            .address_u = @intFromEnum(u),
-            .address_v = @intFromEnum(v),
-            .address_w = @intFromEnum(u),
-        };
-    }
 };
 
 pub const ShaderVisibility = struct {
@@ -141,31 +126,27 @@ pub const VertexStepMode = enum(u32) {
 
 // 16 bytes, ABI-matched with JS DataView reader in js_resolve.zig
 pub const VertexAttribute = extern struct {
-    format: u32, // VertexFormat
+    format: VertexFormat,
     offset: u32,
     shader_location: u32,
     _padding: u32 = 0,
-
-    pub fn init(loc: u32, format: VertexFormat, offset: u32) VertexAttribute {
-        return .{
-            .format = @intFromEnum(format),
-            .offset = offset,
-            .shader_location = loc,
-        };
-    }
 };
 
 // 16 bytes, ABI-matched with JS DataView reader in js_resolve.zig.
 pub const VertexBufferLayout = extern struct {
     array_stride: u32,
-    step_mode: u32, // VertexStepMode
+    step_mode: VertexStepMode,
     attributes_ptr: u32,
     attributes_len: u32,
 
-    pub fn init(stride: u32, step: VertexStepMode, attributes: []const VertexAttribute) VertexBufferLayout {
+    pub fn fromSlice(
+        stride: u32,
+        step: VertexStepMode,
+        attributes: []const VertexAttribute,
+    ) VertexBufferLayout {
         return .{
             .array_stride = stride,
-            .step_mode = @intFromEnum(step),
+            .step_mode = step,
             .attributes_ptr = @intFromPtr(attributes.ptr),
             .attributes_len = @intCast(attributes.len),
         };

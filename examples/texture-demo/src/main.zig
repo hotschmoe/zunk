@@ -62,12 +62,10 @@ export fn init() void {
     gpu.writeTexture(texture, &texels, 2 * 4, 2, 2);
     const view = gpu.createTextureView(texture);
 
-    const sampler = gpu.createSampler(gpu.SamplerDescriptor.init(
-        .linear,
-        .linear,
-        .clamp_to_edge,
-        .clamp_to_edge,
-    ));
+    const sampler = gpu.createSampler(.{
+        .mag_filter = .linear,
+        .min_filter = .linear,
+    });
 
     const bgl = gpu.createBindGroupLayout(&.{
         gpu.BindGroupLayoutEntry.initTexture(0, gpu.ShaderVisibility.FRAGMENT, .float),
