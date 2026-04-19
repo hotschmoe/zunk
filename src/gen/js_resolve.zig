@@ -545,6 +545,31 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "{source:bmp},{texture:tex},{width:bmp.width,height:bmp.height});" ++
             "H.set(h,tex);});return h;", false, false, true },
         .{ "is_texture_ready", "const t=H.get(arguments[0]);return(t instanceof GPUTexture)?1:0;", false, false, true },
+
+        // Text-to-texture (workstream 2). Uses an offscreen <canvas> 2D
+        // context to shape and rasterize text via the browser's built-in
+        // text engine, then uploads the pixels into a GPUTexture.
+        .{ "measure_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d');}" ++
+            "const text=readStr(arguments[0],arguments[1]),font=readStr(arguments[2],arguments[3]);" ++
+            "zunkTextCtx.font=font;const m=zunkTextCtx.measureText(text);" ++
+            "const w=Math.max(1,Math.ceil(m.width));" ++
+            "const h=Math.max(1,Math.ceil((m.actualBoundingBoxAscent||0)+(m.actualBoundingBoxDescent||0)));" ++
+            "const dv=new DataView(memory.buffer,arguments[4],8);" ++
+            "dv.setUint32(0,w,true);dv.setUint32(4,h,true);", false, true, true },
+
+        .{ "rasterize_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d');}" ++
+            "const text=readStr(arguments[0],arguments[1]),font=readStr(arguments[2],arguments[3]);" ++
+            "const r=arguments[4],g=arguments[5],b=arguments[6],a=arguments[7];" ++
+            "const w=arguments[8],h=arguments[9];" ++
+            "zunkTextCanvas.width=w;zunkTextCanvas.height=h;" ++
+            "zunkTextCtx.clearRect(0,0,w,h);" ++
+            "zunkTextCtx.font=font;zunkTextCtx.textBaseline='top';" ++
+            "zunkTextCtx.fillStyle=`rgba(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)},${a})`;" ++
+            "zunkTextCtx.fillText(text,0,0);" ++
+            "const img=zunkTextCtx.getImageData(0,0,w,h);" ++
+            "const tex=H.get(1).createTexture({size:[w,h],format:'rgba8unorm',usage:0x06});" ++
+            "H.get(1).queue.writeTexture({texture:tex},img.data,{bytesPerRow:w*4},{width:w,height:h});" ++
+            "return H.store(tex);", false, true, true },
     };
     inline for (js_map) |entry| {
         if (std.mem.eql(u8, method, entry[0])) {

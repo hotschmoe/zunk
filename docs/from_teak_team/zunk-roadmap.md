@@ -4,13 +4,13 @@
 
 **Last updated**: 2026-04-19
 **Teak branch**: `master`
-**Zunk branch tracked**: `master` (v0.6.0; workstream 1 landed)
+**Zunk branch tracked**: `master` (v0.7.0; workstreams 1 + 2 landed)
 
 **Status of prior asks**:
 - DONE **Vertex buffer layouts** — landed and consumed in `src/gpu/web.zig:38-46`. No further ask from Teak.
 - DONE **All workstream 3 / handoff items §1–§7** — shipped in zunk v0.5.3. See [`zunk-handoff.md`](zunk-handoff.md) for the per-item status table.
 - DONE **Samplers + textures** — workstream #1 shipped in v0.6.0. See acceptance demo at `examples/texture-demo/`.
-- NEXT **Text-to-texture helper** — workstream #2 below (unblocked).
+- DONE **Text-to-texture helper** — workstream #2 shipped in v0.7.0. See acceptance demo at `examples/text-demo/`.
 
 ---
 
@@ -153,11 +153,20 @@ On landing, Teak's `src/gpu/web.zig` gains a parallel text pipeline (not replaci
 
 ---
 
-## Workstream 2 — Minimal text-to-texture helper
+## Workstream 2 — Minimal text-to-texture helper — DONE (v0.7.0)
 
-**Why**: Without this, every web consumer has to ship a Zig font rasterizer (fontdue, stb_truetype port, etc.) that runs in wasm. That's ~200 KB of binary per consumer and weeks of integration. Meanwhile, the browser already ships a full text shaper in canvas 2D. Expose it.
+Landed in v0.7.0. Summary of what shipped:
 
-**Priority**: after workstream 1 lands. Completely depends on the texture primitives.
+- `TextMetrics` extern struct (`width: u32, height: u32`, 8 bytes).
+- `measureText(text, font) TextMetrics` — uses an out-pointer on the wasm import to return the struct; Zig wrapper hides that detail.
+- `rasterizeText(text, font, color: [4]f32, width, height) Texture` — returns an rgba8unorm texture with `TEXTURE_BINDING | COPY_DST` usage, ready to bind in the same frame.
+- JS side uses a shared offscreen `<canvas>` 2D context (`zunkTextCanvas`/`zunkTextCtx`) for measuring and rasterizing. `textBaseline='top'`, fillText at (0,0), then `queue.writeTexture` into the GPU texture.
+
+Acceptance: `examples/text-demo` measures + rasterizes "Hello, world!" at 32px sans-serif, renders a pixel-sized centered quad that stays pixel-accurate across resizes.
+
+Integration guidance for Teak (unchanged from the original sketch): glyph-atlas cache keyed on `(content, font, color)`, LRU eviction after N frames unused. `measureText` needs to live on the Host interface (not GPU) so `src/layout/engine.zig` can call it during measure pass.
+
+**Why (historical)**: Without this, every web consumer would have to ship a Zig font rasterizer (fontdue, stb_truetype port, etc.) that runs in wasm — ~200 KB of binary per consumer and weeks of integration. The browser already ships a full text shaper in canvas 2D; we now expose it.
 
 ### What Teak needs (single function)
 
@@ -222,7 +231,7 @@ commit refs. Teak can drop the following local workarounds:
 4. **Missing keys** (§4) — populate the `.delete/.home/.end/.page_up/.page_down/.insert` paths in `SpecialKey`.
 5. **Mouse edge diff** (§5) — drop the `prev_left` bool + synthesis; read `mouse_buttons_pressed` / `mouse_buttons_released` directly via the new `isMouseButtonPressed` / `isMouseButtonReleased` helpers.
 
-No blockers remain at this tier. Workstream 1 is the next open item.
+No blockers remain at this tier. Workstreams 1 and 2 are also DONE — all roadmap items currently tracked are shipped.
 
 ---
 
@@ -244,7 +253,7 @@ Teak glyph cache + textured quad pipeline + measureText-driven layout
 
 ## Coordination
 
-- **Path dep today**: `.zunk = .{ .path = "../zunk" }` in `build.zig.zon`. All workstream 3 items shipped in v0.5.3 — Teak can switch to a tagged git URL at `v0.5.3` now, or wait for workstream 1.
+- **Path dep today**: `.zunk = .{ .path = "../zunk" }` in `build.zig.zon`. Workstreams 1 + 2 + all §1–§7 handoff items now land in v0.7.0 — Teak can switch to a tagged git URL at `v0.7.0`.
 - **Design discussion**: open a zunk issue per workstream and cross-link from this doc. Teak is happy to iterate on the API shapes above before implementation — the shapes are sketches, not demands.
 - **Zig version**: both projects track Zig 0.16.0. Coordinate bumps.
 - **Non-goal on Teak's side**: introducing abstractions for texture/sampler support before workstream 1 lands. Per HARDLINE, we don't design for hypothetical features. The `Gpu` interface in `src/gpu/context.zig` stays as-is until there's working web code to compare against.

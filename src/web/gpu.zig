@@ -76,6 +76,12 @@ pub const AddressMode = enum(u32) {
     mirror_repeat = 2,
 };
 
+// 8 bytes, ABI-matched with JS DataView writer in js_resolve.zig.
+pub const TextMetrics = extern struct {
+    width: u32,
+    height: u32,
+};
+
 // 24 bytes, ABI-matched with JS DataView reader in js_resolve.zig.
 pub const SamplerDescriptor = extern struct {
     mag_filter: u32 = 0, // FilterMode
@@ -311,6 +317,25 @@ extern "env" fn zunk_gpu_render_pass_end(pass_h: i32) void;
 extern "env" fn zunk_gpu_present() void;
 extern "env" fn zunk_gpu_create_texture_from_asset(asset_h: i32) i32;
 extern "env" fn zunk_gpu_is_texture_ready(handle: i32) i32;
+extern "env" fn zunk_gpu_measure_text(
+    text_ptr: [*]const u8,
+    text_len: u32,
+    font_ptr: [*]const u8,
+    font_len: u32,
+    out_ptr: *TextMetrics,
+) void;
+extern "env" fn zunk_gpu_rasterize_text(
+    text_ptr: [*]const u8,
+    text_len: u32,
+    font_ptr: [*]const u8,
+    font_len: u32,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+    width: u32,
+    height: u32,
+) i32;
 
 pub fn getDevice() Device {
     return bind.Handle.fromInt(1);
@@ -548,6 +573,45 @@ pub fn isTextureReady(handle: Texture) bool {
     return zunk_gpu_is_texture_ready(handle.toInt()) != 0;
 }
 
+/// Measure a text run in pixels using the browser's canvas 2D text shaper.
+/// `font` is a CSS font string, e.g. "14px monospace".
+pub fn measureText(text: []const u8, font: []const u8) TextMetrics {
+    var out: TextMetrics = .{ .width = 0, .height = 0 };
+    zunk_gpu_measure_text(
+        text.ptr,
+        @intCast(text.len),
+        font.ptr,
+        @intCast(font.len),
+        &out,
+    );
+    return out;
+}
+
+/// Rasterize `text` into a freshly allocated rgba8unorm `Texture` of the given
+/// size, using the browser's canvas 2D text shaper. `color` is the foreground
+/// fill (0..1 RGBA). The texture has `TEXTURE_BINDING | COPY_DST` usage and is
+/// ready to bind in the same frame.
+pub fn rasterizeText(
+    text: []const u8,
+    font: []const u8,
+    color: [4]f32,
+    width: u32,
+    height: u32,
+) Texture {
+    return bind.Handle.fromInt(zunk_gpu_rasterize_text(
+        text.ptr,
+        @intCast(text.len),
+        font.ptr,
+        @intCast(font.len),
+        color[0],
+        color[1],
+        color[2],
+        color[3],
+        width,
+        height,
+    ));
+}
+
 test "struct layout BindGroupLayoutEntry" {
     try std.testing.expectEqual(@as(usize, 40), @sizeOf(BindGroupLayoutEntry));
 }
@@ -566,6 +630,10 @@ test "struct layout VertexBufferLayout" {
 
 test "struct layout SamplerDescriptor" {
     try std.testing.expectEqual(@as(usize, 24), @sizeOf(SamplerDescriptor));
+}
+
+test "struct layout TextMetrics" {
+    try std.testing.expectEqual(@as(usize, 8), @sizeOf(TextMetrics));
 }
 
 test "BindGroupLayoutEntry initSampler encodes type_variant" {
