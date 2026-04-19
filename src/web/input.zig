@@ -10,6 +10,14 @@ extern "env" fn zunk_input_lock_pointer(canvas_handle: i32) void;
 extern "env" fn zunk_input_unlock_pointer() void;
 
 /// Layout must match the generated JS input flush routine.
+///
+/// Coordinate space: all pointer/viewport fields (`mouse_x/y`, `mouse_dx/dy`,
+/// `touch_x/y`, `viewport_width/height`) are in **CSS pixels**. This matches
+/// the `w, h` passed to the optional `resize(w, h)` export. On HiDPI displays
+/// the canvas backing store is sized to `w * device_pixel_ratio` by
+/// `h * device_pixel_ratio` for crisp rendering; consumers who need that
+/// device-pixel size (e.g. for a WebGPU viewport) should multiply by
+/// `device_pixel_ratio` themselves.
 pub const InputState = extern struct {
     keys_down: [32]u8 align(1),
     keys_pressed: [32]u8 align(1),
