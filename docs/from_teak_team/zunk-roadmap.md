@@ -2,15 +2,15 @@
 
 **Audience**: zunk contributors. Teak is zunk's first external consumer; this doc tells the zunk team what Teak will need next, in priority order, with acceptance criteria detailed enough to write tests against.
 
-**Last updated**: 2026-04-18
+**Last updated**: 2026-04-19
 **Teak branch**: `master`
-**Zunk branch tracked**: `dev-hotschmoe` (path-dep from `../zunk`)
+**Zunk branch tracked**: `master` (v0.5.3; ready to switch off path-dep to a tagged git URL)
 
 **Status of prior asks**:
-- ✅ **Vertex buffer layouts** — landed and consumed in `src/gpu/web.zig:38-46`. No further ask from Teak.
-- 🔜 **Samplers + textures** — workstream #1 below.
-- 🔜 **Text-to-texture helper** — workstream #2 below (depends on #1).
-- Open smaller items tracked in [`zunk-handoff.md`](zunk-handoff.md) (step-name collision, HiDPI coords, control-char leak, missing keys).
+- DONE **Vertex buffer layouts** — landed and consumed in `src/gpu/web.zig:38-46`. No further ask from Teak.
+- DONE **All workstream 3 / handoff items §1–§7** — shipped in zunk v0.5.3. See [`zunk-handoff.md`](zunk-handoff.md) for the per-item status table.
+- NEXT **Samplers + textures** — workstream #1 below. Currently the top open item.
+- BLOCKED **Text-to-texture helper** — workstream #2 below (depends on #1).
 
 ---
 
@@ -203,15 +203,17 @@ Text-rendering UX remains **non-reactive** at the framework level — text is dr
 
 ## Workstream 3 — Anything else?
 
-Open asks tracked in [`zunk-handoff.md`](zunk-handoff.md). In roughly descending impact on Teak:
+**Status: DONE as of zunk v0.5.3.** All seven handoff items (§1–§7)
+landed. See [`zunk-handoff.md`](zunk-handoff.md) for per-item status and
+commit refs. Teak can drop the following local workarounds:
 
-1. **HiDPI coordinate-space mismatch** (handoff §2) — already worked around in `src/platform/wasm.zig`. Clean fix would let Teak drop its divide-by-DPR shim.
-2. **`installApp` step-name collision** (handoff §1) — Teak inlines a fork in `build.zig`'s `linkWebWgpu`. A `run_step_name` option drops the fork.
-3. **Control-char leak into `typed_chars`** (handoff §3) — worked around in `src/platform/wasm.zig`.
-4. **Missing keys in `zunk.web.input.Key`** (handoff §4) — `Delete`, `Home`, `End`, `PageUp`, `PageDown`, `Insert`. Blocks text-input cursor navigation.
-5. **Mouse edge events** (handoff §5) — synthesized on Teak side; zunk adding optional `mouse_buttons_pressed` / `released` bitmaps would let us drop the diff.
+1. **HiDPI coords** (§2) — drop the divide-by-DPR shim in `src/platform/wasm.zig`.
+2. **`installApp` fork** (§1) — replace the inlined copy in `build.zig`'s `linkWebWgpu` with `zunk.installApp(b, dep, exe, .{ .run_step_name = "web-run", .build_step_name = "web" })`.
+3. **Control-char filter** (§3) — drop the client-side filter in `src/platform/wasm.zig` (pre-v0.5.1 fix, but confirm).
+4. **Missing keys** (§4) — populate the `.delete/.home/.end/.page_up/.page_down/.insert` paths in `SpecialKey`.
+5. **Mouse edge diff** (§5) — drop the `prev_left` bool + synthesis; read `mouse_buttons_pressed` / `mouse_buttons_released` directly via the new `isMouseButtonPressed` / `isMouseButtonReleased` helpers.
 
-All are small. Any of them are fair game for zunk contributors looking for starter tasks; none block text rendering.
+No blockers remain at this tier. Workstream 1 is the next open item.
 
 ---
 
@@ -225,7 +227,7 @@ workstream 2 (text-to-texture)
 Teak glyph cache + textured quad pipeline + measureText-driven layout
 ```
 
-**Parallel**: workstream 3 items — any contributor can pick one off `zunk-handoff.md`.
+**Parallel**: workstream 3 items — DONE, all shipped in v0.5.3.
 
 **Teak-side work**: waits for workstream 1. When 1 lands, Teak adds native + web texture pipelines in parallel to the existing quad pipeline (no interface churn above the GPU layer — HARDLINE §1 + escape hatch 4 keep the blast radius contained).
 
@@ -233,7 +235,7 @@ Teak glyph cache + textured quad pipeline + measureText-driven layout
 
 ## Coordination
 
-- **Path dep today**: `.zunk = .{ .path = "../zunk" }` in `build.zig.zon`. Will switch to tagged git URL once zunk cuts a release with workstream 1.
+- **Path dep today**: `.zunk = .{ .path = "../zunk" }` in `build.zig.zon`. All workstream 3 items shipped in v0.5.3 — Teak can switch to a tagged git URL at `v0.5.3` now, or wait for workstream 1.
 - **Design discussion**: open a zunk issue per workstream and cross-link from this doc. Teak is happy to iterate on the API shapes above before implementation — the shapes are sketches, not demands.
 - **Zig version**: both projects track Zig 0.16.0. Coordinate bumps.
 - **Non-goal on Teak's side**: introducing abstractions for texture/sampler support before workstream 1 lands. Per HARDLINE, we don't design for hypothetical features. The `Gpu` interface in `src/gpu/context.zig` stays as-is until there's working web code to compare against.

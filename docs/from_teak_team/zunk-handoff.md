@@ -5,12 +5,26 @@ zunk (branch `dev-hotschmoe` @ `c8395f5`, zunk v0.2.0). These are the
 rough edges surfaced during integration. All are minor; teak is working
 around each locally. Ordered by priority.
 
+**Status (2026-04-19, zunk v0.5.3)**: all seven items below are landed.
+Teak can drop the workarounds noted under each section and pin
+zunk >= 0.5.3.
+
+| Item | Status | Landed in |
+|------|--------|-----------|
+| §1 `installApp` step-name collision | DONE | `4f1dbbe` (v0.5.1) |
+| §2 HiDPI coordinate-space mismatch  | DONE | `510d970` (v0.5.2) |
+| §3 `typed_chars` non-text leak      | DONE | `fd68ff5` (PR #9, pre-v0.5.1) |
+| §4 Missing keys in `Key` enum       | DONE | `4f1dbbe` (v0.5.1) |
+| §5 Mouse edge events                | DONE | `f12aabb` (v0.5.3) |
+| §6 Canvas ownership/resize docs     | DONE | `f12aabb` (v0.5.3) |
+| §7 Per-frame arena pattern          | DONE (docs only) | `f12aabb` (v0.5.3) |
+
 **Companion doc**: [`zunk-roadmap.md`](zunk-roadmap.md) — the bigger
 workstreams (sampler + texture primitives, text-to-texture helper).
 That's where the "what do we build next?" conversation lives; this doc
 is the smaller-ticket follow-up list.
 
-## 1. `installApp` step-name collision
+## 1. `installApp` step-name collision — DONE (v0.5.1, `4f1dbbe`)
 
 **Problem.** `zunk.build.installApp` unconditionally registers a build
 step named `"run"`. A consumer whose top-level `build.zig` already owns
@@ -36,7 +50,16 @@ pub const InstallAppOptions = struct {
 Once shipped, teak's `linkWebWgpu` drops the fork and calls
 `zunk.installApp(b, dep, exe, .{ .run_step_name = "web-run", .build_step_name = "web" })`.
 
-## 2. HiDPI coordinate-space mismatch
+## 2. HiDPI coordinate-space mismatch — DONE (v0.5.2, `510d970`)
+
+Resolution: CSS pixels picked as the public contract. Mouse coords no
+longer scale by `canvas.width/clientWidth`, and `resize(w, h)` now
+receives `clientWidth/clientHeight` (CSS pixels). Canvas backing is
+still sized to `clientWidth * devicePixelRatio` for crisp rendering;
+consumers needing the device-pixel size multiply by
+`getDevicePixelRatio()` themselves. Contract documented in
+`docs/ARCHITECTURE.md` and on the `InputState` doc comment.
+
 
 **Problem.** In the generated `dist/app.js`:
 
@@ -67,7 +90,12 @@ for both viewport + mouse) and document it as the contract. Either:
 The former is cheaper to adopt — consumers want logical coords in most
 cases.
 
-## 3. `typed_chars` buffer bleeds non-text keys
+## 3. `typed_chars` buffer bleeds non-text keys — DONE (PR #9, `fd68ff5`)
+
+The generated keydown handler now gates `typedChars.push` on
+`e.key.length === 1 && charCode >= 0x20 && charCode !== 0x7f`. No
+explicit Backspace/Enter appends. Teak's handoff doc predated the fix.
+
 
 **Problem.** The generated JS pushes `Backspace` → `0x08` and `Enter`
 → `0x0A` into `typed_chars` while also setting the corresponding bits
@@ -86,7 +114,11 @@ before zunk ships a fix.
 !e.metaKey` only — drop the explicit Backspace/Enter appends. The keys
 bitmap already covers those.
 
-## 4. Missing keys in `zunk.web.input.Key`
+## 4. Missing keys in `zunk.web.input.Key` — DONE (v0.5.1, `4f1dbbe`)
+
+Added: `page_up` (33), `page_down` (34), `end` (35), `home` (36),
+`insert` (45), `delete` (46).
+
 
 **Problem.** The enum covers alpha, digits, F1–F12, arrows, and common
 modifiers — but omits `Delete` (46), `Home` (36), `End` (35), `PageUp`
@@ -99,7 +131,14 @@ web is limited to `Left/Right` until zunk extends `Key`.
 **Ask.** Add the five codes above (they're stable JS keycodes) to the
 enum. One-line change in `zunk/src/web/input.zig`.
 
-## 5. No mouse edge events
+## 5. No mouse edge events — DONE (v0.5.3, `f12aabb`)
+
+`InputState` now carries `mouse_buttons_pressed` and
+`mouse_buttons_released` u8 bitmaps, cleared each flush. Query via
+`isMouseButtonPressed(.left)` / `isMouseButtonReleased(.left)` (new
+`MouseButton` enum: `left=0, middle=1, right=2`). Teak can drop the
+`prev_left` diff in `src/platform/wasm.zig`.
+
 
 **Problem.** `mouse_buttons` is current state. Consumers that care
 about "click" (mouse down followed by mouse up over the same element)
@@ -114,7 +153,14 @@ have to diff across polls themselves.
 `keys_pressed / keys_released`. If not adopted, not blocking; the
 client-side diff is three lines.
 
-## 6. (Docs) Canvas ownership & resize
+## 6. (Docs) Canvas ownership & resize — DONE (v0.5.3, `f12aabb`)
+
+New "Canvas ownership and resize contract" paragraph in the Lifecycle
+Protocol section of `docs/ARCHITECTURE.md`. Contract: zunk owns
+`canvas.width/height`, sizes the backing store to device pixels, and
+calls `resize(w, h)` with CSS pixels. Consumers never touch the canvas
+attributes directly.
+
 
 **Problem.** The generated HTML uses `<canvas id="app">` with CSS
 sizing, but the JS never sets `canvas.width / canvas.height`
@@ -133,7 +179,14 @@ the DPR-inconsistency in §2 is resolved, this is fine.
 **Ask.** Document the contract: what units does `resize(w, h)` carry,
 and does zunk promise to resize the canvas backing to match?
 
-## 7. (Nice-to-have) `clearRetainingCapacity` friendly FBA story
+## 7. (Nice-to-have) `clearRetainingCapacity` friendly FBA story — DONE (docs, v0.5.3, `f12aabb`)
+
+New "Per-Frame Allocation Pattern" section in `docs/ARCHITECTURE.md`
+documenting the `ArenaAllocator + reset(.retain_capacity)` idiom,
+contrasted with `FixedBufferAllocator`'s no-piecewise-free footgun.
+Documented as a convention, not shipped as a zunk API (zunk stays
+allocator-agnostic).
+
 
 Not a zunk issue — a wasm-idiom pattern that is missing a good story.
 Teak's `web_main.zig` uses a 1 MiB `FixedBufferAllocator` that grows
@@ -151,5 +204,5 @@ that'd help the next consumer.
 ## Zunk version pinned by teak
 
 Currently a path dep: `.zunk = .{ .path = "../zunk" }` in teak's root
-`build.zig.zon`. Will switch to a tagged git URL once zunk cuts v0.2.1+
-with any of §1–§4 landed.
+`build.zig.zon`. All seven items landed in zunk v0.5.3 — ready to
+switch to a tagged git URL at `v0.5.3` (or later).
