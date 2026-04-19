@@ -427,20 +427,38 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         .{ "create_shader_module", "return H.store(H.get(1).createShaderModule({code:readStr(arguments[0],arguments[1])}));", true, false, true },
 
         // Texture
-        .{ "create_texture", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
+        .{ "create_texture", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float','r8unorm'];" ++
             "return H.store(H.get(1).createTexture({size:[arguments[0],arguments[1]],format:fmts[arguments[2]],usage:arguments[3]}));", false, false, true },
         .{ "create_texture_view", "return H.store(H.get(arguments[0]).createView());", false, false, true },
         .{ "destroy_texture", "H.get(arguments[0]).destroy();", false, false, true },
+        .{ "write_texture", "const tex=H.get(arguments[0]);" ++
+            "const src=new Uint8Array(memory.buffer,arguments[1],arguments[2]);" ++
+            "H.get(1).queue.writeTexture({texture:tex},src," ++
+            "{bytesPerRow:arguments[3]}," ++
+            "{width:arguments[4],height:arguments[5]});", false, false, true },
+
+        // Sampler
+        .{ "create_sampler", "const fm=['nearest','linear'],am=['clamp-to-edge','repeat','mirror-repeat'];" ++
+            "const v=new DataView(memory.buffer,arguments[0],24);" ++
+            "return H.store(H.get(1).createSampler({" ++
+            "magFilter:fm[v.getUint32(0,true)],minFilter:fm[v.getUint32(4,true)]," ++
+            "addressModeU:am[v.getUint32(8,true)],addressModeV:am[v.getUint32(12,true)]," ++
+            "addressModeW:am[v.getUint32(16,true)]}));", false, true, true },
+        .{ "destroy_sampler", "H.release(arguments[0]);", false, false, true },
 
         // Bind group layout / bind group
-        .{ "create_bind_group_layout", "const v=new DataView(memory.buffer,arguments[0],arguments[1]*40);" ++
+        .{ "create_bind_group_layout", "const sampleTypes=['float','unfilterable-float','depth','sint','uint'];" ++
+            "const samplerTypes=['filtering','non-filtering','comparison'];" ++
+            "const v=new DataView(memory.buffer,arguments[0],arguments[1]*40);" ++
             "const entries=[];for(let i=0;i<arguments[1];i++){const o=i*40;" ++
             "const e={binding:v.getUint32(o,true),visibility:v.getUint32(o+4,true)};" ++
-            "const t=v.getUint32(o+8,true);" ++
-            "if(t===0){e.buffer={type:['uniform','storage','read-only-storage'][v.getUint32(o+12,true)]," ++
+            "const t=v.getUint32(o+8,true),tv=v.getUint32(o+12,true);" ++
+            "if(t===0){e.buffer={type:['uniform','storage','read-only-storage'][tv]," ++
             "hasDynamicOffset:!!v.getUint32(o+20,true)};" ++
             "if(v.getUint32(o+16,true))e.buffer.minBindingSize=Number(v.getBigUint64(o+24,true));}" ++
-            "else if(t===1){e.texture={sampleType:'float'};}entries.push(e);}" ++
+            "else if(t===1){e.texture={sampleType:sampleTypes[tv]};}" ++
+            "else if(t===2){e.sampler={type:samplerTypes[tv]};}" ++
+            "entries.push(e);}" ++
             "return H.store(H.get(1).createBindGroupLayout({entries}));", false, true, true },
 
         .{ "create_bind_group", "const v=new DataView(memory.buffer,arguments[1],arguments[2]*32);" ++
@@ -469,7 +487,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha'}}}]}," ++
             "primitive:{topology:'triangle-list'}}));", true, true, true },
 
-        .{ "create_render_pipeline_hdr", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
+        .{ "create_render_pipeline_hdr", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float','r8unorm'];" ++
             "const t={format:fmts[arguments[6]]};" ++
             "if(arguments[7]){t.blend={color:{srcFactor:'src-alpha',dstFactor:'one',operation:'add'}," ++
             "alpha:{srcFactor:'one',dstFactor:'one',operation:'add'}};}" ++

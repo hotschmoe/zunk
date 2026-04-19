@@ -234,8 +234,8 @@ pub const Simulation = struct {
 
         const compose_shader_mod = gpu.createShaderModule(shaders.compose_shader);
         self.compose_bind_group_layout = gpu.createBindGroupLayout(&[_]gpu.BindGroupLayoutEntry{
-            gpu.BindGroupLayoutEntry.initTexture(0, gpu.ShaderVisibility.FRAGMENT),
-            gpu.BindGroupLayoutEntry.initTexture(1, gpu.ShaderVisibility.FRAGMENT),
+            gpu.BindGroupLayoutEntry.initTexture(0, gpu.ShaderVisibility.FRAGMENT, .float),
+            gpu.BindGroupLayoutEntry.initTexture(1, gpu.ShaderVisibility.FRAGMENT, .float),
         });
 
         self.compose_bind_group = gpu.createBindGroup(self.compose_bind_group_layout, &[_]gpu.BindGroupEntry{

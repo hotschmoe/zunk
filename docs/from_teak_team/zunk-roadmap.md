@@ -4,21 +4,30 @@
 
 **Last updated**: 2026-04-19
 **Teak branch**: `master`
-**Zunk branch tracked**: `master` (v0.5.3; ready to switch off path-dep to a tagged git URL)
+**Zunk branch tracked**: `master` (v0.6.0; workstream 1 landed)
 
 **Status of prior asks**:
 - DONE **Vertex buffer layouts** — landed and consumed in `src/gpu/web.zig:38-46`. No further ask from Teak.
 - DONE **All workstream 3 / handoff items §1–§7** — shipped in zunk v0.5.3. See [`zunk-handoff.md`](zunk-handoff.md) for the per-item status table.
-- NEXT **Samplers + textures** — workstream #1 below. Currently the top open item.
-- BLOCKED **Text-to-texture helper** — workstream #2 below (depends on #1).
+- DONE **Samplers + textures** — workstream #1 shipped in v0.6.0. See acceptance demo at `examples/texture-demo/`.
+- NEXT **Text-to-texture helper** — workstream #2 below (unblocked).
 
 ---
 
-## Workstream 1 — Sampler + texture primitives
+## Workstream 1 — Sampler + texture primitives — DONE (v0.6.0)
 
-**Why**: Without samplers and textures, `zunk.web.gpu` can draw colored quads only. This blocks text rendering, images, rounded corners (if we ever SDF them), and any richer shader work. Native wgpu already has the full surface; web is the blocker.
+Landed in v0.6.0. Summary of what shipped, keyed to the subsections below:
 
-**Priority**: **highest**. Blocks workstream 2.
+- 1.1 Texture handle + creation: pre-existed (`createTexture`/`createTextureView`/`destroyTexture`). `TextureFormat.r8unorm` added.
+- 1.2 CPU-bytes upload: `writeTexture(tex, bytes, bytes_per_row, width, height)`.
+- 1.3 Sampler: `Sampler` handle, `FilterMode`, `AddressMode`, `SamplerDescriptor`, `createSampler(desc)`, `destroySampler(s)`.
+- 1.4 BindGroupLayoutEntry: `initTexture(b, vis, sample_type: TextureSampleType)` — **signature change**, callers must pass sample type now. `initSampler(b, vis, sampler_type: SamplerBindingType)` added.
+- 1.5 BindGroupEntry: `initSampler(b, handle)` added.
+- 1.6 WGSL passthrough: confirmed — `texture_2d<f32>` + `textureSample` work through `createShaderModule` unchanged.
+
+Acceptance: `examples/texture-demo` renders a 2×2 rgba8 texture (red/green/blue/yellow pixels) with a linear sampler over a fullscreen quad — produces the expected interpolated gradient.
+
+**Why (historical)**: Without samplers and textures, `zunk.web.gpu` can draw colored quads only. This blocked text rendering, images, rounded corners (if we ever SDF them), and any richer shader work. Native wgpu already has the full surface; web was the blocker.
 
 ### What Teak needs (minimum viable set)
 
