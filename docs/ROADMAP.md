@@ -187,9 +187,9 @@ Full WebGPU bindings are implemented and working. The particle-life example uses
 - [ ] WebMIDI (musical instruments)
 - [ ] Gamepad API (beyond current basic support -- gamepad section exists in InputState but JS flush skips it)
 
-### 4.3 Library convention for bridge.js
+### 4.3 Library convention for bridge.js -- DONE
 
-Define and document the convention for Zig packages that ship browser-side JS. When a zunk user depends on a Zig package that includes a `bridge.js`, zunk should automatically discover and merge it.
+Zig packages ship a `bridge.js` at their package root. Consumers opt in via `zunk.installApp(..., .{ .bridge_deps = &.{ teak, ... } })`. Dep-provided chunks are merged in listed order; the consumer's own `bridge.js` (or `js/bridge.js`) is appended last so it can override. Each chunk is banner-commented with its origin. `--bridge-dep <path>` is the underlying repeatable CLI flag (installApp wires it up automatically).
 
 ### 4.4 Source maps
 

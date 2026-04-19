@@ -49,6 +49,13 @@ pub fn build(b: *std.Build) void {
 pub const InstallAppOptions = struct {
     port: u16 = 8080,
     output_dir: []const u8 = "dist",
+    /// Zig dependencies that ship a `bridge.js` at their package root. Each
+    /// listed dep must actually have a `bridge.js` file -- resolution is
+    /// lazy, so a typo or missing file fails loudly when the RunStep executes.
+    /// Order is preserved; earlier entries are emitted earlier in the merged
+    /// JS. The user project's own `bridge.js` (if any) is always emitted last
+    /// so it can override dep-provided symbols.
+    bridge_deps: []const *std.Build.Dependency = &.{},
 };
 
 pub fn installApp(
@@ -66,6 +73,10 @@ pub fn installApp(
     gen_cmd.addArtifactArg(user_exe);
     gen_cmd.addArg("--output-dir");
     gen_cmd.addArg(options.output_dir);
+    for (options.bridge_deps) |bd| {
+        gen_cmd.addArg("--bridge-dep");
+        gen_cmd.addFileArg(bd.path("bridge.js"));
+    }
     gen_cmd.setCwd(b.path("."));
     b.getInstallStep().dependOn(&gen_cmd.step);
 
@@ -78,6 +89,10 @@ pub fn installApp(
     serve_cmd.addArg(options.output_dir);
     serve_cmd.addArg("--port");
     serve_cmd.addArg(b.fmt("{d}", .{options.port}));
+    for (options.bridge_deps) |bd| {
+        serve_cmd.addArg("--bridge-dep");
+        serve_cmd.addFileArg(bd.path("bridge.js"));
+    }
     serve_cmd.setCwd(b.path("."));
     run_step.dependOn(&serve_cmd.step);
 }

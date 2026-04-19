@@ -2,10 +2,19 @@ const std = @import("std");
 const wa = @import("wasm_analyze.zig");
 const resolver = @import("js_resolve.zig");
 
+pub const BridgeJsChunk = struct {
+    /// Human-readable label printed into the merged JS as a banner comment
+    /// (e.g. `bridge.js`, `js/bridge.js`, or a dep package directory name).
+    origin: []const u8,
+    source: []const u8,
+};
+
 pub const GenOptions = struct {
     public_url: []const u8 = "/",
     wasm_filename: []const u8,
-    bridge_js: ?[]const u8 = null,
+    /// Concatenated in order. Convention: dep-provided chunks first, user's
+    /// own project chunk last, so the user can override symbols from deps.
+    bridge_js_chunks: []const BridgeJsChunk = &.{},
     js_filename: []const u8 = "app.js",
     wasm_preload: bool = false,
     js_integrity: ?[]const u8 = null,
@@ -97,9 +106,9 @@ pub fn generate(
 
     try w.writeAll("};\n\n");
 
-    if (opts.bridge_js) |bridge| {
-        try w.writeAll("// --- bridge.js (library-provided) ---\n");
-        try w.writeAll(bridge);
+    for (opts.bridge_js_chunks) |chunk| {
+        try w.print("// --- bridge.js from {s} ---\n", .{chunk.origin});
+        try w.writeAll(chunk.source);
         try w.writeAll("\n\n");
     }
 

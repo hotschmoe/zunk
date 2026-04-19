@@ -65,11 +65,14 @@ fn printUsage(console: *rich.Console) !void {
     try console.print("    [yellow]--port[/] <num>          Server port for 'run' (default: 8080)");
     try console.print("    [yellow]--no-watch[/]             Disable source watching for 'run'");
     try console.print("    [yellow]--proxy[/] <prefix=url>  Proxy requests (e.g. --proxy /api=http://localhost:3000)");
+    try console.print("    [yellow]--bridge-dep[/] <path>    Include a dep-provided bridge.js (repeatable; typically wired by installApp)");
     try console.print("    [yellow]--verbose[/] / [yellow]-v[/]        Show all resolutions in build report");
     try console.print("    [yellow]--report-json[/]          Output build report as JSON");
     try console.print("    [yellow]--force[/]                Bypass build cache");
     try console.print("");
 }
+
+const max_bridge_deps = 32;
 
 const BuildArgs = struct {
     wasm_path: ?[]const u8 = null,
@@ -80,6 +83,12 @@ const BuildArgs = struct {
     verbose: bool = false,
     json_report: bool = false,
     force: bool = false,
+    bridge_deps_buf: [max_bridge_deps][]const u8 = undefined,
+    bridge_deps_len: usize = 0,
+
+    fn bridgeDeps(self: *const BuildArgs) []const []const u8 {
+        return self.bridge_deps_buf[0..self.bridge_deps_len];
+    }
 };
 
 fn parseBuildArgs(args: []const []const u8) BuildArgs {
@@ -106,6 +115,12 @@ fn parseBuildArgs(args: []const []const u8) BuildArgs {
         } else if (std.mem.eql(u8, args[i], "--proxy") and i + 1 < args.len) {
             result.proxy = args[i + 1];
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--bridge-dep") and i + 1 < args.len) {
+            if (result.bridge_deps_len < max_bridge_deps) {
+                result.bridge_deps_buf[result.bridge_deps_len] = args[i + 1];
+                result.bridge_deps_len += 1;
+            }
+            i += 1;
         }
     }
     return result;
@@ -131,12 +146,16 @@ const BuildContext = struct {
     wasm: []const u8,
     analysis: wa.Analysis,
     wasm_basename: []const u8,
-    bridge_js: ?[]const u8,
+    bridge_chunks: []js_gen.BridgeJsChunk,
 
     fn deinit(self: *BuildContext, allocator: std.mem.Allocator) void {
         allocator.free(self.wasm);
         self.analysis.deinit(allocator);
-        if (self.bridge_js) |b| allocator.free(b);
+        for (self.bridge_chunks) |c| {
+            allocator.free(c.origin);
+            allocator.free(c.source);
+        }
+        allocator.free(self.bridge_chunks);
     }
 };
 
@@ -168,11 +187,20 @@ fn prepareBuild(allocator: std.mem.Allocator, io: std.Io, parsed: BuildArgs, con
     var analysis = try wa.analyze(allocator, wasm);
     errdefer analysis.deinit(allocator);
 
+    const bridge_chunks = try collectBridgeChunks(allocator, io, parsed.bridgeDeps(), console);
+    errdefer {
+        for (bridge_chunks) |c| {
+            allocator.free(c.origin);
+            allocator.free(c.source);
+        }
+        allocator.free(bridge_chunks);
+    }
+
     return .{
         .wasm = wasm,
         .analysis = analysis,
         .wasm_basename = std.Io.Dir.path.basename(wasm_path),
-        .bridge_js = discoverBridgeJs(allocator, io, console),
+        .bridge_chunks = bridge_chunks,
     };
 }
 
@@ -215,7 +243,7 @@ fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     const parsed = parseBuildArgs(args);
 
     // Compute fingerprint once (used for both cache check and write)
-    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(io, wasm_path) else null;
+    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(io, wasm_path, parsed.bridgeDeps()) else null;
 
     // Cache check (non-serve mode only)
     if (!do_serve and !parsed.force) {
@@ -234,7 +262,7 @@ fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
 
     var result = try js_gen.generate(allocator, &ctx.analysis, .{
         .wasm_filename = ctx.wasm_basename,
-        .bridge_js = ctx.bridge_js,
+        .bridge_js_chunks = ctx.bridge_chunks,
         .verbose_report = parsed.verbose,
         .json_report = parsed.json_report,
     });
@@ -278,7 +306,7 @@ fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
 fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, console: *rich.Console) !void {
     const parsed = parseBuildArgs(args);
 
-    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(io, wasm_path) else null;
+    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(io, wasm_path, parsed.bridgeDeps()) else null;
 
     if (!parsed.force) {
         if (source_fp) |fp| {
@@ -304,7 +332,7 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
     // Generate JS (only needs hashed wasm name -- JS content is independent of its own filename)
     var result = try js_gen.generate(allocator, &ctx.analysis, .{
         .wasm_filename = hashed_wasm_name,
-        .bridge_js = ctx.bridge_js,
+        .bridge_js_chunks = ctx.bridge_chunks,
         .verbose_report = parsed.verbose,
         .json_report = parsed.json_report,
     });
@@ -323,7 +351,7 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
     defer html_aw.deinit();
     try js_gen.generateHtml(&html_aw.writer, &ctx.analysis, .{
         .wasm_filename = hashed_wasm_name,
-        .bridge_js = ctx.bridge_js,
+        .bridge_js_chunks = ctx.bridge_chunks,
         .js_filename = hashed_js_name,
         .wasm_preload = true,
         .js_integrity = sri,
@@ -364,16 +392,73 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
     }
 }
 
-fn discoverBridgeJs(allocator: std.mem.Allocator, io: std.Io, console: *rich.Console) ?[]const u8 {
-    for (bridge_js_paths) |path| {
-        if (std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 * 1024 * 1024))) |contents| {
-            var buf: [128]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "Found {s}", .{path}) catch "Found bridge.js";
-            console.printStyled(msg, rich.Style.empty.foreground(rich.Color.cyan)) catch {};
-            return contents;
-        } else |_| {}
+/// Derive a short human-readable label for a dep-provided bridge.js.
+/// Example: `.../zig-pkg/teak-0.1.0-HASH/bridge.js` -> `teak-0.1.0-HASH`.
+/// The label is only used for banner comments in the merged JS, so being
+/// verbose is fine -- debuggability > brevity.
+fn depBridgeOrigin(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const dir = std.Io.Dir.path.dirname(path) orelse return allocator.dupe(u8, path);
+    const base = std.Io.Dir.path.basename(dir);
+    if (base.len == 0) return allocator.dupe(u8, path);
+    return allocator.dupe(u8, base);
+}
+
+/// Builds the ordered list of bridge.js chunks passed to the generator.
+/// Order: every `--bridge-dep` path, in CLI order, followed by the first
+/// matching user project path (`bridge.js` then `js/bridge.js`). User-
+/// provided chunks come last so they can override dep-provided symbols.
+fn collectBridgeChunks(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    bridge_dep_paths: []const []const u8,
+    console: *rich.Console,
+) ![]js_gen.BridgeJsChunk {
+    var chunks: std.ArrayList(js_gen.BridgeJsChunk) = .empty;
+    errdefer {
+        for (chunks.items) |c| {
+            allocator.free(c.origin);
+            allocator.free(c.source);
+        }
+        chunks.deinit(allocator);
     }
-    return null;
+
+    // Dep-provided chunks first.
+    for (bridge_dep_paths) |dep_path| {
+        const source = std.Io.Dir.cwd().readFileAlloc(io, dep_path, allocator, .limited(1 * 1024 * 1024)) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "error: --bridge-dep '{s}' could not be read: {}", .{ dep_path, err }) catch "error: --bridge-dep unreadable";
+            console.printStyled(msg, rich.Style.empty.foreground(rich.Color.red)) catch {};
+            return error.BridgeDepMissing;
+        };
+        errdefer allocator.free(source);
+
+        const origin = try depBridgeOrigin(allocator, dep_path);
+        errdefer allocator.free(origin);
+
+        try chunks.append(allocator, .{ .origin = origin, .source = source });
+
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Found bridge.js from {s}", .{origin}) catch "Found dep bridge.js";
+        console.printStyled(msg, rich.Style.empty.foreground(rich.Color.cyan)) catch {};
+    }
+
+    // User project bridge.js (first matching path wins, appended last so it overrides deps).
+    for (bridge_js_paths) |path| {
+        const source = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 * 1024 * 1024)) catch continue;
+        errdefer allocator.free(source);
+
+        const origin = try allocator.dupe(u8, path);
+        errdefer allocator.free(origin);
+
+        try chunks.append(allocator, .{ .origin = origin, .source = source });
+
+        var buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "Found {s}", .{path}) catch "Found bridge.js";
+        console.printStyled(msg, rich.Style.empty.foreground(rich.Color.cyan)) catch {};
+        break;
+    }
+
+    return try chunks.toOwnedSlice(allocator);
 }
 
 fn copyAssets(allocator: std.mem.Allocator, io: std.Io, out_dir: std.Io.Dir, console: *rich.Console) void {
@@ -408,7 +493,7 @@ fn copyAssets(allocator: std.mem.Allocator, io: std.Io, out_dir: std.Io.Dir, con
 
 // --- Build caching ---
 
-fn computeSourceFingerprint(io: std.Io, wasm_path: []const u8) i128 {
+fn computeSourceFingerprint(io: std.Io, wasm_path: []const u8, bridge_dep_paths: []const []const u8) i128 {
     var fingerprint: i128 = 0;
 
     // src/ directory recursive mtime sum
@@ -431,8 +516,16 @@ fn computeSourceFingerprint(io: std.Io, wasm_path: []const u8) i128 {
         fingerprint +%= @intCast(stat.mtime.nanoseconds);
     }
 
-    // bridge.js (if present)
+    // user project bridge.js (if present)
     for (bridge_js_paths) |bp| {
+        const file = std.Io.Dir.cwd().openFile(io, bp, .{}) catch continue;
+        defer file.close(io);
+        const stat = file.stat(io) catch continue;
+        fingerprint +%= @intCast(stat.mtime.nanoseconds);
+    }
+
+    // dep-provided bridge.js files passed via --bridge-dep
+    for (bridge_dep_paths) |bp| {
         const file = std.Io.Dir.cwd().openFile(io, bp, .{}) catch continue;
         defer file.close(io);
         const stat = file.stat(io) catch continue;
