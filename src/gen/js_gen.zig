@@ -423,7 +423,7 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\  keysReleased: new Set(),
         \\  typedChars: [],
         \\  mouseX: 0, mouseY: 0, mouseDx: 0, mouseDy: 0,
-        \\  mouseWheel: 0, mouseButtons: 0,
+        \\  mouseWheel: 0, mouseButtons: 0, mouseButtonsPressed: 0, mouseButtonsReleased: 0,
         \\  touches: [],
         \\  init(ptr, len) {
         \\    this.ptr = ptr; this.len = len;
@@ -431,8 +431,8 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    document.addEventListener('keyup', e => { this.keysDown.delete(e.keyCode); this.keysReleased.add(e.keyCode); });
         \\    const canvas = document.getElementById('app') || document.querySelector('canvas') || document;
         \\    canvas.addEventListener('mousemove', e => { this.mouseDx+=e.movementX; this.mouseDy+=e.movementY; this.mouseX=e.offsetX??e.clientX; this.mouseY=e.offsetY??e.clientY; });
-        \\    canvas.addEventListener('mousedown', e => { this.mouseButtons |= (1 << e.button); });
-        \\    canvas.addEventListener('mouseup', e => { this.mouseButtons &= ~(1 << e.button); });
+        \\    canvas.addEventListener('mousedown', e => { const b=1<<e.button; this.mouseButtons|=b; this.mouseButtonsPressed|=b; });
+        \\    canvas.addEventListener('mouseup', e => { const b=1<<e.button; this.mouseButtons&=~b; this.mouseButtonsReleased|=b; });
         \\    canvas.addEventListener('wheel', e => { this.mouseWheel += e.deltaY; e.preventDefault(); }, {passive:false});
         \\    canvas.addEventListener('touchstart', e => { this.touches = Array.from(e.touches); e.preventDefault(); }, {passive:false});
         \\    canvas.addEventListener('touchmove', e => { this.touches = Array.from(e.touches); }, {passive:false});
@@ -455,6 +455,8 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    view.setFloat32(off, this.mouseDy, true); off += 4;
         \\    view.setFloat32(off, this.mouseWheel, true); off += 4;
         \\    view.setUint8(off, this.mouseButtons); off += 1;
+        \\    view.setUint8(off, this.mouseButtonsPressed); off += 1;
+        \\    view.setUint8(off, this.mouseButtonsReleased); off += 1;
         \\    // Touch
         \\    view.setUint8(off, Math.min(this.touches.length, 10)); off += 1;
         \\    for (let i = 0; i < 10; i++) { view.setFloat32(off + i*4, this.touches[i]?.clientX || 0, true); } off += 40;
@@ -473,6 +475,7 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    // Clear per-frame state
         \\    this.keysPressed.clear(); this.keysReleased.clear();
         \\    this.mouseDx = 0; this.mouseDy = 0; this.mouseWheel = 0;
+        \\    this.mouseButtonsPressed = 0; this.mouseButtonsReleased = 0;
         \\    this.typedChars.length = 0;
         \\  },
         \\  poll() { this.flush(); },

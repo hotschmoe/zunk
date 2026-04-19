@@ -29,6 +29,8 @@ pub const InputState = extern struct {
     mouse_dy: f32 align(1),
     mouse_wheel: f32 align(1),
     mouse_buttons: u8 align(1),
+    mouse_buttons_pressed: u8 align(1),
+    mouse_buttons_released: u8 align(1),
 
     touch_count: u8 align(1),
     touch_x: [10]f32 align(1),
@@ -151,6 +153,20 @@ pub const MouseButtons = struct {
     right: bool,
     middle: bool,
 };
+
+pub const MouseButton = enum(u3) {
+    left = 0,
+    middle = 1,
+    right = 2,
+};
+
+pub fn isMouseButtonPressed(btn: MouseButton) bool {
+    return (input_state.mouse_buttons_pressed & (@as(u8, 1) << @intFromEnum(btn))) != 0;
+}
+
+pub fn isMouseButtonReleased(btn: MouseButton) bool {
+    return (input_state.mouse_buttons_released & (@as(u8, 1) << @intFromEnum(btn))) != 0;
+}
 
 pub const Mouse = struct {
     x: f32,

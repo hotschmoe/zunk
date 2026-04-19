@@ -146,16 +146,19 @@ The most complex web module. Uses a **polling model** via shared memory -- JS wr
 **InputState** -- A packed struct at a known memory location:
 ```
 Keys:       3 x 32-byte bitmaps (down, pressed, released) -- 256 keys
-Mouse:      x, y, dx, dy (i32); wheel (f32); 3 button states (down/pressed/released)
+Mouse:      x, y, dx, dy (f32); wheel (f32); 3 button bitmaps (down, pressed, released)
 Touch:      10 slots, each with id, x, y, active flag
 Gamepad:    connected flag, 4 axes (f32), 32-bit button mask
 Viewport:   width, height (u32), device pixel ratio (f32)
 Focus:      bool
+Typed:      length + 32-byte UTF-8 char buffer (printable characters only)
 ```
+
+**Coordinate space.** All pointer and viewport fields (`mouse_x/y`, `mouse_dx/dy`, `touch_x/y`, `viewport_width/height`) are in **CSS pixels**. This matches the `w, h` arguments passed to the optional `resize(w, h)` export. The canvas backing store is sized to `w * device_pixel_ratio` by `h * device_pixel_ratio` on HiDPI displays for crisp rendering; consumers who need the device-pixel size (e.g. for a WebGPU viewport) should multiply by `device_pixel_ratio` themselves.
 
 **Key** -- Enum with 120+ named constants mapping to JavaScript key codes.
 
-**Query functions**: `isKeyDown(.space)`, `isKeyPressed(.enter)`, `isKeyReleased(.escape)`, `getMouse()`, `getTouch(index)`, `getGamepad()`, `getViewportSize()`, `hasFocus()`.
+**Query functions**: `isKeyDown(.space)`, `isKeyPressed(.enter)`, `isKeyReleased(.escape)`, `getMouse()`, `isMouseButtonPressed(.left)`, `isMouseButtonReleased(.left)`, `getTouch(index)`, `getGamepad()`, `getViewportSize()`, `getDevicePixelRatio()`, `hasFocus()`, `getTypedChars()`.
 
 The `init()` function calls an extern to tell JS where the InputState struct lives in WASM memory. The `poll()` function is called each frame to synchronize.
 
@@ -377,6 +380,27 @@ zunk detects these exports from the WASM binary and wires them up automatically:
 | `cleanup` | `fn() void` | On `beforeunload` (optional) |
 
 If `frame` is exported, the JS generator emits a render loop. If `resize` is exported, it emits a resize handler with fullscreen canvas. Everything is conditional.
+
+**Canvas ownership and resize contract.** The generated HTML declares a full-viewport `<canvas id="app">`. zunk's runtime owns the backing-store size: on window resize (and on initial load), it sets `canvas.width = clientWidth * devicePixelRatio` and `canvas.height = clientHeight * devicePixelRatio`, then calls `resize(w, h)` with the **CSS-pixel** size. The consumer never touches `canvas.width` / `canvas.height`. WebGPU apps that need the device-pixel swap-chain size multiply the arguments by `getDevicePixelRatio()` themselves. A DPR-change listener (via `matchMedia`) is installed on the WebGPU path so moving between displays triggers the same flow.
+
+## Per-Frame Allocation Pattern
+
+wasm-freestanding has no libc `malloc`, so consumers bring their own allocator. For game-loop-style code where allocations live at most one frame (command buffers, vertex scratch, UI retained-mode state), a `std.heap.ArenaAllocator` with `reset(.retain_capacity)` called at the end of each `frame()` is a good default:
+
+```zig
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+var frame_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+
+export fn frame(dt: f32) void {
+    defer _ = frame_arena.reset(.retain_capacity);
+    const scratch = frame_arena.allocator();
+    // ... use `scratch` freely; nothing leaks across frames
+}
+```
+
+A `FixedBufferAllocator` also works and is zero-dependency, but has no piecewise free -- so any collection that doesn't itself implement capacity retention (`std.ArrayList.clearRetainingCapacity`, `std.AutoHashMap.clearRetainingCapacity`, etc.) leaks monotonically. Prefer the arena for mixed allocation shapes.
+
+zunk itself is allocator-agnostic and does not ship a bundled arena helper; the above is a convention, not an API.
 
 ## Three Usage Paths
 

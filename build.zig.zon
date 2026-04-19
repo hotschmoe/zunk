@@ -1,6 +1,6 @@
 .{
     .name = .zunk,
-    .version = "0.5.2",
+    .version = "0.5.3",
     .fingerprint = 0x56e2cba64281ab82, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
