@@ -500,6 +500,7 @@ fn mimeType(path: []const u8) []const u8 {
     if (std.mem.eql(u8, ext, ".wasm")) return "application/wasm";
     if (std.mem.eql(u8, ext, ".css")) return "text/css";
     if (std.mem.eql(u8, ext, ".json")) return "application/json";
+    if (std.mem.eql(u8, ext, ".map")) return "application/json";
     if (std.mem.eql(u8, ext, ".png")) return "image/png";
     if (std.mem.eql(u8, ext, ".wgsl")) return "text/wgsl";
     if (std.mem.eql(u8, ext, ".svg")) return "image/svg+xml";

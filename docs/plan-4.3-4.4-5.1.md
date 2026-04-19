@@ -65,7 +65,12 @@ wire it via `bridge_deps`, and the merge order / override precedence.
 
 ---
 
-## 4.4 -- source maps (SECOND)
+## 4.4 -- source maps (SHIPPED in v0.4.0, bridge-section scope)
+
+Landed scope is narrower than what follows: v1 emits Source Map v3 with one
+source per bridge.js chunk only. No category-level sections, no DWARF. The
+teak-specific win (stack traces from library-provided bridge.js land in
+readable library code) is met. Category-level sectioning moves to a follow-up.
 
 ### Scope: name-section only, not DWARF
 
