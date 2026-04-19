@@ -152,6 +152,24 @@ extern "env" fn my_webrtc_connect(url_ptr: [*]const u8, url_len: u32) i32;
 ```
 Ship a `bridge.js` alongside your project or library. Zunk merges it into the generated output.
 
+#### Shipping a `bridge.js` in a Zig library
+
+A Zig package that exposes its own browser-side JS places a `bridge.js` at the package root (next to `build.zig.zon`). Consumers opt in via `zunk.installApp`:
+
+```zig
+// consumer's build.zig
+const zunk = b.dependency("zunk", .{ .target = wasm_target, .optimize = optimize });
+const teak = b.dependency("teak", .{ .target = wasm_target, .optimize = optimize });
+
+@import("zunk").installApp(b, zunk, exe, .{
+    .bridge_deps = &.{ teak },  // merges teak's bridge.js automatically
+});
+```
+
+**Merge order.** Dep-provided chunks are emitted first, in the order listed in `bridge_deps`. The consumer's own `bridge.js` (at repo root or `js/bridge.js`) is emitted last, so it can override symbols from deps. Each chunk is prefixed with a banner comment naming its origin.
+
+**Filename is fixed** (`bridge.js`). Listing a dep that has no such file will fail loudly when the build step runs — that is the correct behavior.
+
 ### Web API Coverage (built-in resolution)
 
 | Domain | Prefix | Examples |
