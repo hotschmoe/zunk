@@ -191,9 +191,11 @@ Full WebGPU bindings are implemented and working. The particle-life example uses
 
 Zig packages ship a `bridge.js` at their package root. Consumers opt in via `zunk.installApp(..., .{ .bridge_deps = &.{ teak, ... } })`. Dep-provided chunks are merged in listed order; the consumer's own `bridge.js` (or `js/bridge.js`) is appended last so it can override. Each chunk is banner-commented with its origin. `--bridge-dep <path>` is the underlying repeatable CLI flag (installApp wires it up automatically).
 
-### 4.4 Source maps
+### 4.4 Source maps -- PARTIALLY DONE
 
-Generate source maps so developers can debug their Zig code in browser devtools. Map generated JS lines back to WASM function names, and ideally to Zig source locations via DWARF debug info in the WASM.
+**Done:** Source Map v3 emission covering bridge.js chunks. When the generated JS includes one or more `bridge.js` chunks (user-provided or from `bridge_deps`), zunk emits an `app.js.map` (or `app-<hash>.js.map` in deploy mode) that points those lines back at the original library source. Stack traces from a teak-style bridge.js land in readable code in devtools. SRI covers the final bytes (including `sourceMappingURL` trailer); served with `application/json` MIME.
+
+**Deferred:** DWARF -> Zig source line mapping (browsers already render WASM function names from the `name` custom section, so this is less urgent). Category-level sections (one source per Web API category like canvas / audio / webgpu) -- follow-up when the current bridge sections prove out.
 
 ### 4.5 WASM size optimization
 

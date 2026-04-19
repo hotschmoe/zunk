@@ -272,7 +272,18 @@ fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     defer out_dir.close(io);
 
     try out_dir.writeFile(io, .{ .sub_path = "index.html", .data = result.html });
-    try out_dir.writeFile(io, .{ .sub_path = "app.js", .data = result.js });
+
+    // JS + optional sourceMappingURL trailer + optional .js.map sidecar.
+    const final_js = if (result.js_map.len != 0)
+        try std.fmt.allocPrint(allocator, "{s}\n//# sourceMappingURL=app.js.map\n", .{result.js})
+    else
+        try allocator.dupe(u8, result.js);
+    defer allocator.free(final_js);
+    try out_dir.writeFile(io, .{ .sub_path = "app.js", .data = final_js });
+    if (result.js_map.len != 0) {
+        try out_dir.writeFile(io, .{ .sub_path = "app.js.map", .data = result.js_map });
+    }
+
     try out_dir.writeFile(io, .{ .sub_path = ctx.wasm_basename, .data = ctx.wasm });
 
     copyAssets(allocator, io, out_dir, console);
@@ -338,12 +349,24 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
     });
     defer result.deinit(allocator);
 
-    // Content-hashed JS filename + SRI
+    // Content-hashed JS filename is derived from result.js BEFORE the
+    // sourceMappingURL trailer so the hash is stable regardless of map
+    // emission. SRI, however, must cover the exact bytes served, so it is
+    // computed against `final_js` below.
     const js_fp = contentFingerprint(result.js);
     const hashed_js_name = try std.fmt.allocPrint(allocator, "app-{s}.js", .{&js_fp});
     defer allocator.free(hashed_js_name);
 
-    const sri = try computeSri(result.js, allocator);
+    const hashed_map_name = try std.fmt.allocPrint(allocator, "{s}.map", .{hashed_js_name});
+    defer allocator.free(hashed_map_name);
+
+    const final_js = if (result.js_map.len != 0)
+        try std.fmt.allocPrint(allocator, "{s}\n//# sourceMappingURL={s}\n", .{ result.js, hashed_map_name })
+    else
+        try allocator.dupe(u8, result.js);
+    defer allocator.free(final_js);
+
+    const sri = try computeSri(final_js, allocator);
     defer allocator.free(sri);
 
     // Generate deploy HTML directly (avoids a redundant second full generation pass)
@@ -364,7 +387,10 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
     defer out_dir.close(io);
 
     try out_dir.writeFile(io, .{ .sub_path = "index.html", .data = deploy_html });
-    try out_dir.writeFile(io, .{ .sub_path = hashed_js_name, .data = result.js });
+    try out_dir.writeFile(io, .{ .sub_path = hashed_js_name, .data = final_js });
+    if (result.js_map.len != 0) {
+        try out_dir.writeFile(io, .{ .sub_path = hashed_map_name, .data = result.js_map });
+    }
     try out_dir.writeFile(io, .{ .sub_path = hashed_wasm_name, .data = ctx.wasm });
 
     copyAssets(allocator, io, out_dir, console);
@@ -381,6 +407,10 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
             try console.print(m1);
             const m2 = std.fmt.bufPrint(&pbuf, "  {s}/{s}", .{ parsed.output_dir, hashed_js_name }) catch "";
             try console.print(m2);
+            if (result.js_map.len != 0) {
+                const m_map = std.fmt.bufPrint(&pbuf, "  {s}/{s}", .{ parsed.output_dir, hashed_map_name }) catch "";
+                try console.print(m_map);
+            }
             const m3 = std.fmt.bufPrint(&pbuf, "  {s}/{s}", .{ parsed.output_dir, hashed_wasm_name }) catch "";
             try console.print(m3);
         }

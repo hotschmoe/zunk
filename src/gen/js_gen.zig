@@ -1,6 +1,7 @@
 const std = @import("std");
 const wa = @import("wasm_analyze.zig");
 const resolver = @import("js_resolve.zig");
+const source_map = @import("source_map.zig");
 
 pub const BridgeJsChunk = struct {
     /// Human-readable label printed into the merged JS as a banner comment
@@ -26,6 +27,10 @@ pub const Categories = std.enums.EnumSet(resolver.Category);
 
 pub const GenResult = struct {
     js: []const u8,
+    /// Source Map v3 JSON, or empty if no mappable content was emitted
+    /// (currently: empty when there are no bridge.js chunks). When empty,
+    /// callers should skip writing a .js.map file.
+    js_map: []const u8,
     html: []const u8,
     report: []const u8,
     js_hash: [16]u8,
@@ -33,6 +38,7 @@ pub const GenResult = struct {
 
     pub fn deinit(self: *GenResult, allocator: std.mem.Allocator) void {
         allocator.free(self.js);
+        if (self.js_map.len != 0) allocator.free(self.js_map);
         allocator.free(self.html);
         allocator.free(self.report);
     }
@@ -106,10 +112,25 @@ pub fn generate(
 
     try w.writeAll("};\n\n");
 
+    // Record byte spans of bridge.js content so the source map can point
+    // back at the original library-provided JS. Span is [start, end) and
+    // covers only the chunk body (not the banner comment or trailing
+    // padding).
+    var bridge_spans: std.ArrayList(source_map.Span) = .empty;
+    defer bridge_spans.deinit(allocator);
+
     for (opts.bridge_js_chunks) |chunk| {
         try w.print("// --- bridge.js from {s} ---\n", .{chunk.origin});
+        const start_byte = js_aw.written().len;
         try w.writeAll(chunk.source);
+        const end_byte = js_aw.written().len;
         try w.writeAll("\n\n");
+        try bridge_spans.append(allocator, .{
+            .source = chunk.origin,
+            .source_content = chunk.source,
+            .start_byte = start_byte,
+            .end_byte = end_byte,
+        });
     }
 
     try w.print(
@@ -208,6 +229,16 @@ pub fn generate(
 
     try w.writeAll("\n})();\n");
 
+    // Build the source map BEFORE the header rewrite below so byte offsets
+    // recorded in bridge_spans remain valid. The rewrite lengthens the
+    // header but adds no newlines, so line numbers would be stable either
+    // way -- but building here keeps the byte math unambiguous.
+    const js_map: []const u8 = if (bridge_spans.items.len == 0)
+        ""
+    else
+        try source_map.build(allocator, js_aw.written(), bridge_spans.items);
+    errdefer if (js_map.len != 0) allocator.free(js_map);
+
     const full_hash = std.hash.XxHash3.hash(0, js_aw.written());
     var fingerprint: [8]u8 = undefined;
     std.mem.writeInt(u64, &fingerprint, full_hash, .big);
@@ -236,6 +267,7 @@ pub fn generate(
 
     return .{
         .js = try js.toOwnedSlice(allocator),
+        .js_map = js_map,
         .html = try html_aw.toOwnedSlice(),
         .report = try report_aw.toOwnedSlice(),
         .js_hash = hex,
