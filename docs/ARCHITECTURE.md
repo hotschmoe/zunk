@@ -383,6 +383,41 @@ If `frame` is exported, the JS generator emits a render loop. If `resize` is exp
 
 **Canvas ownership and resize contract.** The generated HTML declares a full-viewport `<canvas id="app">`. zunk's runtime owns the backing-store size: on window resize (and on initial load), it sets `canvas.width = clientWidth * devicePixelRatio` and `canvas.height = clientHeight * devicePixelRatio`, then calls `resize(w, h)` with the **CSS-pixel** size. The consumer never touches `canvas.width` / `canvas.height`. WebGPU apps that need the device-pixel swap-chain size multiply the arguments by `getDevicePixelRatio()` themselves. A DPR-change listener (via `matchMedia`) is installed on the WebGPU path so moving between displays triggers the same flow.
 
+## Host-Async Bridge Pattern (Request / Poll)
+
+Some browser APIs are intrinsically asynchronous and gesture-gated -- they cannot be wedged into a synchronous `extern fn` return. The File System Access API (`showOpenFilePicker`, `showSaveFilePicker`) is the canonical case: the picker only opens during a user-gesture turn, and the resolution lands on a future microtask.
+
+zunk handles these by splitting the call into a **request** (synchronous import that fires the JS-side work) and a **result callback** (wasm export that the JS bridge invokes when the promise resolves). The Zig caller correlates the two with an integer request id and polls a local slot table on subsequent frames. This pattern keeps the wasm side fully synchronous while honoring the browser's async contract.
+
+### File Dialog (issue #14)
+
+Wasm-side import (call from inside an update driven by a user-gesture Msg):
+
+```zig
+extern "env" fn __zunk_request_file_dialog(
+    id: u32,
+    mode: u32,                       // 0 = open, 1 = save
+    name_ptr: [*]const u8,           // filter description (e.g. "Zig sources")
+    name_len: u32,
+    pattern_ptr: [*]const u8,        // Win32-style globs, ";" joined ("*.zig;*.zon")
+    pattern_len: u32,
+) void;
+```
+
+Wasm-side export the bridge invokes when the picker resolves or rejects:
+
+```zig
+pub export fn __zunk_file_dialog_result(
+    id: u32,
+    path_ptr: [*]const u8,           // points into the shared 64 KB exchange buffer
+    path_len: u32,                   // 0 = cancelled / unsupported / failed
+) void { ... }
+```
+
+zunk's JS bridge writes the chosen filename into the shared `__zunk_string_buf_ptr` region before calling the export, so consumers must copy the bytes out during the callback (the buffer is reused for any subsequent JS->Zig string transfer). Browsers without the File System Access API (Firefox / Safari today) take the cancel path -- a `console.warn` lands once per request and `__zunk_file_dialog_result` is invoked with `path_len == 0`. Ship a `bridge.js` override (e.g. `<input type="file">` fallback) when broader support is needed.
+
+**Gesture-gating.** The request must originate inside the same synchronous turn as the user input. Polling-style dispatch (input.poll() -> frame() -> request) works because the browser keeps "transient activation" for a few seconds after a click/keydown, and the frame callback fires well within that window. Calling the request from a setTimeout or async tick will throw a `SecurityError` inside the picker.
+
 ## Per-Frame Allocation Pattern
 
 wasm-freestanding has no libc `malloc`, so consumers bring their own allocator. For game-loop-style code where allocations live at most one frame (command buffers, vertex scratch, UI retained-mode state), a `std.heap.ArenaAllocator` with `reset(.retain_capacity)` called at the end of each `frame()` is a good default:

@@ -71,6 +71,11 @@ pub fn resolve(
 ) !Resolution {
     const name = import.name;
 
+    // Exact matches win over the `__` short-circuit. Without this, an
+    // explicitly-registered `__zunk_*` import (e.g. teak's file-dialog
+    // bridge) would silently fall through to the internal stub below.
+    if (exactMatch(allocator, name)) |res| return res;
+
     if (std.mem.startsWith(u8, name, "__")) {
         return .{
             .js_body = try allocator.dupe(u8, "// internal"),
@@ -80,7 +85,6 @@ pub fn resolve(
         };
     }
 
-    if (exactMatch(allocator, name)) |res| return res;
     if (try prefixMatch(allocator, name, signature)) |res| return res;
     if (try signatureInference(allocator, name, signature, import.param_names)) |res| return res;
     if (import.param_names.len > 0) {
@@ -127,6 +131,30 @@ pub const exact_db = [_]ExactEntry{
 
     .{ .name = "localStorage_set", .js = "localStorage.setItem(readStr(arguments[0], arguments[1]), readStr(arguments[2], arguments[3]));", .needs_strings = true, .category = .storage, .desc = "localStorage.setItem" },
     .{ .name = "localStorage_remove", .js = "localStorage.removeItem(readStr(arguments[0], arguments[1]));", .needs_strings = true, .category = .storage, .desc = "localStorage.removeItem" },
+
+    // File dialog bridge for teak Host (see zunk GitHub issue #14). Wasm
+    // calls `__zunk_request_file_dialog(id, mode, name*, name_len, pat*,
+    // pat_len)`; we open the browser picker and feed the result back via
+    // the wasm export `__zunk_file_dialog_result(id, path*, path_len)`,
+    // using the shared 64 KB string buffer as the path-bytes carrier.
+    // `mode`: 0 = open, 1 = save. `pattern` is a Win32-style ";"-joined
+    // glob list (e.g. "*.zig;*.zon"). Browser File System Access APIs are
+    // gesture-gated -- the picker promise must start inside the same
+    // synchronous turn as the originating user input, which holds here
+    // because teak dispatches the request from inside its update() Msg
+    // handler driven by the same click/key event.
+    .{ .name = "__zunk_request_file_dialog", .js = "const id=arguments[0],mode=arguments[1];" ++
+        "const name=readStr(arguments[2],arguments[3]);" ++
+        "const pattern=readStr(arguments[4],arguments[5]);" ++
+        "const done=(n)=>{if(typeof exports.__zunk_file_dialog_result==='function')exports.__zunk_file_dialog_result(id,n?n[0]:0,n?n[1]:0);};" ++
+        "const api=mode===0?window.showOpenFilePicker:window.showSaveFilePicker;" ++
+        "if(typeof api!=='function'){console.warn('[zunk] file picker API unavailable in this browser; request',id,'cancelled');done(null);return;}" ++
+        "const exts=pattern.split(';').map(p=>p.trim()).filter(p=>p.startsWith('*.')&&p.length>2).map(p=>p.slice(1));" ++
+        "const types=exts.length?[{description:name||'Files',accept:{'application/octet-stream':exts}}]:undefined;" ++
+        "const opts=types?(mode===0?{types,multiple:false}:{types}):{};" ++
+        "let p;try{p=mode===0?window.showOpenFilePicker(opts):window.showSaveFilePicker(opts);}catch(e){console.warn('[zunk] file picker threw synchronously:',e);done(null);return;}" ++
+        "p.then(r=>{const h=Array.isArray(r)?r[0]:r;const bytes=new TextEncoder().encode(h.name);const ptr=exports.__zunk_string_buf_ptr();const cap=exports.__zunk_string_buf_len();const len=Math.min(bytes.length,cap);new Uint8Array(memory.buffer,ptr,len).set(bytes.subarray(0,len));done([ptr,len]);})" ++
+        ".catch(()=>{done(null);});", .needs_strings = true, .needs_memory = true, .category = .dom, .desc = "Browser file picker (open/save); resolves async via __zunk_file_dialog_result" },
 };
 
 fn exactMatch(allocator: std.mem.Allocator, name: []const u8) ?Resolution {
@@ -427,20 +455,38 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         .{ "create_shader_module", "return H.store(H.get(1).createShaderModule({code:readStr(arguments[0],arguments[1])}));", true, false, true },
 
         // Texture
-        .{ "create_texture", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
+        .{ "create_texture", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float','r8unorm'];" ++
             "return H.store(H.get(1).createTexture({size:[arguments[0],arguments[1]],format:fmts[arguments[2]],usage:arguments[3]}));", false, false, true },
         .{ "create_texture_view", "return H.store(H.get(arguments[0]).createView());", false, false, true },
         .{ "destroy_texture", "H.get(arguments[0]).destroy();", false, false, true },
+        .{ "write_texture", "const tex=H.get(arguments[0]);" ++
+            "const src=new Uint8Array(memory.buffer,arguments[1],arguments[2]);" ++
+            "H.get(1).queue.writeTexture({texture:tex},src," ++
+            "{bytesPerRow:arguments[3]}," ++
+            "{width:arguments[4],height:arguments[5]});", false, false, true },
+
+        // Sampler
+        .{ "create_sampler", "const fm=['nearest','linear'],am=['clamp-to-edge','repeat','mirror-repeat'];" ++
+            "const v=new DataView(memory.buffer,arguments[0],24);" ++
+            "return H.store(H.get(1).createSampler({" ++
+            "magFilter:fm[v.getUint32(0,true)],minFilter:fm[v.getUint32(4,true)]," ++
+            "addressModeU:am[v.getUint32(8,true)],addressModeV:am[v.getUint32(12,true)]," ++
+            "addressModeW:am[v.getUint32(16,true)]}));", false, true, true },
+        .{ "destroy_sampler", "H.release(arguments[0]);", false, false, true },
 
         // Bind group layout / bind group
-        .{ "create_bind_group_layout", "const v=new DataView(memory.buffer,arguments[0],arguments[1]*40);" ++
+        .{ "create_bind_group_layout", "const sampleTypes=['float','unfilterable-float','depth','sint','uint'];" ++
+            "const samplerTypes=['filtering','non-filtering','comparison'];" ++
+            "const v=new DataView(memory.buffer,arguments[0],arguments[1]*40);" ++
             "const entries=[];for(let i=0;i<arguments[1];i++){const o=i*40;" ++
             "const e={binding:v.getUint32(o,true),visibility:v.getUint32(o+4,true)};" ++
-            "const t=v.getUint32(o+8,true);" ++
-            "if(t===0){e.buffer={type:['uniform','storage','read-only-storage'][v.getUint32(o+12,true)]," ++
+            "const t=v.getUint32(o+8,true),tv=v.getUint32(o+12,true);" ++
+            "if(t===0){e.buffer={type:['uniform','storage','read-only-storage'][tv]," ++
             "hasDynamicOffset:!!v.getUint32(o+20,true)};" ++
             "if(v.getUint32(o+16,true))e.buffer.minBindingSize=Number(v.getBigUint64(o+24,true));}" ++
-            "else if(t===1){e.texture={sampleType:'float'};}entries.push(e);}" ++
+            "else if(t===1){e.texture={sampleType:sampleTypes[tv]};}" ++
+            "else if(t===2){e.sampler={type:samplerTypes[tv]};}" ++
+            "entries.push(e);}" ++
             "return H.store(H.get(1).createBindGroupLayout({entries}));", false, true, true },
 
         .{ "create_bind_group", "const v=new DataView(memory.buffer,arguments[1],arguments[2]*32);" ++
@@ -469,7 +515,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha'}}}]}," ++
             "primitive:{topology:'triangle-list'}}));", true, true, true },
 
-        .{ "create_render_pipeline_hdr", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float'];" ++
+        .{ "create_render_pipeline_hdr", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float','r8unorm'];" ++
             "const t={format:fmts[arguments[6]]};" ++
             "if(arguments[7]){t.blend={color:{srcFactor:'src-alpha',dstFactor:'one',operation:'add'}," ++
             "alpha:{srcFactor:'one',dstFactor:'one',operation:'add'}};}" ++
@@ -527,6 +573,31 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "{source:bmp},{texture:tex},{width:bmp.width,height:bmp.height});" ++
             "H.set(h,tex);});return h;", false, false, true },
         .{ "is_texture_ready", "const t=H.get(arguments[0]);return(t instanceof GPUTexture)?1:0;", false, false, true },
+
+        // Text-to-texture (workstream 2). Uses an offscreen <canvas> 2D
+        // context to shape and rasterize text via the browser's built-in
+        // text engine, then uploads the pixels into a GPUTexture.
+        .{ "measure_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d');}" ++
+            "const text=readStr(arguments[0],arguments[1]),font=readStr(arguments[2],arguments[3]);" ++
+            "zunkTextCtx.font=font;const m=zunkTextCtx.measureText(text);" ++
+            "const w=Math.max(1,Math.ceil(m.width));" ++
+            "const h=Math.max(1,Math.ceil((m.actualBoundingBoxAscent||0)+(m.actualBoundingBoxDescent||0)));" ++
+            "const dv=new DataView(memory.buffer,arguments[4],8);" ++
+            "dv.setUint32(0,w,true);dv.setUint32(4,h,true);", false, true, true },
+
+        .{ "rasterize_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d');}" ++
+            "const text=readStr(arguments[0],arguments[1]),font=readStr(arguments[2],arguments[3]);" ++
+            "const r=arguments[4],g=arguments[5],b=arguments[6],a=arguments[7];" ++
+            "const w=arguments[8],h=arguments[9];" ++
+            "zunkTextCanvas.width=w;zunkTextCanvas.height=h;" ++
+            "zunkTextCtx.clearRect(0,0,w,h);" ++
+            "zunkTextCtx.font=font;zunkTextCtx.textBaseline='top';" ++
+            "zunkTextCtx.fillStyle=`rgba(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)},${a})`;" ++
+            "zunkTextCtx.fillText(text,0,0);" ++
+            "const img=zunkTextCtx.getImageData(0,0,w,h);" ++
+            "const tex=H.get(1).createTexture({size:[w,h],format:'rgba8unorm',usage:0x06});" ++
+            "H.get(1).queue.writeTexture({texture:tex},img.data,{bytesPerRow:w*4},{width:w,height:h});" ++
+            "return H.store(tex);", false, true, true },
     };
     inline for (js_map) |entry| {
         if (std.mem.eql(u8, method, entry[0])) {
@@ -858,6 +929,33 @@ test "stub for unknown" {
     defer std.testing.allocator.free(res.js_body);
     try std.testing.expect(res.confidence == .stub);
     try std.testing.expect(std.mem.find(u8, res.js_body, "unresolved") != null);
+}
+
+test "file dialog request resolves to exact match" {
+    // Exact match must win even though the name starts with `__` (which
+    // would otherwise short-circuit to the internal stub).
+    const res = exactMatch(std.testing.allocator, "__zunk_request_file_dialog").?;
+    defer std.testing.allocator.free(res.js_body);
+    try std.testing.expect(res.confidence == .exact);
+    try std.testing.expect(res.needs_string_helper);
+    try std.testing.expect(res.needs_memory_view);
+    try std.testing.expect(std.mem.find(u8, res.js_body, "showOpenFilePicker") != null);
+    try std.testing.expect(std.mem.find(u8, res.js_body, "showSaveFilePicker") != null);
+    try std.testing.expect(std.mem.find(u8, res.js_body, "__zunk_file_dialog_result") != null);
+}
+
+test "double-underscore import still falls through to internal stub when no exact match" {
+    var imp: wa.Import = .{
+        .module = "env",
+        .name = "__unknown_internal",
+        .type_idx = 0,
+        .func_type = null,
+        .param_names = &.{},
+    };
+    const res = try resolve(std.testing.allocator, &imp, null);
+    defer std.testing.allocator.free(res.js_body);
+    try std.testing.expect(res.category == .zunk_internal);
+    try std.testing.expectEqualStrings("// internal", res.js_body);
 }
 
 test "prefix match webgpu create_buffer" {

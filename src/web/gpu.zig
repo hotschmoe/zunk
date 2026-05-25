@@ -7,6 +7,7 @@ pub const Buffer = bind.Handle;
 pub const ShaderModule = bind.Handle;
 pub const Texture = bind.Handle;
 pub const TextureView = bind.Handle;
+pub const Sampler = bind.Handle;
 pub const BindGroupLayout = bind.Handle;
 pub const BindGroup = bind.Handle;
 pub const PipelineLayout = bind.Handle;
@@ -47,6 +48,48 @@ pub const TextureFormat = enum(u32) {
     rgba8unorm_srgb = 4,
     depth24plus = 5,
     depth32float = 6,
+    r8unorm = 7,
+};
+
+pub const TextureSampleType = enum(u32) {
+    float = 0,
+    unfilterable_float = 1,
+    depth = 2,
+    sint = 3,
+    uint = 4,
+};
+
+pub const SamplerBindingType = enum(u32) {
+    filtering = 0,
+    non_filtering = 1,
+    comparison = 2,
+};
+
+pub const FilterMode = enum(u32) {
+    nearest = 0,
+    linear = 1,
+};
+
+pub const AddressMode = enum(u32) {
+    clamp_to_edge = 0,
+    repeat = 1,
+    mirror_repeat = 2,
+};
+
+// 8 bytes, ABI-matched with JS DataView writer in js_resolve.zig.
+pub const TextMetrics = extern struct {
+    width: u32,
+    height: u32,
+};
+
+// 24 bytes, ABI-matched with JS DataView reader in js_resolve.zig.
+pub const SamplerDescriptor = extern struct {
+    mag_filter: FilterMode = .nearest,
+    min_filter: FilterMode = .nearest,
+    address_u: AddressMode = .clamp_to_edge,
+    address_v: AddressMode = .clamp_to_edge,
+    address_w: AddressMode = .clamp_to_edge,
+    _padding: u32 = 0,
 };
 
 pub const ShaderVisibility = struct {
@@ -83,43 +126,43 @@ pub const VertexStepMode = enum(u32) {
 
 // 16 bytes, ABI-matched with JS DataView reader in js_resolve.zig
 pub const VertexAttribute = extern struct {
-    format: u32, // VertexFormat
+    format: VertexFormat,
     offset: u32,
     shader_location: u32,
     _padding: u32 = 0,
-
-    pub fn init(loc: u32, format: VertexFormat, offset: u32) VertexAttribute {
-        return .{
-            .format = @intFromEnum(format),
-            .offset = offset,
-            .shader_location = loc,
-        };
-    }
 };
 
 // 16 bytes, ABI-matched with JS DataView reader in js_resolve.zig.
 pub const VertexBufferLayout = extern struct {
     array_stride: u32,
-    step_mode: u32, // VertexStepMode
+    step_mode: VertexStepMode,
     attributes_ptr: u32,
     attributes_len: u32,
 
-    pub fn init(stride: u32, step: VertexStepMode, attributes: []const VertexAttribute) VertexBufferLayout {
+    pub fn fromSlice(
+        stride: u32,
+        step: VertexStepMode,
+        attributes: []const VertexAttribute,
+    ) VertexBufferLayout {
         return .{
             .array_stride = stride,
-            .step_mode = @intFromEnum(step),
+            .step_mode = step,
             .attributes_ptr = @intFromPtr(attributes.ptr),
             .attributes_len = @intCast(attributes.len),
         };
     }
 };
 
-// 40 bytes, ABI-matched with JS DataView reader in js_resolve.zig
+// 40 bytes, ABI-matched with JS DataView reader in js_resolve.zig.
+// Meaning of `type_variant` depends on `entry_type`:
+//   entry_type == 0 (buffer)  -> BufferBindingType
+//   entry_type == 1 (texture) -> TextureSampleType
+//   entry_type == 2 (sampler) -> SamplerBindingType
 pub const BindGroupLayoutEntry = extern struct {
     binding: u32,
     visibility: u32,
     entry_type: u32, // 0=buffer, 1=texture, 2=sampler
-    buffer_type: u32, // 0=uniform, 1=storage, 2=read-only-storage
+    type_variant: u32, // interpreted based on entry_type
     has_min_size: u32,
     has_dynamic_offset: u32,
     min_size: u64,
@@ -130,19 +173,31 @@ pub const BindGroupLayoutEntry = extern struct {
             .binding = b,
             .visibility = vis,
             .entry_type = 0,
-            .buffer_type = @intFromEnum(buf_type),
+            .type_variant = @intFromEnum(buf_type),
             .has_min_size = 0,
             .has_dynamic_offset = 0,
             .min_size = 0,
         };
     }
 
-    pub fn initTexture(b: u32, vis: u32) BindGroupLayoutEntry {
+    pub fn initTexture(b: u32, vis: u32, sample_type: TextureSampleType) BindGroupLayoutEntry {
         return .{
             .binding = b,
             .visibility = vis,
             .entry_type = 1,
-            .buffer_type = 0,
+            .type_variant = @intFromEnum(sample_type),
+            .has_min_size = 0,
+            .has_dynamic_offset = 0,
+            .min_size = 0,
+        };
+    }
+
+    pub fn initSampler(b: u32, vis: u32, sampler_type: SamplerBindingType) BindGroupLayoutEntry {
+        return .{
+            .binding = b,
+            .visibility = vis,
+            .entry_type = 2,
+            .type_variant = @intFromEnum(sampler_type),
             .has_min_size = 0,
             .has_dynamic_offset = 0,
             .min_size = 0,
@@ -166,7 +221,7 @@ pub const BindGroupLayoutEntry = extern struct {
 // 32 bytes, ABI-matched with JS DataView reader in js_resolve.zig
 pub const BindGroupEntry = extern struct {
     binding: u32,
-    entry_type: u32, // 0=buffer, 1=texture_view
+    entry_type: u32, // 0=buffer, 1=texture_view, 2=sampler
     resource_handle: u32,
     _padding: u32 = 0,
     offset: u64,
@@ -195,6 +250,16 @@ pub const BindGroupEntry = extern struct {
             .size = 0,
         };
     }
+
+    pub fn initSampler(b: u32, handle: bind.Handle) BindGroupEntry {
+        return .{
+            .binding = b,
+            .entry_type = 2,
+            .resource_handle = @bitCast(handle.toInt()),
+            .offset = 0,
+            .size = 0,
+        };
+    }
 };
 
 extern "env" fn zunk_gpu_create_buffer(size: u32, usage: u32) i32;
@@ -205,6 +270,9 @@ extern "env" fn zunk_gpu_create_shader_module(source_ptr: [*]const u8, source_le
 extern "env" fn zunk_gpu_create_texture(width: u32, height: u32, format: u32, usage: u32) i32;
 extern "env" fn zunk_gpu_create_texture_view(texture_h: i32) i32;
 extern "env" fn zunk_gpu_destroy_texture(texture_h: i32) void;
+extern "env" fn zunk_gpu_write_texture(texture_h: i32, data_ptr: [*]const u8, data_len: u32, bytes_per_row: u32, width: u32, height: u32) void;
+extern "env" fn zunk_gpu_create_sampler(desc_ptr: [*]const u8) i32;
+extern "env" fn zunk_gpu_destroy_sampler(sampler_h: i32) void;
 extern "env" fn zunk_gpu_create_bind_group_layout(entries_ptr: [*]const u8, entries_len: u32) i32;
 extern "env" fn zunk_gpu_create_bind_group(layout_h: i32, entries_ptr: [*]const u8, entries_len: u32) i32;
 extern "env" fn zunk_gpu_create_pipeline_layout(layouts_ptr: [*]const u8, layouts_len: u32) i32;
@@ -230,6 +298,25 @@ extern "env" fn zunk_gpu_render_pass_end(pass_h: i32) void;
 extern "env" fn zunk_gpu_present() void;
 extern "env" fn zunk_gpu_create_texture_from_asset(asset_h: i32) i32;
 extern "env" fn zunk_gpu_is_texture_ready(handle: i32) i32;
+extern "env" fn zunk_gpu_measure_text(
+    text_ptr: [*]const u8,
+    text_len: u32,
+    font_ptr: [*]const u8,
+    font_len: u32,
+    out_ptr: *TextMetrics,
+) void;
+extern "env" fn zunk_gpu_rasterize_text(
+    text_ptr: [*]const u8,
+    text_len: u32,
+    font_ptr: [*]const u8,
+    font_len: u32,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+    width: u32,
+    height: u32,
+) i32;
 
 pub fn getDevice() Device {
     return bind.Handle.fromInt(1);
@@ -277,6 +364,33 @@ pub fn createTextureView(tex: Texture) TextureView {
 
 pub fn destroyTexture(tex: Texture) void {
     zunk_gpu_destroy_texture(tex.toInt());
+}
+
+/// Upload CPU bytes into `tex` at origin (0,0). `bytes_per_row` is the
+/// stride of the source data in bytes (for tightly packed rgba8: width*4).
+pub fn writeTexture(
+    tex: Texture,
+    bytes: []const u8,
+    bytes_per_row: u32,
+    width: u32,
+    height: u32,
+) void {
+    zunk_gpu_write_texture(
+        tex.toInt(),
+        bytes.ptr,
+        @intCast(bytes.len),
+        bytes_per_row,
+        width,
+        height,
+    );
+}
+
+pub fn createSampler(desc: SamplerDescriptor) Sampler {
+    return bind.Handle.fromInt(zunk_gpu_create_sampler(@ptrCast(&desc)));
+}
+
+pub fn destroySampler(sampler: Sampler) void {
+    zunk_gpu_destroy_sampler(sampler.toInt());
 }
 
 pub fn createHDRTexture(w: u32, h: u32) Texture {
@@ -440,6 +554,45 @@ pub fn isTextureReady(handle: Texture) bool {
     return zunk_gpu_is_texture_ready(handle.toInt()) != 0;
 }
 
+/// Measure a text run in pixels using the browser's canvas 2D text shaper.
+/// `font` is a CSS font string, e.g. "14px monospace".
+pub fn measureText(text: []const u8, font: []const u8) TextMetrics {
+    var out: TextMetrics = .{ .width = 0, .height = 0 };
+    zunk_gpu_measure_text(
+        text.ptr,
+        @intCast(text.len),
+        font.ptr,
+        @intCast(font.len),
+        &out,
+    );
+    return out;
+}
+
+/// Rasterize `text` into a freshly allocated rgba8unorm `Texture` of the given
+/// size, using the browser's canvas 2D text shaper. `color` is the foreground
+/// fill (0..1 RGBA). The texture has `TEXTURE_BINDING | COPY_DST` usage and is
+/// ready to bind in the same frame.
+pub fn rasterizeText(
+    text: []const u8,
+    font: []const u8,
+    color: [4]f32,
+    width: u32,
+    height: u32,
+) Texture {
+    return bind.Handle.fromInt(zunk_gpu_rasterize_text(
+        text.ptr,
+        @intCast(text.len),
+        font.ptr,
+        @intCast(font.len),
+        color[0],
+        color[1],
+        color[2],
+        color[3],
+        width,
+        height,
+    ));
+}
+
 test "struct layout BindGroupLayoutEntry" {
     try std.testing.expectEqual(@as(usize, 40), @sizeOf(BindGroupLayoutEntry));
 }
@@ -454,6 +607,27 @@ test "struct layout VertexAttribute" {
 
 test "struct layout VertexBufferLayout" {
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(VertexBufferLayout));
+}
+
+test "struct layout SamplerDescriptor" {
+    try std.testing.expectEqual(@as(usize, 24), @sizeOf(SamplerDescriptor));
+}
+
+test "struct layout TextMetrics" {
+    try std.testing.expectEqual(@as(usize, 8), @sizeOf(TextMetrics));
+}
+
+test "BindGroupLayoutEntry initSampler encodes type_variant" {
+    const e = BindGroupLayoutEntry.initSampler(3, ShaderVisibility.FRAGMENT, .filtering);
+    try std.testing.expectEqual(@as(u32, 2), e.entry_type);
+    try std.testing.expectEqual(@as(u32, 0), e.type_variant);
+}
+
+test "BindGroupEntry initSampler encodes entry_type=2" {
+    const h = bind.Handle.fromInt(42);
+    const e = BindGroupEntry.initSampler(1, h);
+    try std.testing.expectEqual(@as(u32, 2), e.entry_type);
+    try std.testing.expectEqual(@as(u32, 42), e.resource_handle);
 }
 
 test {

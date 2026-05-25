@@ -491,6 +491,8 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\let zunkGPUEncoder = null;
         \\let zunkGPUContext = null;
         \\let zunkGPUFormat = null;
+        \\let zunkTextCanvas = null;
+        \\let zunkTextCtx = null;
         \\
         \\
     );
