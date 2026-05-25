@@ -83,6 +83,7 @@ pub fn generate(
     if (categories_used.contains(.audio)) needs.audio_state = true;
     if (categories_used.contains(.webgpu)) needs.webgpu_init = true;
     if (categories_used.contains(.ui)) needs.ui_system = true;
+    if (categories_used.contains(.a11y)) needs.a11y_state = true;
 
     var js_aw: std.Io.Writer.Allocating = .init(allocator);
     defer js_aw.deinit();
@@ -100,6 +101,7 @@ pub fn generate(
     if (needs.webgpu_init) try emitWebGPUState(w);
     if (categories_used.contains(.fetch)) try w.writeAll("let zunkFetchBuf = null;\n\n");
     if (needs.ui_system) try emitUISystem(w);
+    if (needs.a11y_state) try emitA11yState(w);
 
     // Mutable WASM bindings. Held at module scope so that HMR can swap the
     // underlying instance while env methods (which close over this scope
@@ -303,6 +305,7 @@ const Features = struct {
     audio_state: bool = false,
     webgpu_init: bool = false,
     ui_system: bool = false,
+    a11y_state: bool = false,
 };
 
 /// Generate the `__zunkHmrSwap(wasmUrl)` function and expose it on
@@ -493,6 +496,23 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\let zunkGPUFormat = null;
         \\let zunkTextCanvas = null;
         \\let zunkTextCtx = null;
+        \\
+        \\
+    );
+}
+
+fn emitA11yState(w: *std.Io.Writer) !void {
+    // Hidden DOM subtree for screen-reader announcement of canvas-rendered
+    // widgets. Root container is created lazily inside the shim on first
+    // publish; the per-cmd_index element Map lives across frames so the
+    // diff can add/update/remove elements without rebuilding from scratch.
+    // Role tag indexes match teak's `a11y.Role` enum order (see issue #15).
+    try w.writeAll(
+        \\// --- A11y DOM mirror state ---
+        \\let zunkA11yRoot = null;
+        \\const zunkA11yElements = new Map();
+        \\const zunkA11yAria = ['group','region',null,null,'button','textbox','checkbox','radio','slider','separator','img','dialog'];
+        \\const zunkA11yTags = ['div','div','div','div','button','input','div','div','div','div','img','div'];
         \\
         \\
     );

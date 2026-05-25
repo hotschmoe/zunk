@@ -55,6 +55,8 @@ pub const Category = enum {
     clipboard,
     // UI
     ui,
+    // Accessibility (hidden DOM mirror for screen readers)
+    a11y,
     // Application
     lifecycle,
     timer,
@@ -155,6 +157,43 @@ pub const exact_db = [_]ExactEntry{
         "let p;try{p=mode===0?window.showOpenFilePicker(opts):window.showSaveFilePicker(opts);}catch(e){console.warn('[zunk] file picker threw synchronously:',e);done(null);return;}" ++
         "p.then(r=>{const h=Array.isArray(r)?r[0]:r;const bytes=new TextEncoder().encode(h.name);const ptr=exports.__zunk_string_buf_ptr();const cap=exports.__zunk_string_buf_len();const len=Math.min(bytes.length,cap);new Uint8Array(memory.buffer,ptr,len).set(bytes.subarray(0,len));done([ptr,len]);})" ++
         ".catch(()=>{done(null);});", .needs_strings = true, .needs_memory = true, .category = .dom, .desc = "Browser file picker (open/save); resolves async via __zunk_file_dialog_result" },
+
+    // A11y DOM mirror for Teak (see zunk GitHub issue #15). Wasm calls
+    // `__zunk_publish_a11y_tree(records*, records_len, strings*, strings_len)`
+    // once per frame with the current snapshot of interactive widgets.
+    // Buffers live in wasm linear memory; both are stable for the duration
+    // of the call only. The JS shim mirrors the tree into a hidden DOM
+    // subtree so AT (NVDA/JAWS/VoiceOver) can announce widgets that are
+    // otherwise just pixels in a wgpu-driven canvas. See
+    // `docs/to_teak_team/v0.10.0-a11y-bridge.md` for the wire format.
+    .{ .name = "__zunk_publish_a11y_tree", .js = "const rptr=arguments[0],rlen=arguments[1],sptr=arguments[2],slen=arguments[3];" ++
+        "if(!zunkA11yRoot){zunkA11yRoot=document.createElement('div');zunkA11yRoot.id='zunk-a11y-root';zunkA11yRoot.style.cssText='position:absolute;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;';document.body.appendChild(zunkA11yRoot);}" ++
+        "const dv=new DataView(memory.buffer,rptr,rlen);" ++
+        "const seen=new Set();" ++
+        "const count=(rlen/40)|0;" ++
+        "for(let i=0;i<count;i++){" ++
+            "const off=i*40;" ++
+            "const cmd=dv.getUint32(off,true),role=dv.getUint32(off+4,true);" ++
+            "const lof=dv.getUint32(off+8,true),llen=dv.getUint32(off+12,true);" ++
+            "const state=dv.getFloat32(off+32,true),flags=dv.getUint32(off+36,true);" ++
+            "if(role>11)continue;" ++
+            "const label=llen?readStr(sptr+lof,llen):'';" ++
+            "seen.add(cmd);" ++
+            "let el=zunkA11yElements.get(cmd);" ++
+            "if(!el||el._zunkRole!==role){if(el)el.remove();el=document.createElement(zunkA11yTags[role]);el._zunkRole=role;zunkA11yElements.set(cmd,el);zunkA11yRoot.appendChild(el);}" ++
+            "const aria=zunkA11yAria[role];" ++
+            "if(aria)el.setAttribute('role',aria);else el.removeAttribute('role');" ++
+            "if(llen)el.setAttribute('aria-label',label);else el.removeAttribute('aria-label');" ++
+            "switch(role){" ++
+                "case 4:el.tabIndex=0;if(flags&1)el.setAttribute('data-focused','');else el.removeAttribute('data-focused');break;" ++
+                "case 5:el.setAttribute('aria-multiline','false');break;" ++
+                "case 6:case 7:el.setAttribute('aria-checked',state>=0.5?'true':'false');break;" ++
+                "case 8:el.setAttribute('aria-valuenow',String(state));el.setAttribute('aria-valuemin','0');el.setAttribute('aria-valuemax','1');break;" ++
+                "case 10:if(llen)el.alt=label;break;" ++
+                "case 11:el.setAttribute('aria-modal','true');break;" ++
+            "}" ++
+        "}" ++
+        "zunkA11yElements.forEach((el,key)=>{if(!seen.has(key)){el.remove();zunkA11yElements.delete(key);}});", .needs_strings = true, .needs_memory = true, .category = .a11y, .desc = "Mirror Teak's per-frame a11y tree into a hidden DOM subtree for screen readers" },
 };
 
 fn exactMatch(allocator: std.mem.Allocator, name: []const u8) ?Resolution {
