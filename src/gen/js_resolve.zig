@@ -71,6 +71,11 @@ pub fn resolve(
 ) !Resolution {
     const name = import.name;
 
+    // Exact matches win over the `__` short-circuit. Without this, an
+    // explicitly-registered `__zunk_*` import (e.g. teak's file-dialog
+    // bridge) would silently fall through to the internal stub below.
+    if (exactMatch(allocator, name)) |res| return res;
+
     if (std.mem.startsWith(u8, name, "__")) {
         return .{
             .js_body = try allocator.dupe(u8, "// internal"),
@@ -80,7 +85,6 @@ pub fn resolve(
         };
     }
 
-    if (exactMatch(allocator, name)) |res| return res;
     if (try prefixMatch(allocator, name, signature)) |res| return res;
     if (try signatureInference(allocator, name, signature, import.param_names)) |res| return res;
     if (import.param_names.len > 0) {
@@ -127,6 +131,30 @@ pub const exact_db = [_]ExactEntry{
 
     .{ .name = "localStorage_set", .js = "localStorage.setItem(readStr(arguments[0], arguments[1]), readStr(arguments[2], arguments[3]));", .needs_strings = true, .category = .storage, .desc = "localStorage.setItem" },
     .{ .name = "localStorage_remove", .js = "localStorage.removeItem(readStr(arguments[0], arguments[1]));", .needs_strings = true, .category = .storage, .desc = "localStorage.removeItem" },
+
+    // File dialog bridge for teak Host (see zunk GitHub issue #14). Wasm
+    // calls `__zunk_request_file_dialog(id, mode, name*, name_len, pat*,
+    // pat_len)`; we open the browser picker and feed the result back via
+    // the wasm export `__zunk_file_dialog_result(id, path*, path_len)`,
+    // using the shared 64 KB string buffer as the path-bytes carrier.
+    // `mode`: 0 = open, 1 = save. `pattern` is a Win32-style ";"-joined
+    // glob list (e.g. "*.zig;*.zon"). Browser File System Access APIs are
+    // gesture-gated -- the picker promise must start inside the same
+    // synchronous turn as the originating user input, which holds here
+    // because teak dispatches the request from inside its update() Msg
+    // handler driven by the same click/key event.
+    .{ .name = "__zunk_request_file_dialog", .js = "const id=arguments[0],mode=arguments[1];" ++
+        "const name=readStr(arguments[2],arguments[3]);" ++
+        "const pattern=readStr(arguments[4],arguments[5]);" ++
+        "const done=(n)=>{if(typeof exports.__zunk_file_dialog_result==='function')exports.__zunk_file_dialog_result(id,n?n[0]:0,n?n[1]:0);};" ++
+        "const api=mode===0?window.showOpenFilePicker:window.showSaveFilePicker;" ++
+        "if(typeof api!=='function'){console.warn('[zunk] file picker API unavailable in this browser; request',id,'cancelled');done(null);return;}" ++
+        "const exts=pattern.split(';').map(p=>p.trim()).filter(p=>p.startsWith('*.')&&p.length>2).map(p=>p.slice(1));" ++
+        "const types=exts.length?[{description:name||'Files',accept:{'application/octet-stream':exts}}]:undefined;" ++
+        "const opts=types?(mode===0?{types,multiple:false}:{types}):{};" ++
+        "let p;try{p=mode===0?window.showOpenFilePicker(opts):window.showSaveFilePicker(opts);}catch(e){console.warn('[zunk] file picker threw synchronously:',e);done(null);return;}" ++
+        "p.then(r=>{const h=Array.isArray(r)?r[0]:r;const bytes=new TextEncoder().encode(h.name);const ptr=exports.__zunk_string_buf_ptr();const cap=exports.__zunk_string_buf_len();const len=Math.min(bytes.length,cap);new Uint8Array(memory.buffer,ptr,len).set(bytes.subarray(0,len));done([ptr,len]);})" ++
+        ".catch(()=>{done(null);});", .needs_strings = true, .needs_memory = true, .category = .dom, .desc = "Browser file picker (open/save); resolves async via __zunk_file_dialog_result" },
 };
 
 fn exactMatch(allocator: std.mem.Allocator, name: []const u8) ?Resolution {
@@ -901,6 +929,33 @@ test "stub for unknown" {
     defer std.testing.allocator.free(res.js_body);
     try std.testing.expect(res.confidence == .stub);
     try std.testing.expect(std.mem.find(u8, res.js_body, "unresolved") != null);
+}
+
+test "file dialog request resolves to exact match" {
+    // Exact match must win even though the name starts with `__` (which
+    // would otherwise short-circuit to the internal stub).
+    const res = exactMatch(std.testing.allocator, "__zunk_request_file_dialog").?;
+    defer std.testing.allocator.free(res.js_body);
+    try std.testing.expect(res.confidence == .exact);
+    try std.testing.expect(res.needs_string_helper);
+    try std.testing.expect(res.needs_memory_view);
+    try std.testing.expect(std.mem.find(u8, res.js_body, "showOpenFilePicker") != null);
+    try std.testing.expect(std.mem.find(u8, res.js_body, "showSaveFilePicker") != null);
+    try std.testing.expect(std.mem.find(u8, res.js_body, "__zunk_file_dialog_result") != null);
+}
+
+test "double-underscore import still falls through to internal stub when no exact match" {
+    var imp: wa.Import = .{
+        .module = "env",
+        .name = "__unknown_internal",
+        .type_idx = 0,
+        .func_type = null,
+        .param_names = &.{},
+    };
+    const res = try resolve(std.testing.allocator, &imp, null);
+    defer std.testing.allocator.free(res.js_body);
+    try std.testing.expect(res.category == .zunk_internal);
+    try std.testing.expectEqualStrings("// internal", res.js_body);
 }
 
 test "prefix match webgpu create_buffer" {
