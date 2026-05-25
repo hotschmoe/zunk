@@ -1,0 +1,14 @@
+.{
+    .name = .file_dialog_demo,
+    .version = "0.0.0",
+    .fingerprint = 0x6dd5fed56d7142b8,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zunk = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
