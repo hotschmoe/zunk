@@ -577,7 +577,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         // Text-to-texture (workstream 2). Uses an offscreen <canvas> 2D
         // context to shape and rasterize text via the browser's built-in
         // text engine, then uploads the pixels into a GPUTexture.
-        .{ "measure_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d');}" ++
+        .{ "measure_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d',{willReadFrequently:true});}" ++
             "const text=readStr(arguments[0],arguments[1]),font=readStr(arguments[2],arguments[3]);" ++
             "zunkTextCtx.font=font;const m=zunkTextCtx.measureText(text);" ++
             "const w=Math.max(1,Math.ceil(m.width));" ++
@@ -585,7 +585,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "const dv=new DataView(memory.buffer,arguments[4],8);" ++
             "dv.setUint32(0,w,true);dv.setUint32(4,h,true);", false, true, true },
 
-        .{ "rasterize_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d');}" ++
+        .{ "rasterize_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d',{willReadFrequently:true});}" ++
             "const text=readStr(arguments[0],arguments[1]),font=readStr(arguments[2],arguments[3]);" ++
             "const r=arguments[4],g=arguments[5],b=arguments[6],a=arguments[7];" ++
             "const w=arguments[8],h=arguments[9];" ++
