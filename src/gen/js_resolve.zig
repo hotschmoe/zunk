@@ -598,7 +598,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         // text engine, then uploads the pixels into a GPUTexture.
         .{ "measure_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d',{willReadFrequently:true});}" ++
             "const text=readStr(arguments[0],arguments[1]),font=readStr(arguments[2],arguments[3]);" ++
-            "zunkTextCtx.font=font;const m=zunkTextCtx.measureText(text);" ++
+            "zunkTextCtx.font=font;zunkTextCtx.letterSpacing=arguments[5]+'px';const m=zunkTextCtx.measureText(text);" ++
             "const w=Math.max(1,Math.ceil(m.width));" ++
             "const h=Math.max(1,Math.ceil((m.actualBoundingBoxAscent||0)+(m.actualBoundingBoxDescent||0)));" ++
             "const dv=new DataView(memory.buffer,arguments[4],8);" ++
@@ -610,7 +610,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "const w=arguments[8],h=arguments[9];" ++
             "zunkTextCanvas.width=w;zunkTextCanvas.height=h;" ++
             "zunkTextCtx.clearRect(0,0,w,h);" ++
-            "zunkTextCtx.font=font;zunkTextCtx.textBaseline='top';" ++
+            "zunkTextCtx.font=font;zunkTextCtx.letterSpacing=arguments[10]+'px';zunkTextCtx.textBaseline='top';" ++
             "zunkTextCtx.fillStyle=`rgba(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)},${a})`;" ++
             "zunkTextCtx.fillText(text,0,0);" ++
             "const img=zunkTextCtx.getImageData(0,0,w,h);" ++
