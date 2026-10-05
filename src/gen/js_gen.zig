@@ -10,6 +10,16 @@ pub const BridgeJsChunk = struct {
     source: []const u8,
 };
 
+/// A web font the page must have loaded before the app starts. The file
+/// lives at `<public_url>fonts/<file>` (copied there by `zunk build`).
+pub const FontFace = struct {
+    family: []const u8,
+    /// CSS `font-weight` (400 regular, 500 medium, 700 bold, ...).
+    weight: u16,
+    /// Basename of the font file inside `fonts/`.
+    file: []const u8,
+};
+
 pub const GenOptions = struct {
     public_url: []const u8 = "/",
     wasm_filename: []const u8,
@@ -18,6 +28,10 @@ pub const GenOptions = struct {
     bridge_js_chunks: []const BridgeJsChunk = &.{},
     js_filename: []const u8 = "app.js",
     wasm_preload: bool = false,
+    /// `@font-face` rules go into the page; the app starts only after every
+    /// face has loaded (`document.fonts.load`), so the first text measurement
+    /// already sees the real font.
+    fonts: []const FontFace = &.{},
     js_integrity: ?[]const u8 = null,
     verbose_report: bool = false,
     json_report: bool = false,
@@ -84,6 +98,7 @@ pub fn generate(
     if (categories_used.contains(.webgpu)) needs.webgpu_init = true;
     if (categories_used.contains(.ui)) needs.ui_system = true;
     if (categories_used.contains(.a11y)) needs.a11y_state = true;
+    if (categories_used.contains(.fx)) needs.fx = true;
 
     var js_aw: std.Io.Writer.Allocating = .init(allocator);
     defer js_aw.deinit();
@@ -102,6 +117,7 @@ pub fn generate(
     if (categories_used.contains(.fetch)) try w.writeAll("let zunkFetchBuf = null;\n\n");
     if (needs.ui_system) try emitUISystem(w);
     if (needs.a11y_state) try emitA11yState(w);
+    if (needs.fx) try w.writeAll(fx_js ++ "\n\n");
 
     // Mutable WASM bindings. Held at module scope so that HMR can swap the
     // underlying instance while env methods (which close over this scope
@@ -167,6 +183,8 @@ pub fn generate(
         \\
         \\
     , .{ opts.public_url, opts.wasm_filename });
+
+    try emitFontLoad(w, opts.fonts);
 
     if (needs.webgpu_init) try emitWebGPUInit(w);
 
@@ -306,7 +324,47 @@ const Features = struct {
     webgpu_init: bool = false,
     ui_system: bool = false,
     a11y_state: bool = false,
+    fx: bool = false,
 };
+
+/// The host-services bridge (see the header of `js/fx.js`).
+const fx_js = @embedFile("js/fx.js");
+
+/// Write `s` escaped for use inside a double-quoted JS or CSS string.
+fn writeEscaped(w: *std.Io.Writer, s: []const u8) !void {
+    for (s) |c| switch (c) {
+        '\\', '"' => {
+            try w.writeByte('\\');
+            try w.writeByte(c);
+        },
+        '\n', '\r' => try w.writeByte(' '),
+        else => try w.writeByte(c),
+    };
+}
+
+/// Block startup until every registered font face is loaded.
+fn emitFontLoad(w: *std.Io.Writer, fonts: []const FontFace) !void {
+    if (fonts.len == 0) return;
+    try w.writeAll("// --- Fonts: the app starts once every face is loaded ---\nawait Promise.all([\n");
+    for (fonts) |f| {
+        try w.print("  document.fonts.load(\"{d} 16px \\\"", .{f.weight});
+        try writeEscaped(w, f.family);
+        try w.writeAll("\\\"\"),\n");
+    }
+    try w.writeAll("].map(p => p.catch(e => console.warn('[zunk] font failed to load:', e))));\n\n");
+}
+
+fn emitFontFaces(w: *std.Io.Writer, public_url: []const u8, fonts: []const FontFace) !void {
+    for (fonts) |f| {
+        try w.writeAll("    @font-face { font-family: \"");
+        try writeEscaped(w, f.family);
+        try w.print("\"; font-weight: {d}; font-display: block; src: url(\"", .{f.weight});
+        try writeEscaped(w, public_url);
+        try w.writeAll("fonts/");
+        try writeEscaped(w, f.file);
+        try w.writeAll("\"); }\n");
+    }
+}
 
 /// Generate the `__zunkHmrSwap(wasmUrl)` function and expose it on
 /// `window`. The dev server calls this via a WebSocket message when only
@@ -419,24 +477,92 @@ fn emitAudioState(w: *std.Io.Writer) !void {
 fn emitInputSystem(w: *std.Io.Writer) !void {
     try w.writeAll(
         \\// --- Input system (shared memory polling) ---
+        \\// Layout written by flush() must match web/input.zig `InputState`.
+        \\// Modifier bits: 1 shift, 2 ctrl, 4 alt, 8 meta. Button bits: 1 left, 2 middle, 4 right.
         \\const zunkInput = {
         \\  ptr: 0, len: 0,
         \\  keysDown: new Set(),
         \\  keysPressed: new Set(),
         \\  keysReleased: new Set(),
         \\  typedChars: [],
+        \\  // Ctrl/Cmd+V is reported to wasm together with its `paste` event (or after 80 ms without one), so a host
+        \\  // that reads the clipboard when it sees the key finds the pasted data in the same frame.
+        \\  pasteKey: null, pasteMods: 0, pasteTimer: 0,
+        \\  releasePaste() { if (this.pasteKey !== null) { this.keysPressed.add(this.pasteKey); this.modLatch |= this.pasteMods; this.pasteKey = null; } clearTimeout(this.pasteTimer); },
         \\  mouseX: 0, mouseY: 0, mouseDx: 0, mouseDy: 0,
-        \\  mouseWheel: 0, mouseButtons: 0, mouseButtonsPressed: 0, mouseButtonsReleased: 0,
+        \\  mouseWheel: 0, mouseWheelX: 0,
+        \\  mouseButtons: 0, mouseButtonsPressed: 0, mouseButtonsReleased: 0,
+        \\  // `modifiers` is the live state; `modLatch` also holds every modifier seen since the last flush, so a
+        \\  // quick Ctrl+key tap that is over before the frame still arrives with Ctrl.
+        \\  modifiers: 0, modLatch: 0,
         \\  touches: [],
         \\  init(ptr, len) {
         \\    this.ptr = ptr; this.len = len;
-        \\    document.addEventListener('keydown', e => { this.keysDown.add(e.keyCode); this.keysPressed.add(e.keyCode); if(e.key.length===1&&e.key.charCodeAt(0)>=0x20&&e.key.charCodeAt(0)!==0x7f&&this.typedChars.length<32)this.typedChars.push(e.key.charCodeAt(0)); e.preventDefault(); });
-        \\    document.addEventListener('keyup', e => { this.keysDown.delete(e.keyCode); this.keysReleased.add(e.keyCode); });
         \\    const canvas = document.getElementById('app') || document.querySelector('canvas') || document;
-        \\    canvas.addEventListener('mousemove', e => { this.mouseDx+=e.movementX; this.mouseDy+=e.movementY; this.mouseX=e.offsetX??e.clientX; this.mouseY=e.offsetY??e.clientY; });
-        \\    canvas.addEventListener('mousedown', e => { const b=1<<e.button; this.mouseButtons|=b; this.mouseButtonsPressed|=b; });
-        \\    canvas.addEventListener('mouseup', e => { const b=1<<e.button; this.mouseButtons&=~b; this.mouseButtonsReleased|=b; });
-        \\    canvas.addEventListener('wheel', e => { this.mouseWheel += e.deltaY; e.preventDefault(); }, {passive:false});
+        \\    const encoder = new TextEncoder();
+        \\    const navKeys = new Set(['Tab', ' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Backspace', 'Delete']);
+        \\    const editable = t => !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+        \\    // Every event carries the live modifier state; track it from all of them so it is right even
+        \\    // for a pinch (ctrlKey + wheel with no physical Ctrl held).
+        \\    const syncMods = e => { this.modifiers = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0); this.modLatch |= this.modifiers; };
+        \\    // Pointer coordinates are canvas-relative CSS pixels.
+        \\    const place = e => {
+        \\      const r = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { left: 0, top: 0 };
+        \\      this.mouseX = e.clientX - r.left; this.mouseY = e.clientY - r.top;
+        \\    };
+        \\    document.addEventListener('keydown', e => {
+        \\      syncMods(e);
+        \\      this.keysDown.add(e.keyCode);
+        \\      const k = e.key;
+        \\      const chord = (e.ctrlKey || e.metaKey) && !e.getModifierState('AltGraph');
+        \\      if (chord && k.toLowerCase() === 'v' && !editable(e.target)) {
+        \\        this.releasePaste(); this.pasteKey = e.keyCode; this.pasteMods = this.modifiers; this.pasteTimer = setTimeout(() => this.releasePaste(), 80);
+        \\      } else this.keysPressed.add(e.keyCode);
+        \\      const single = [...k].length === 1;
+        \\      const printable = single && k.codePointAt(0) >= 0x20 && k.codePointAt(0) !== 0x7f;
+        \\      // Typed text is the UTF-8 encoding of the whole code point (never a truncated UTF-16 unit).
+        \\      // Ctrl/Cmd chords are keys, not text.
+        \\      if (printable && !chord && !e.isComposing) {
+        \\        const bytes = encoder.encode(k);
+        \\        if (this.typedChars.length + bytes.length <= 64) for (const b of bytes) this.typedChars.push(b);
+        \\      }
+        \\      // Keep the page from scrolling / tabbing / quick-finding under the app, but leave browser
+        \\      // shortcuts (F5, F12, Ctrl+R, Ctrl+L ...) and real form fields alone. Ctrl/Cmd+V is left
+        \\      // alone too: the browser then fires `paste`, which the host-services bridge turns into data.
+        \\      const wanted = navKeys.has(k) || (printable && !chord && !e.altKey) || (chord && single && 'acxyz'.includes(k.toLowerCase()));
+        \\      if (wanted && !editable(e.target)) e.preventDefault();
+        \\    });
+        \\    document.addEventListener('paste', () => this.releasePaste(), true);
+        \\    document.addEventListener('keyup', e => { syncMods(e); this.keysDown.delete(e.keyCode); this.keysReleased.add(e.keyCode); });
+        \\    // Losing focus swallows the matching keyup/mouseup events; release everything so nothing sticks.
+        \\    window.addEventListener('blur', () => {
+        \\      this.keysDown.clear();
+        \\      this.mouseButtonsReleased |= this.mouseButtons; this.mouseButtons = 0;
+        \\      this.modifiers = 0;
+        \\    });
+        \\    // Move/up are window-level so a drag that leaves the canvas still reports its release.
+        \\    window.addEventListener('mousemove', e => { syncMods(e); this.mouseDx += e.movementX; this.mouseDy += e.movementY; place(e); });
+        \\    canvas.addEventListener('mousedown', e => {
+        \\      syncMods(e); place(e);
+        \\      if (e.button > 2) return;
+        \\      const b = 1 << e.button; this.mouseButtons |= b; this.mouseButtonsPressed |= b;
+        \\      if (e.button === 1) e.preventDefault(); // middle-click autoscroll
+        \\    });
+        \\    window.addEventListener('mouseup', e => {
+        \\      syncMods(e); place(e);
+        \\      const b = 1 << e.button;
+        \\      if (e.button > 2 || !(this.mouseButtons & b)) return;
+        \\      this.mouseButtons &= ~b; this.mouseButtonsReleased |= b;
+        \\    });
+        \\    canvas.addEventListener('contextmenu', e => e.preventDefault());
+        \\    // Wheel deltas are CSS pixels, positive = down / right. Line- and page-mode wheels
+        \\    // (Firefox) are scaled to pixels; a trackpad pinch arrives as ctrlKey + wheel.
+        \\    canvas.addEventListener('wheel', e => {
+        \\      syncMods(e); place(e);
+        \\      const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? window.innerHeight : 1;
+        \\      this.mouseWheel += e.deltaY * scale; this.mouseWheelX += e.deltaX * scale;
+        \\      e.preventDefault();
+        \\    }, {passive:false});
         \\    canvas.addEventListener('touchstart', e => { this.touches = Array.from(e.touches); e.preventDefault(); }, {passive:false});
         \\    canvas.addEventListener('touchmove', e => { this.touches = Array.from(e.touches); }, {passive:false});
         \\    canvas.addEventListener('touchend', e => { this.touches = Array.from(e.touches); }, {passive:false});
@@ -457,9 +583,11 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    view.setFloat32(off, this.mouseDx, true); off += 4;
         \\    view.setFloat32(off, this.mouseDy, true); off += 4;
         \\    view.setFloat32(off, this.mouseWheel, true); off += 4;
+        \\    view.setFloat32(off, this.mouseWheelX, true); off += 4;
         \\    view.setUint8(off, this.mouseButtons); off += 1;
         \\    view.setUint8(off, this.mouseButtonsPressed); off += 1;
         \\    view.setUint8(off, this.mouseButtonsReleased); off += 1;
+        \\    view.setUint8(off, this.modifiers | this.modLatch); off += 1; this.modLatch = this.modifiers;
         \\    // Touch
         \\    view.setUint8(off, Math.min(this.touches.length, 10)); off += 1;
         \\    for (let i = 0; i < 10; i++) { view.setFloat32(off + i*4, this.touches[i]?.clientX || 0, true); } off += 40;
@@ -471,13 +599,13 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    view.setUint32(off, window.innerHeight, true); off += 4;
         \\    view.setFloat32(off, window.devicePixelRatio, true); off += 4;
         \\    view.setUint8(off, document.hasFocus() ? 1 : 0); off += 1;
-        \\    // Typed chars buffer (1 byte count + up to 32 bytes)
-        \\    const tc = Math.min(this.typedChars.length, 32);
+        \\    // Typed text: UTF-8 bytes (1 byte count + up to 64 bytes; whole code points only)
+        \\    const tc = Math.min(this.typedChars.length, 64);
         \\    view.setUint8(off, tc); off += 1;
         \\    for (let i = 0; i < tc; i++) { view.setUint8(off + i, this.typedChars[i]); }
         \\    // Clear per-frame state
         \\    this.keysPressed.clear(); this.keysReleased.clear();
-        \\    this.mouseDx = 0; this.mouseDy = 0; this.mouseWheel = 0;
+        \\    this.mouseDx = 0; this.mouseDy = 0; this.mouseWheel = 0; this.mouseWheelX = 0;
         \\    this.mouseButtonsPressed = 0; this.mouseButtonsReleased = 0;
         \\    this.typedChars.length = 0;
         \\  },
@@ -489,13 +617,153 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
 }
 
 fn emitWebGPUState(w: *std.Io.Writer) !void {
+    // Multi-line GPU logic lives here, not in one-line `js_resolve.zig`
+    // snippets. The handle/async lifecycle is documented at the top of
+    // src/web/gpu.zig; the binary layouts decoded below (`createPipeline`,
+    // `beginPass`, `vertexBuffers`) mirror `RawPipelineDesc`, `RawPassDesc`
+    // and `VertexBufferLayout` there. Enum tables are indexed by the Zig
+    // enums' integer values.
     try w.writeAll(
         \\// --- WebGPU state ---
-        \\let zunkGPUEncoder = null;
         \\let zunkGPUContext = null;
         \\let zunkGPUFormat = null;
         \\let zunkTextCanvas = null;
         \\let zunkTextCtx = null;
+        \\const zunkGPU = {
+        \\  textureFormats: ['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float','r8unorm'],
+        \\  vertexFormats: ['float32','float32x2','float32x3','float32x4','uint32','uint32x2','uint32x3','uint32x4','sint32','sint32x2','sint32x3','sint32x4'],
+        \\  stepModes: ['vertex','instance'],
+        \\  topologies: ['triangle-list','line-list','line-strip','triangle-strip','point-list'],
+        \\  cullModes: ['none','front','back'],
+        \\  frontFaces: ['ccw','cw'],
+        \\  compares: ['never','less','equal','less-equal','greater','not-equal','greater-equal','always'],
+        \\  loadOps: ['clear','load'],
+        \\  storeOps: ['store','discard'],
+        \\  noFormat: 0xFFFFFFFF,
+        \\  // Indexed by BlendMode. `null` = write the source colour unblended.
+        \\  blends: [
+        \\    null,
+        \\    { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } },
+        \\    { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } },
+        \\    { color: { srcFactor: 'src-alpha', dstFactor: 'one' }, alpha: { srcFactor: 'one', dstFactor: 'one' } },
+        \\  ],
+        \\
+        \\  // Frame-scoped objects: created on first use, released by present().
+        \\  _encoderH: 0,
+        \\  _canvasViewH: 0,
+        \\  encoder() {
+        \\    if (!this._encoderH) this._encoderH = H.store(H.get(1).createCommandEncoder());
+        \\    return this._encoderH;
+        \\  },
+        \\  canvasView() {
+        \\    if (!this._canvasViewH) this._canvasViewH = H.store(zunkGPUContext.getCurrentTexture().createView());
+        \\    return this._canvasViewH;
+        \\  },
+        \\  present() {
+        \\    if (this._encoderH) {
+        \\      const enc = H.get(this._encoderH);
+        \\      H.release(this._encoderH);
+        \\      this._encoderH = 0;
+        \\      H.get(1).queue.submit([enc.finish()]);
+        \\    }
+        \\    if (this._canvasViewH) { H.release(this._canvasViewH); this._canvasViewH = 0; }
+        \\  },
+        \\
+        \\  // RenderPassDescriptor (12 words). Handle 0 = canvas / none.
+        \\  beginPass(ptr) {
+        \\    const v = new DataView(memory.buffer, ptr, 48);
+        \\    const u = (i) => v.getUint32(i * 4, true);
+        \\    const f = (i) => v.getFloat32(i * 4, true);
+        \\    const color = {
+        \\      view: H.get(u(0) || this.canvasView()),
+        \\      clearValue: { r: f(8), g: f(9), b: f(10), a: f(11) },
+        \\      loadOp: this.loadOps[u(3)],
+        \\      storeOp: this.storeOps[u(4)],
+        \\    };
+        \\    if (u(1)) color.resolveTarget = H.get(u(1));
+        \\    const desc = { colorAttachments: [color] };
+        \\    if (u(2)) {
+        \\      desc.depthStencilAttachment = {
+        \\        view: H.get(u(2)),
+        \\        depthClearValue: f(7),
+        \\        depthLoadOp: this.loadOps[u(5)],
+        \\        depthStoreOp: this.storeOps[u(6)],
+        \\      };
+        \\    }
+        \\    return H.store(H.get(this.encoder()).beginRenderPass(desc));
+        \\  },
+        \\
+        \\  // VertexBufferLayout[] (16 B each) -> GPUVertexBufferLayout[].
+        \\  vertexBuffers(ptr, len) {
+        \\    const buffers = [];
+        \\    if (!len) return buffers;
+        \\    const lv = new DataView(memory.buffer, ptr, len * 16);
+        \\    for (let i = 0; i < len; i++) {
+        \\      const o = i * 16;
+        \\      const attrPtr = lv.getUint32(o + 8, true), attrLen = lv.getUint32(o + 12, true);
+        \\      const av = new DataView(memory.buffer, attrPtr, attrLen * 16);
+        \\      const attributes = [];
+        \\      for (let j = 0; j < attrLen; j++) {
+        \\        attributes.push({
+        \\          format: this.vertexFormats[av.getUint32(j * 16, true)],
+        \\          offset: av.getUint32(j * 16 + 4, true),
+        \\          shaderLocation: av.getUint32(j * 16 + 8, true),
+        \\        });
+        \\      }
+        \\      buffers.push({
+        \\        arrayStride: lv.getUint32(o, true),
+        \\        stepMode: this.stepModes[lv.getUint32(o + 4, true)],
+        \\        attributes,
+        \\      });
+        \\    }
+        \\    return buffers;
+        \\  },
+        \\
+        \\  // RenderPipelineDescriptor (19 words).
+        \\  createPipeline(ptr) {
+        \\    const v = new DataView(memory.buffer, ptr, 76);
+        \\    const u = (i) => v.getUint32(i * 4, true);
+        \\    const module = H.get(u(1));
+        \\    const target = { format: u(8) === this.noFormat ? zunkGPUFormat : this.textureFormats[u(8)] };
+        \\    const blend = this.blends[u(9)];
+        \\    if (blend) target.blend = blend;
+        \\    const desc = {
+        \\      layout: H.get(u(0)),
+        \\      vertex: { module, entryPoint: readStr(u(2), u(3)), buffers: this.vertexBuffers(u(6), u(7)) },
+        \\      fragment: { module, entryPoint: readStr(u(4), u(5)), targets: [target] },
+        \\      primitive: { topology: this.topologies[u(10)], cullMode: this.cullModes[u(11)], frontFace: this.frontFaces[u(12)] },
+        \\    };
+        \\    if (u(13) !== this.noFormat) {
+        \\      desc.depthStencil = {
+        \\        format: this.textureFormats[u(13)],
+        \\        depthWriteEnabled: !!u(14),
+        \\        depthCompare: this.compares[u(15)],
+        \\        depthBias: v.getInt32(16 * 4, true),
+        \\        depthBiasSlopeScale: v.getFloat32(17 * 4, true),
+        \\      };
+        \\    }
+        \\    if (u(18) > 1) desc.multisample = { count: u(18) };
+        \\    return H.store(H.get(1).createRenderPipeline(desc));
+        \\  },
+        \\
+        \\  // Buffer readback. maps: buffer handle -> MapState (see gpu.zig):
+        \\  //   absent/idle -> pending (mapRead) -> mapped | failed -> idle (unmap)
+        \\  maps: new Map(),
+        \\  mapRead(h) {
+        \\    this.maps.set(h, 1);
+        \\    H.get(h).mapAsync(GPUMapMode.READ).then(
+        \\      () => { if (this.maps.has(h)) this.maps.set(h, 2); },
+        \\      () => { if (this.maps.has(h)) this.maps.set(h, 3); });
+        \\  },
+        \\  mapState(h) { return this.maps.get(h) || 0; },
+        \\  readMapped(h, dstPtr, len) {
+        \\    new Uint8Array(memory.buffer, dstPtr, len).set(new Uint8Array(H.get(h).getMappedRange(0, len)));
+        \\  },
+        \\  unmap(h) {
+        \\    H.get(h).unmap();
+        \\    this.maps.delete(h);
+        \\  },
+        \\};
         \\
         \\
     );
@@ -658,6 +926,7 @@ pub fn generateHtml(
     try w.writeAll("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
     try w.writeAll("  <title>zunk app</title>\n");
     try w.writeAll("  <style>\n");
+    try emitFontFaces(w, opts.public_url, opts.fonts);
 
     if (has_canvas and has_frame) {
         try w.writeAll("    * { margin: 0; padding: 0; box-sizing: border-box; }\n");
@@ -924,6 +1193,58 @@ fn suggestMatch(name: []const u8) ?[]const u8 {
     return best;
 }
 
+test "input system: UTF-8 text, wheel x, modifiers, contextmenu and blur are wired" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try emitInputSystem(&aw.writer);
+    const js = aw.written();
+    for ([_][]const u8{ "TextEncoder", "mouseWheelX", "this.modifiers", "contextmenu", "'blur'", "deltaMode" }) |needle| {
+        try std.testing.expect(std.mem.indexOf(u8, js, needle) != null);
+    }
+    // The old truncating form must be gone.
+    try std.testing.expect(std.mem.indexOf(u8, js, "charCodeAt") == null);
+}
+
+test "fonts: @font-face rules and a startup wait for every face" {
+    const fonts = [_]FontFace{
+        .{ .family = "IBM Plex Mono", .weight = 400, .file = "IBMPlexMono-Regular.ttf" },
+        .{ .family = "IBM Plex Mono", .weight = 700, .file = "IBMPlexMono-Bold.ttf" },
+    };
+    var css: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer css.deinit();
+    try emitFontFaces(&css.writer, "/", &fonts);
+    try std.testing.expectEqualStrings(
+        "    @font-face { font-family: \"IBM Plex Mono\"; font-weight: 400; font-display: block; src: url(\"/fonts/IBMPlexMono-Regular.ttf\"); }\n" ++
+            "    @font-face { font-family: \"IBM Plex Mono\"; font-weight: 700; font-display: block; src: url(\"/fonts/IBMPlexMono-Bold.ttf\"); }\n",
+        css.written(),
+    );
+
+    var js: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer js.deinit();
+    try emitFontLoad(&js.writer, &fonts);
+    try std.testing.expect(std.mem.find(u8, js.written(), "document.fonts.load(\"400 16px \\\"IBM Plex Mono\\\"\")") != null);
+    try std.testing.expect(std.mem.find(u8, js.written(), "document.fonts.load(\"700 16px") != null);
+    try std.testing.expect(std.mem.startsWith(u8, js.written(), "// --- Fonts"));
+
+    // No fonts: nothing emitted.
+    var none: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer none.deinit();
+    try emitFontLoad(&none.writer, &.{});
+    try emitFontFaces(&none.writer, "/", &.{});
+    try std.testing.expectEqual(@as(usize, 0), none.written().len);
+}
+
+test "fx bridge is embedded and Ctrl+V is left to the browser" {
+    try std.testing.expect(std.mem.find(u8, fx_js, "const zunkFx") != null);
+    try std.testing.expect(std.mem.find(u8, fx_js, "addEventListener('paste'") != null);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try emitInputSystem(&aw.writer);
+    try std.testing.expect(std.mem.find(u8, aw.written(), "'acxyz'") != null);
+    try std.testing.expect(std.mem.find(u8, aw.written(), "releasePaste") != null);
+    try std.testing.expect(std.mem.find(u8, aw.written(), "modLatch") != null);
+}
+
 test "editDistance identical" {
     try std.testing.expectEqual(@as(usize, 0), editDistance("hello", "hello"));
 }
@@ -964,4 +1285,19 @@ test "suggestMatch no match" {
 test "generate compiles" {
     _ = wa.Analysis;
     _ = resolver.Resolution;
+}
+
+test "WebGPU state helper is balanced JS and knows instance step mode" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try emitWebGPUState(&aw.writer);
+    const js = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, js, "stepModes: ['vertex','instance']") != null);
+    var depth: i32 = 0;
+    for (js) |c| switch (c) {
+        '{', '(', '[' => depth += 1,
+        '}', ')', ']' => depth -= 1,
+        else => {},
+    };
+    try std.testing.expectEqual(@as(i32, 0), depth);
 }

@@ -202,6 +202,10 @@ Zunk detects these exports from your WASM and wires them up automatically:
 
 If you export `frame`, zunk generates a render loop. If you don't, it doesn't. If you export `resize`, zunk generates a resize handler and a fullscreen canvas. Everything is adaptive.
 
+### Host services and web fonts
+
+`zunk.web.fx` wraps the async browser work apps need behind one poll-style completion channel: `fetch` (headers, ~8 MB bodies, timeout), downloads, a file picker that waits for a user activation, `localStorage`, the clock, URL query parameters, clipboard writes, and pasted / dropped images (downscaled, re-encoded, thumbnailed) and files. `zunk build --font <family> <weight> <path>` (or `InstallAppOptions.fonts`) ships web fonts and holds startup until they load. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ("Host services", "Web fonts").
+
 ### Memory Model
 
 | Data Type | Strategy | Overhead |
@@ -245,7 +249,8 @@ zunk/
 │   ├── imgui-demo/               # Canvas-based immediate-mode UI
 │   ├── audio-demo-1-assets-bundled/  # Web Audio with bundled assets
 │   ├── audio-demo-2-assets-cached/   # Web Audio with cached asset loading
-│   └── particle-life/            # WebGPU compute + render pipeline
+│   ├── particle-life/            # WebGPU compute + render pipeline
+│   └── mesh-3d/                  # Depth-tested lit mesh, MSAA, instanced edges, offscreen inset + readback
 ├── docs/
 │   ├── ARCHITECTURE.md           # Deep dive on design decisions
 │   └── ROADMAP.md                # Development roadmap
@@ -339,6 +344,8 @@ trunk is the direct inspiration for zunk's build tool. It uses an HTML-driven as
 Phases 1-3 (Foundation, Build Pipeline, Developer Experience) and Phase 4.1 (WebGPU) are complete. The WASM analyzer, 5-tier resolution engine, JS/HTML code generator, binding system, Layer 2 web modules (canvas, input, audio, asset, app, gpu, ui), dev server with live reload, `bridge.js` auto-discovery, and `zunk deploy` (content-hashed filenames, SRI, WASM preload) are all working. Five example projects compile and run end-to-end, including a WebGPU particle simulation with compute shaders.
 
 Developer experience tooling is in place: `zunk init` scaffolds new projects, `zunk doctor` diagnoses environment issues, build caching skips unchanged rebuilds, and the resolution report has color-coded output with fuzzy "did you mean?" suggestions (`--verbose` and `--report-json` flags available).
+
+The `kerf` branch adds what a real CAD app needed: the WebGPU 3D surface (depth attachments, index and instanced draws, MSAA, offscreen render targets, buffer readback; `examples/mesh-3d`), the `web.fx` host-services bridge (fetch with headers/bodies/timeouts, downloads, file pick, localStorage, clock, clipboard, paste/drop with in-JS image downscale), `--font` registration (`@font-face` + wait-for-load) and canvas `letterSpacing`, UTF-8 typed text, modifiers, horizontal wheel, and a stricter `preventDefault` policy.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap.
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deep dive on design decisions.

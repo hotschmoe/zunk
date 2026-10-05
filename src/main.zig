@@ -67,6 +67,7 @@ fn printUsage(console: *rich.Console) !void {
     try console.print("    [yellow]--hmr[/]                  Hot-swap WASM on wasm-only rebuilds (opt-in; full reload fallback)");
     try console.print("    [yellow]--proxy[/] <prefix=url>  Proxy requests (e.g. --proxy /api=http://localhost:3000)");
     try console.print("    [yellow]--bridge-dep[/] <path>    Include a dep-provided bridge.js (repeatable; typically wired by installApp)");
+    try console.print("    [yellow]--font[/] <family> <weight> <path>  Ship a font file as fonts/<name> + @font-face; the app starts once it has loaded (repeatable)");
     try console.print("    [yellow]--verbose[/] / [yellow]-v[/]        Show all resolutions in build report");
     try console.print("    [yellow]--report-json[/]          Output build report as JSON");
     try console.print("    [yellow]--force[/]                Bypass build cache");
@@ -74,6 +75,14 @@ fn printUsage(console: *rich.Console) !void {
 }
 
 const max_bridge_deps = 32;
+const max_fonts = 16;
+
+/// One `--font <family> <weight> <path>`.
+const FontArg = struct {
+    family: []const u8,
+    weight: u16,
+    path: []const u8,
+};
 
 const BuildArgs = struct {
     wasm_path: ?[]const u8 = null,
@@ -87,9 +96,17 @@ const BuildArgs = struct {
     hmr: bool = false,
     bridge_deps_buf: [max_bridge_deps][]const u8 = undefined,
     bridge_deps_len: usize = 0,
+    fonts_buf: [max_fonts]FontArg = undefined,
+    fonts_len: usize = 0,
+    /// Set by the parser when an argument is unusable; the build then stops.
+    arg_error: ?[]const u8 = null,
 
     fn bridgeDeps(self: *const BuildArgs) []const []const u8 {
         return self.bridge_deps_buf[0..self.bridge_deps_len];
+    }
+
+    fn fonts(self: *const BuildArgs) []const FontArg {
+        return self.fonts_buf[0..self.fonts_len];
     }
 };
 
@@ -125,6 +142,27 @@ fn parseBuildArgs(args: []const []const u8) BuildArgs {
                 result.bridge_deps_len += 1;
             }
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--font")) {
+            if (i + 3 >= args.len) {
+                result.arg_error = "--font needs <family> <weight> <path>";
+                break;
+            }
+            const family = args[i + 1];
+            const weight = std.fmt.parseInt(u16, args[i + 2], 10) catch {
+                result.arg_error = "--font: weight must be a number such as 400 or 700";
+                break;
+            };
+            if (std.mem.findAny(u8, family, "\"\\\r\n") != null) {
+                result.arg_error = "--font: family must not contain quotes, backslashes or line breaks";
+                break;
+            }
+            if (result.fonts_len == max_fonts) {
+                result.arg_error = "--font: too many fonts";
+                break;
+            }
+            result.fonts_buf[result.fonts_len] = .{ .family = family, .weight = weight, .path = args[i + 3] };
+            result.fonts_len += 1;
+            i += 3;
         }
     }
     return result;
@@ -151,8 +189,10 @@ const BuildContext = struct {
     analysis: wa.Analysis,
     wasm_basename: []const u8,
     bridge_chunks: []js_gen.BridgeJsChunk,
+    fonts: []js_gen.FontFace,
 
     fn deinit(self: *BuildContext, allocator: std.mem.Allocator) void {
+        allocator.free(self.fonts);
         allocator.free(self.wasm);
         self.analysis.deinit(allocator);
         for (self.bridge_chunks) |c| {
@@ -164,6 +204,10 @@ const BuildContext = struct {
 };
 
 fn prepareBuild(allocator: std.mem.Allocator, io: std.Io, parsed: BuildArgs, console: *rich.Console) !?BuildContext {
+    if (parsed.arg_error) |msg| {
+        try console.printStyled(msg, rich.Style.empty.bold().foreground(rich.Color.red));
+        return null;
+    }
     const wasm_path = parsed.wasm_path orelse {
         try console.print("[bold red]error:[/] no --wasm path provided");
         try console.print("");
@@ -200,11 +244,18 @@ fn prepareBuild(allocator: std.mem.Allocator, io: std.Io, parsed: BuildArgs, con
         allocator.free(bridge_chunks);
     }
 
+    const fonts = try allocator.alloc(js_gen.FontFace, parsed.fonts_len);
+    errdefer allocator.free(fonts);
+    for (parsed.fonts(), fonts) |arg, *face| {
+        face.* = .{ .family = arg.family, .weight = arg.weight, .file = std.Io.Dir.path.basename(arg.path) };
+    }
+
     return .{
         .wasm = wasm,
         .analysis = analysis,
         .wasm_basename = std.Io.Dir.path.basename(wasm_path),
         .bridge_chunks = bridge_chunks,
+        .fonts = fonts,
     };
 }
 
@@ -247,7 +298,7 @@ fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     const parsed = parseBuildArgs(args);
 
     // Compute fingerprint once (used for both cache check and write)
-    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(io, wasm_path, parsed.bridgeDeps()) else null;
+    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(io, wasm_path, parsed) else null;
 
     // Cache check (non-serve mode only)
     if (!do_serve and !parsed.force) {
@@ -267,6 +318,7 @@ fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     var result = try js_gen.generate(allocator, &ctx.analysis, .{
         .wasm_filename = ctx.wasm_basename,
         .bridge_js_chunks = ctx.bridge_chunks,
+        .fonts = ctx.fonts,
         .verbose_report = parsed.verbose,
         .json_report = parsed.json_report,
     });
@@ -291,6 +343,7 @@ fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
     try out_dir.writeFile(io, .{ .sub_path = ctx.wasm_basename, .data = ctx.wasm });
 
     copyAssets(allocator, io, out_dir, console);
+    try copyFonts(allocator, io, out_dir, parsed.fonts(), console);
     try printReport(console, allocator, result.report, "Build Report", parsed.json_report);
 
     if (!do_serve) {
@@ -322,7 +375,7 @@ fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
 fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8, console: *rich.Console) !void {
     const parsed = parseBuildArgs(args);
 
-    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(io, wasm_path, parsed.bridgeDeps()) else null;
+    const source_fp: ?i128 = if (parsed.wasm_path) |wasm_path| computeSourceFingerprint(io, wasm_path, parsed) else null;
 
     if (!parsed.force) {
         if (source_fp) |fp| {
@@ -349,6 +402,7 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
     var result = try js_gen.generate(allocator, &ctx.analysis, .{
         .wasm_filename = hashed_wasm_name,
         .bridge_js_chunks = ctx.bridge_chunks,
+        .fonts = ctx.fonts,
         .verbose_report = parsed.verbose,
         .json_report = parsed.json_report,
     });
@@ -380,6 +434,7 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
     try js_gen.generateHtml(&html_aw.writer, &ctx.analysis, .{
         .wasm_filename = hashed_wasm_name,
         .bridge_js_chunks = ctx.bridge_chunks,
+        .fonts = ctx.fonts,
         .js_filename = hashed_js_name,
         .wasm_preload = true,
         .js_integrity = sri,
@@ -399,6 +454,7 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
     try out_dir.writeFile(io, .{ .sub_path = hashed_wasm_name, .data = ctx.wasm });
 
     copyAssets(allocator, io, out_dir, console);
+    try copyFonts(allocator, io, out_dir, parsed.fonts(), console);
     try printReport(console, allocator, result.report, "Deploy Report", parsed.json_report);
 
     if (source_fp) |fp| writeCacheFingerprint(io, parsed.output_dir, fp);
@@ -526,10 +582,38 @@ fn copyAssets(allocator: std.mem.Allocator, io: std.Io, out_dir: std.Io.Dir, con
     }
 }
 
+/// Copy every `--font` file to `<out>/fonts/<basename>`. A missing font stops
+/// the build: the page would otherwise silently fall back to another face.
+fn copyFonts(allocator: std.mem.Allocator, io: std.Io, out_dir: std.Io.Dir, fonts: []const FontArg, console: *rich.Console) !void {
+    if (fonts.len == 0) return;
+    try out_dir.createDirPath(io, "fonts");
+    var dest = try out_dir.openDir(io, "fonts", .{});
+    defer dest.close(io);
+    for (fonts) |f| {
+        const data = std.Io.Dir.cwd().readFileAlloc(io, f.path, allocator, .limited(20 * 1024 * 1024)) catch |err| {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "error: could not read font '{s}': {}", .{ f.path, err }) catch "error: could not read a font file";
+            try console.printStyled(msg, rich.Style.empty.bold().foreground(rich.Color.red));
+            return err;
+        };
+        defer allocator.free(data);
+        try dest.writeFile(io, .{ .sub_path = std.Io.Dir.path.basename(f.path), .data = data });
+    }
+    var buf: [128]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "Copied {d} font(s) to output", .{fonts.len}) catch return;
+    console.printStyled(msg, rich.Style.empty.foreground(rich.Color.cyan)) catch {};
+}
+
 // --- Build caching ---
 
-fn computeSourceFingerprint(io: std.Io, wasm_path: []const u8, bridge_dep_paths: []const []const u8) i128 {
+fn computeSourceFingerprint(io: std.Io, wasm_path: []const u8, parsed: BuildArgs) i128 {
     var fingerprint: i128 = 0;
+
+    // The generator itself: a rebuilt zunk emits different JS for the same wasm.
+    if (std.process.openExecutable(io, .{})) |exe| {
+        defer exe.close(io);
+        if (exe.stat(io)) |stat| fingerprint +%= @intCast(stat.mtime.nanoseconds) else |_| {}
+    } else |_| {}
 
     // src/ directory recursive mtime sum
     pollDirRecursive(io, "src", &fingerprint);
@@ -559,9 +643,15 @@ fn computeSourceFingerprint(io: std.Io, wasm_path: []const u8, bridge_dep_paths:
         fingerprint +%= @intCast(stat.mtime.nanoseconds);
     }
 
-    // dep-provided bridge.js files passed via --bridge-dep
-    for (bridge_dep_paths) |bp| {
+    // dep-provided bridge.js files passed via --bridge-dep, and --font files
+    for (parsed.bridgeDeps()) |bp| {
         const file = std.Io.Dir.cwd().openFile(io, bp, .{}) catch continue;
+        defer file.close(io);
+        const stat = file.stat(io) catch continue;
+        fingerprint +%= @intCast(stat.mtime.nanoseconds);
+    }
+    for (parsed.fonts()) |f| {
+        const file = std.Io.Dir.cwd().openFile(io, f.path, .{}) catch continue;
         defer file.close(io);
         const stat = file.stat(io) catch continue;
         fingerprint +%= @intCast(stat.mtime.nanoseconds);
@@ -938,6 +1028,33 @@ fn gitignoreTemplate() []const u8 {
     \\.zunk_cache
     \\
     ;
+}
+
+test "--font takes family, weight and path and is repeatable" {
+    const args = [_][]const u8{
+        "--wasm",       "a.wasm",
+        "--font",       "IBM Plex Mono",
+        "400",          "fonts/Regular.ttf",
+        "--font",       "IBM Plex Mono",
+        "700",          "fonts/Bold.ttf",
+        "--output-dir", "out",
+    };
+    const parsed = parseBuildArgs(&args);
+    try std.testing.expect(parsed.arg_error == null);
+    try std.testing.expectEqual(@as(usize, 2), parsed.fonts().len);
+    try std.testing.expectEqualStrings("IBM Plex Mono", parsed.fonts()[0].family);
+    try std.testing.expectEqual(@as(u16, 700), parsed.fonts()[1].weight);
+    try std.testing.expectEqualStrings("fonts/Bold.ttf", parsed.fonts()[1].path);
+    try std.testing.expectEqualStrings("out", parsed.output_dir);
+}
+
+test "--font rejects a bad weight, a quoted family and a missing path" {
+    const bad_weight = [_][]const u8{ "--font", "F", "bold", "f.ttf" };
+    try std.testing.expect(parseBuildArgs(&bad_weight).arg_error != null);
+    const quoted = [_][]const u8{ "--font", "F\"x", "400", "f.ttf" };
+    try std.testing.expect(parseBuildArgs(&quoted).arg_error != null);
+    const short = [_][]const u8{ "--font", "F", "400" };
+    try std.testing.expect(parseBuildArgs(&short).arg_error != null);
 }
 
 test {

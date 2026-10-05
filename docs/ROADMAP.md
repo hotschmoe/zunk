@@ -154,15 +154,28 @@ Full WebGPU bindings are implemented and working. The particle-life example uses
 - [x] HDR render pass (render to texture view) -- `gpu_begin_render_pass_hdr`
 - [x] Present (flush command encoder to screen) -- `gpu_present`
 - [x] DPR-aware resize handler for WebGPU canvas
-- [x] Layer 2 ergonomic wrappers with typed handles in `web/gpu.zig` (33 extern fns, typed Device/Buffer/Texture/Pipeline aliases, convenience constructors)
+- [x] Layer 2 ergonomic wrappers with typed handles in `web/gpu.zig` (50 extern fns, typed Device/Buffer/Texture/Pipeline aliases, convenience constructors)
 - [x] ABI-matched struct layouts (`BindGroupLayoutEntry` = 40 bytes, `BindGroupEntry` = 32 bytes)
-- [x] Texture format enum (rgba16float, rgba32float, bgra8unorm, rgba8unorm, rgba8unorm_srgb, depth24plus, depth32float)
+- [x] Texture format enum (rgba16float, rgba32float, bgra8unorm, rgba8unorm, rgba8unorm_srgb, depth24plus, depth32float, r8unorm)
 - [x] Usage flag constants matching WebGPU spec (`BufferUsage`, `TextureUsage`, `ShaderVisibility`)
 
+### 4.1b 3D rendering surface -- DONE
+
+Added for the kerf/teak 3D work; demonstrated by `examples/mesh-3d` (verified in headless Chromium/SwiftShader).
+
+- [x] Depth attachment (`RenderPassDescriptor.depth`) and pipeline depth state (`DepthState`: format, write, compare, bias)
+- [x] Index buffers (`BufferUsage.INDEX`, `renderPassSetIndexBuffer`, `renderPassDrawIndexed`)
+- [x] Instanced draws (`renderPassDraw` instance args; instance-step vertex layouts)
+- [x] MSAA (`sample_count` on pipelines and `createTextureMultisampled`, resolve view on the pass)
+- [x] Offscreen render targets (`createRenderTarget`, passes targeting a view, then sampled in a later pass)
+- [x] Blend modes, cull mode, front face, primitive topology (line-list etc.) on pipelines
+- [x] Viewport / scissor
+- [x] Readback (`copyTextureToBuffer`, `bufferMapRead` polling, `Readback`)
+- [x] Frame-scoped handles released automatically (render passes, encoders, command buffers, canvas view)
+- [x] WebGPU lifecycle documented in one place (`src/web/gpu.zig` header); multi-line JS moved into a named `zunkGPU` helper
+
 **Not yet implemented:**
-- [ ] Sampler creation and sampling
-- [ ] Vertex buffer layouts (vertex attributes, step mode)
-- [ ] Render pipeline depth/stencil state
+- [ ] Stencil formats / ops
 - [ ] Multiple color attachment targets
 - [ ] Render bundles
 - [ ] Timestamp queries / pipeline statistics

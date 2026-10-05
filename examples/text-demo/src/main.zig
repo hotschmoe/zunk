@@ -56,11 +56,11 @@ export fn init() void {
     input.init();
     app.setTitle("zunk text-demo");
 
-    const metrics = gpu.measureText(label_text, label_font);
+    const metrics = gpu.measureText(label_text, label_font, 0);
     text_w = metrics.width;
     text_h = metrics.height;
 
-    const tex = gpu.rasterizeText(label_text, label_font, .{ 1.0, 1.0, 1.0, 1.0 }, text_w, text_h);
+    const tex = gpu.rasterizeText(label_text, label_font, 0, .{ 1.0, 1.0, 1.0, 1.0 }, text_w, text_h);
     const view = gpu.createTextureView(tex);
 
     const sampler = gpu.createSampler(.{

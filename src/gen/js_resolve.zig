@@ -53,6 +53,9 @@ pub const Category = enum {
     // Storage
     storage,
     clipboard,
+    // Async host services (src/gen/js/fx.js): fetch, downloads, file picker,
+    // storage, clock, query params, paste/drop
+    fx,
     // UI
     ui,
     // Accessibility (hidden DOM mirror for screen readers)
@@ -233,6 +236,7 @@ pub const prefix_rules = [_]PrefixRule{
     .{ .prefix = "zunk_app_", .category = .lifecycle, .generator = &genApp },
     .{ .prefix = "zunk_asset_", .category = .asset, .generator = &genAsset },
     .{ .prefix = "zunk_fetch", .category = .fetch, .generator = &genFetch },
+    .{ .prefix = "zunk_fx_", .category = .fx, .generator = &genFx },
     .{ .prefix = "zunk_gpu_", .category = .webgpu, .generator = &genWebGPU },
     .{ .prefix = "zunk_ui_", .category = .ui, .generator = &genUI },
     .{ .prefix = "canvas_", .category = .canvas2d, .generator = &genCanvas },
@@ -466,38 +470,34 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
     _ = sig;
     const Entry = struct { []const u8, []const u8, bool, bool, bool };
 
-    // Shared vertex-buffer-layout decoder. Builds a JS snippet that reads a packed
-    // VertexBufferLayout[]/VertexAttribute[] blob from wasm memory (arguments[ptr_idx],
-    // arguments[len_idx]) and produces a `buffers` array consumable by GPUVertexState.
-    const vbuf_decode = struct {
-        fn snippet(comptime ptr_idx: []const u8, comptime len_idx: []const u8) []const u8 {
-            return "const vfmts=['float32','float32x2','float32x3','float32x4','uint32','uint32x2','uint32x3','uint32x4','sint32','sint32x2','sint32x3','sint32x4'];" ++
-                "const steps=['vertex','instance'];" ++
-                "const buffers=[];" ++
-                "if(arguments[" ++ len_idx ++ "]>0){const lv=new DataView(memory.buffer,arguments[" ++ ptr_idx ++ "],arguments[" ++ len_idx ++ "]*16);" ++
-                "for(let i=0;i<arguments[" ++ len_idx ++ "];i++){const bo=i*16;" ++
-                "const aPtr=lv.getUint32(bo+8,true),aLen=lv.getUint32(bo+12,true);" ++
-                "const av=new DataView(memory.buffer,aPtr,aLen*16);const attrs=[];" ++
-                "for(let j=0;j<aLen;j++){const ao=j*16;" ++
-                "attrs.push({format:vfmts[av.getUint32(ao,true)],offset:av.getUint32(ao+4,true),shaderLocation:av.getUint32(ao+8,true)});}" ++
-                "buffers.push({arrayStride:lv.getUint32(bo,true),stepMode:steps[lv.getUint32(bo+4,true)],attributes:attrs});}}";
-        }
-    };
-
     const js_map = [_]Entry{
+        // Handles / frame-scoped objects (see zunkGPU in js_gen.zig)
+        .{ "release", "H.release(arguments[0]);", false, false, true },
+        .{ "canvas_format", "return zunkGPU.textureFormats.indexOf(zunkGPUFormat);", false, false, true },
+        .{ "canvas_size", "const c=zunkGPUContext.canvas,dv=new DataView(memory.buffer,arguments[0],8);" ++
+            "dv.setUint32(0,c.width,true);dv.setUint32(4,c.height,true);", false, true, true },
+        .{ "canvas_view", "return zunkGPU.canvasView();", false, false, true },
+        .{ "frame_encoder", "return zunkGPU.encoder();", false, false, true },
+
         // Buffer
         .{ "create_buffer", "return H.store(H.get(1).createBuffer({size:arguments[0],usage:arguments[1],mappedAtCreation:false}));", false, false, true },
         .{ "buffer_write", "H.get(1).queue.writeBuffer(H.get(arguments[0]),arguments[1],new Uint8Array(memory.buffer,arguments[2],arguments[3]));", false, true, true },
-        .{ "buffer_destroy", "H.get(arguments[0]).destroy();", false, false, true },
+        .{ "buffer_destroy", "H.get(arguments[0]).destroy();zunkGPU.maps.delete(arguments[0]);H.release(arguments[0]);", false, false, true },
+        .{ "buffer_map_read", "zunkGPU.mapRead(arguments[0]);", false, false, true },
+        .{ "buffer_map_state", "return zunkGPU.mapState(arguments[0]);", false, false, true },
+        .{ "buffer_read_mapped", "zunkGPU.readMapped(arguments[0],arguments[1],arguments[2]);", false, true, true },
+        .{ "buffer_unmap", "zunkGPU.unmap(arguments[0]);", false, false, true },
         .{ "copy_buffer_in_encoder", "H.get(arguments[0]).copyBufferToBuffer(H.get(arguments[1]),arguments[2],H.get(arguments[3]),arguments[4],arguments[5]);", false, false, true },
+        .{ "copy_texture_to_buffer", "H.get(arguments[0]).copyTextureToBuffer({texture:H.get(arguments[1])}," ++
+            "{buffer:H.get(arguments[2]),bytesPerRow:arguments[3]},{width:arguments[4],height:arguments[5]});", false, false, true },
 
         .{ "create_shader_module", "return H.store(H.get(1).createShaderModule({code:readStr(arguments[0],arguments[1])}));", true, false, true },
 
         // Texture
-        .{ "create_texture", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float','r8unorm'];" ++
-            "return H.store(H.get(1).createTexture({size:[arguments[0],arguments[1]],format:fmts[arguments[2]],usage:arguments[3]}));", false, false, true },
+        .{ "create_texture", "return H.store(H.get(1).createTexture({size:[arguments[0],arguments[1]]," ++
+            "format:zunkGPU.textureFormats[arguments[2]],usage:arguments[3],sampleCount:arguments[4]}));", false, false, true },
         .{ "create_texture_view", "return H.store(H.get(arguments[0]).createView());", false, false, true },
-        .{ "destroy_texture", "H.get(arguments[0]).destroy();", false, false, true },
+        .{ "destroy_texture", "H.get(arguments[0]).destroy();H.release(arguments[0]);", false, false, true },
         .{ "write_texture", "const tex=H.get(arguments[0]);" ++
             "const src=new Uint8Array(memory.buffer,arguments[1],arguments[2]);" ++
             "H.get(1).queue.writeTexture({texture:tex},src," ++
@@ -545,60 +545,40 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         .{ "create_compute_pipeline", "return H.store(H.get(1).createComputePipeline({layout:H.get(arguments[0])," ++
             "compute:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3])}}));", true, false, true },
 
-        .{ "create_render_pipeline", comptime vbuf_decode.snippet("6", "7") ++
-            "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
-            "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3]),buffers}," ++
-            "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
-            "targets:[{format:zunkGPUFormat,blend:{" ++
-            "color:{srcFactor:'src-alpha',dstFactor:'one-minus-src-alpha'}," ++
-            "alpha:{srcFactor:'one',dstFactor:'one-minus-src-alpha'}}}]}," ++
-            "primitive:{topology:'triangle-list'}}));", true, true, true },
-
-        .{ "create_render_pipeline_hdr", "const fmts=['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float','r8unorm'];" ++
-            "const t={format:fmts[arguments[6]]};" ++
-            "if(arguments[7]){t.blend={color:{srcFactor:'src-alpha',dstFactor:'one',operation:'add'}," ++
-            "alpha:{srcFactor:'one',dstFactor:'one',operation:'add'}};}" ++
-            comptime vbuf_decode.snippet("8", "9") ++
-                "return H.store(H.get(1).createRenderPipeline({layout:H.get(arguments[0])," ++
-                "vertex:{module:H.get(arguments[1]),entryPoint:readStr(arguments[2],arguments[3]),buffers}," ++
-                "fragment:{module:H.get(arguments[1]),entryPoint:readStr(arguments[4],arguments[5])," ++
-                "targets:[t]},primitive:{topology:'triangle-list'}}));", true, true, true },
+        .{ "create_render_pipeline", "return zunkGPU.createPipeline(arguments[0]);", true, true, true },
 
         // Command encoder
         .{ "create_command_encoder", "return H.store(H.get(1).createCommandEncoder());", false, false, true },
         .{ "begin_compute_pass", "return H.store(H.get(arguments[0]).beginComputePass());", false, false, true },
-        .{ "encoder_finish", "return H.store(H.get(arguments[0]).finish());", false, false, true },
-        .{ "queue_submit", "H.get(1).queue.submit([H.get(arguments[0])]);", false, false, true },
+        .{ "encoder_finish", "const cb=H.get(arguments[0]).finish();H.release(arguments[0]);return H.store(cb);", false, false, true },
+        .{ "queue_submit", "H.get(1).queue.submit([H.get(arguments[0])]);H.release(arguments[0]);", false, false, true },
 
         // Compute pass
         .{ "compute_pass_set_pipeline", "H.get(arguments[0]).setPipeline(H.get(arguments[1]));", false, false, true },
         .{ "compute_pass_set_bind_group", "H.get(arguments[0]).setBindGroup(arguments[1],H.get(arguments[2]));", false, false, true },
         .{ "compute_pass_set_bind_group_offset", "H.get(arguments[0]).setBindGroup(arguments[1],H.get(arguments[2]),[arguments[3]]);", false, false, true },
         .{ "compute_pass_dispatch", "H.get(arguments[0]).dispatchWorkgroups(arguments[1],arguments[2],arguments[3]);", false, false, true },
-        .{ "compute_pass_end", "H.get(arguments[0]).end();", false, false, true },
+        .{ "compute_pass_end", "H.get(arguments[0]).end();H.release(arguments[0]);", false, false, true },
 
         // Render pass
-        .{ "begin_render_pass", "if(!zunkGPUEncoder)zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
-            "const v=zunkGPUContext.getCurrentTexture().createView();" ++
-            "return H.store(zunkGPUEncoder.beginRenderPass({colorAttachments:[{view:v," ++
-            "clearValue:{r:arguments[0],g:arguments[1],b:arguments[2],a:arguments[3]}," ++
-            "loadOp:'clear',storeOp:'store'}]}));", false, false, true },
-
-        .{ "begin_render_pass_hdr", "if(!zunkGPUEncoder)zunkGPUEncoder=H.get(1).createCommandEncoder();" ++
-            "return H.store(zunkGPUEncoder.beginRenderPass({colorAttachments:[{view:H.get(arguments[0])," ++
-            "clearValue:{r:arguments[1],g:arguments[2],b:arguments[3],a:arguments[4]}," ++
-            "loadOp:'clear',storeOp:'store'}]}));", false, false, true },
+        .{ "begin_render_pass", "return zunkGPU.beginPass(arguments[0]);", false, true, true },
 
         .{ "render_pass_set_pipeline", "H.get(arguments[0]).setPipeline(H.get(arguments[1]));", false, false, true },
         .{ "render_pass_set_bind_group", "H.get(arguments[0]).setBindGroup(arguments[1],H.get(arguments[2]));", false, false, true },
         .{ "render_pass_set_vertex_buffer", "const off=arguments[3]+arguments[4]*0x100000000;" ++
             "const sz=arguments[5]+arguments[6]*0x100000000;" ++
             "H.get(arguments[0]).setVertexBuffer(arguments[1],H.get(arguments[2]),off,sz);", false, false, true },
+        .{ "render_pass_set_index_buffer", "const off=arguments[3]+arguments[4]*0x100000000;" ++
+            "const sz=arguments[5]+arguments[6]*0x100000000;" ++
+            "H.get(arguments[0]).setIndexBuffer(H.get(arguments[1]),['uint16','uint32'][arguments[2]],off,sz);", false, false, true },
+        .{ "render_pass_set_viewport", "H.get(arguments[0]).setViewport(arguments[1],arguments[2],arguments[3],arguments[4],arguments[5],arguments[6]);", false, false, true },
+        .{ "render_pass_set_scissor_rect", "H.get(arguments[0]).setScissorRect(arguments[1],arguments[2],arguments[3],arguments[4]);", false, false, true },
         .{ "render_pass_draw", "H.get(arguments[0]).draw(arguments[1],arguments[2],arguments[3],arguments[4]);", false, false, true },
-        .{ "render_pass_end", "H.get(arguments[0]).end();", false, false, true },
+        .{ "render_pass_draw_indexed", "H.get(arguments[0]).drawIndexed(arguments[1],arguments[2],arguments[3],arguments[4],arguments[5]);", false, false, true },
+        .{ "render_pass_end", "H.get(arguments[0]).end();H.release(arguments[0]);", false, false, true },
 
         // Present
-        .{ "present", "if(zunkGPUEncoder){H.get(1).queue.submit([zunkGPUEncoder.finish()]);zunkGPUEncoder=null;}", false, false, true },
+        .{ "present", "zunkGPU.present();", false, false, true },
 
         // Asset texture
         .{ "create_texture_from_asset", "const buf=H.get(arguments[0]);" ++
@@ -618,7 +598,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         // text engine, then uploads the pixels into a GPUTexture.
         .{ "measure_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d',{willReadFrequently:true});}" ++
             "const text=readStr(arguments[0],arguments[1]),font=readStr(arguments[2],arguments[3]);" ++
-            "zunkTextCtx.font=font;const m=zunkTextCtx.measureText(text);" ++
+            "zunkTextCtx.font=font;zunkTextCtx.letterSpacing=arguments[5]+'px';const m=zunkTextCtx.measureText(text);" ++
             "const w=Math.max(1,Math.ceil(m.width));" ++
             "const h=Math.max(1,Math.ceil((m.actualBoundingBoxAscent||0)+(m.actualBoundingBoxDescent||0)));" ++
             "const dv=new DataView(memory.buffer,arguments[4],8);" ++
@@ -630,7 +610,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "const w=arguments[8],h=arguments[9];" ++
             "zunkTextCanvas.width=w;zunkTextCanvas.height=h;" ++
             "zunkTextCtx.clearRect(0,0,w,h);" ++
-            "zunkTextCtx.font=font;zunkTextCtx.textBaseline='top';" ++
+            "zunkTextCtx.font=font;zunkTextCtx.letterSpacing=arguments[10]+'px';zunkTextCtx.textBaseline='top';" ++
             "zunkTextCtx.fillStyle=`rgba(${Math.round(r*255)},${Math.round(g*255)},${Math.round(b*255)},${a})`;" ++
             "zunkTextCtx.fillText(text,0,0);" ++
             "const img=zunkTextCtx.getImageData(0,0,w,h);" ++
@@ -715,6 +695,29 @@ fn genFetch(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType)
             .js_body = allocator.dupe(u8, "return zunkFetchBuf ? zunkFetchBuf.length : 0;") catch return null,
             .confidence = .exact,
             .category = .fetch,
+        };
+    }
+    return null;
+}
+
+/// Imports of the host-services bridge (`src/gen/js/fx.js`, Zig side
+/// `src/web/fx.zig`). Each `zunk_fx_<name>` forwards to `zunkFx.<name>`.
+pub const fx_methods = [_][]const u8{
+    "pump",            "http",        "download", "open_file",
+    "storage_get",     "storage_set", "clock",    "query_param",
+    "clipboard_write",
+};
+
+fn genFx(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
+    _ = sig;
+    for (fx_methods) |name| {
+        if (!std.mem.eql(u8, method, name)) continue;
+        return .{
+            .js_body = std.fmt.allocPrint(allocator, "return zunkFx.{s}(...arguments);", .{name}) catch return null,
+            .needs_memory_view = true,
+            .confidence = .exact,
+            .category = .fx,
+            .description = "Host services bridge (src/gen/js/fx.js)",
         };
     }
     return null;
@@ -1003,4 +1006,49 @@ test "prefix match webgpu create_buffer" {
     try std.testing.expect(res.category == .webgpu);
     try std.testing.expect(res.confidence == .exact);
     try std.testing.expect(res.needs_handles);
+}
+
+test "zunk_fx_ imports resolve to the host-services bridge, unknown ones do not" {
+    const res = (try prefixMatch(std.testing.allocator, "zunk_fx_open_file", null)).?;
+    defer std.testing.allocator.free(res.js_body);
+    try std.testing.expect(res.category == .fx);
+    try std.testing.expect(res.confidence == .exact);
+    try std.testing.expectEqualStrings("return zunkFx.open_file(...arguments);", res.js_body);
+    try std.testing.expect((try prefixMatch(std.testing.allocator, "zunk_fx_nope", null)) == null);
+}
+
+test "every fx import has a method in fx.js, and every method is listed" {
+    const js = @embedFile("js/fx.js");
+    for (fx_methods) |name| {
+        const decl = try std.fmt.allocPrint(std.testing.allocator, "function {s}(", .{name});
+        defer std.testing.allocator.free(decl);
+        try std.testing.expect(std.mem.find(u8, js, decl) != null);
+    }
+    const ret = std.mem.find(u8, js, "return { pump").?;
+    const line = js[ret..std.mem.findScalarPos(u8, js, ret, '\n').?];
+    var listed: usize = 0;
+    for (fx_methods) |name| {
+        if (std.mem.find(u8, line, name) != null) listed += 1;
+    }
+    try std.testing.expectEqual(fx_methods.len, listed);
+}
+
+test "every zunk_gpu_* extern in web/gpu.zig resolves exactly" {
+    const src = @embedFile("../web/gpu.zig");
+    const decl = "extern \"env\" fn zunk_gpu_";
+    var seen: usize = 0;
+    var it = std.mem.tokenizeScalar(u8, src, '\n');
+    while (it.next()) |line| {
+        if (!std.mem.startsWith(u8, line, decl)) continue;
+        const name_end = std.mem.indexOfScalar(u8, line, '(').?;
+        const name = line["extern \"env\" fn ".len..name_end];
+        const res = (try prefixMatch(std.testing.allocator, name, null)) orelse {
+            std.debug.print("unresolved import: {s}\n", .{name});
+            return error.UnresolvedGpuImport;
+        };
+        defer std.testing.allocator.free(res.js_body);
+        try std.testing.expect(res.confidence == .exact);
+        seen += 1;
+    }
+    try std.testing.expect(seen > 40);
 }

@@ -54,7 +54,7 @@ src/
     audio.zig               Web Audio API wrappers
     asset.zig               Generic URL-based asset loading
     app.zig                 Lifecycle utilities, logging, clipboard
-    gpu.zig                 WebGPU bindings (33 extern fns, typed handles)
+    gpu.zig                 WebGPU bindings (50 extern fns, typed handles, descriptors)
     ui.zig                  HTML overlay UI (panels, sliders, checkboxes, buttons)
     imgui.zig               Immediate-mode canvas UI (comptime generic backend)
     render_backend.zig      Render backend abstraction (Canvas2DBackend)
@@ -146,15 +146,23 @@ The most complex web module. Uses a **polling model** via shared memory -- JS wr
 **InputState** -- A packed struct at a known memory location:
 ```
 Keys:       3 x 32-byte bitmaps (down, pressed, released) -- 256 keys
-Mouse:      x, y, dx, dy (f32); wheel (f32); 3 button bitmaps (down, pressed, released)
+Mouse:      x, y, dx, dy (f32); wheel, wheel_x (f32); 3 button bitmaps (down, pressed, released); modifier bits
 Touch:      10 slots, each with id, x, y, active flag
 Gamepad:    connected flag, 4 axes (f32), 32-bit button mask
 Viewport:   width, height (u32), device pixel ratio (f32)
 Focus:      bool
-Typed:      length + 32-byte UTF-8 char buffer (printable characters only)
+Typed:      length + 64-byte UTF-8 buffer (whole code points; no control codes, no Ctrl/Cmd chords)
 ```
 
 **Coordinate space.** All pointer and viewport fields (`mouse_x/y`, `mouse_dx/dy`, `touch_x/y`, `viewport_width/height`) are in **CSS pixels**. This matches the `w, h` arguments passed to the optional `resize(w, h)` export. The canvas backing store is sized to `w * device_pixel_ratio` by `h * device_pixel_ratio` on HiDPI displays for crisp rendering; consumers who need the device-pixel size (e.g. for a WebGPU viewport) should multiply by `device_pixel_ratio` themselves.
+
+**Pointer and keyboard behavior** (generated JS, `emitInputSystem`):
+- Pointer coordinates are canvas-relative CSS pixels. `mousedown` is canvas-scoped; `mousemove`/`mouseup` are window-scoped, so a drag that leaves the canvas still reports its release. Window `blur` releases every held key and button.
+- Buttons are left/middle/right (`isMouseButtonPressed/Released` give per-frame edges; a press and release inside one frame both register).
+- Wheel deltas are CSS pixels, positive = down/right; line- and page-mode wheels are scaled to pixels. `wheel_x` carries horizontal scroll. A trackpad pinch arrives as a wheel event with `getModifiers().ctrl` set.
+- `getModifiers()` reports shift/ctrl/alt/meta of the most recent event.
+- Typed text is UTF-8 (`TextEncoder`), never a truncated UTF-16 unit.
+- The canvas calls `preventDefault` on wheel, `contextmenu`, middle-click, and (outside form fields) Tab, Space, arrows, Page/Home/End, Backspace/Delete, printable keys and Ctrl/Cmd+A/C/X/V/Y/Z. Other browser shortcuts (F5, F12, Ctrl+R ...) are left alone.
 
 **Key** -- Enum with 120+ named constants mapping to JavaScript key codes.
 
@@ -178,20 +186,23 @@ The asset handle stores a raw `ArrayBuffer` in the JS handle table. Type-specifi
 
 ### web/gpu.zig -- WebGPU Bindings
 
-Comprehensive WebGPU API wrappers with 33 extern function declarations covering the full render and compute pipeline:
+Typed WebGPU wrappers over 50 extern functions, covering the compute pipeline and a full 3D render path. The lifecycle rules (handles, frame encoder, async operations) are documented once, at the top of `src/web/gpu.zig`; the summary:
 
-- **Resources**: `createBuffer`, `createShaderModule`, `createTexture`, `createTextureView`, `createHDRTexture`, `createTextureFromAsset`
-- **Buffer ops**: `bufferWrite`, `bufferWriteTyped`, `bufferDestroy`, `copyBufferInEncoder`
-- **Bind groups**: `createBindGroupLayout`, `createBindGroup`, `createPipelineLayout`
-- **Pipelines**: `createComputePipeline`, `createRenderPipeline`, `createRenderPipelineHDR`
-- **Command encoding**: `createCommandEncoder`, `encoderFinish`, `queueSubmit`
-- **Compute pass**: `beginComputePass`, `computePassSetPipeline`, `computePassSetBindGroup`, `computePassDispatch`, `computePassEnd`
-- **Render pass**: `beginRenderPass`, `beginRenderPassHDR`, `renderPassSetPipeline`, `renderPassSetBindGroup`, `renderPassDraw`, `renderPassEnd`
-- **Present**: `present` (flushes encoder to screen)
+- **Handles.** Every GPU object is a `bind.Handle` (index into a JS table; 0 = none, 1 = device). Passes, encoders and command buffers are single-use and released by the call that consumes them. The *frame encoder* and the *canvas view* are created lazily per frame and released by `present`.
+- **Frame model.** `beginRenderPassDesc` records into the frame encoder; `present` finishes and submits it. Offscreen passes live in the same encoder, so a later pass can sample an earlier one's result. `frameEncoder()` exposes it for copies and compute.
+- **Async = polling.** WASM cannot await. `createTextureFromAsset` is polled with `isTextureReady`; buffer readback is a named state machine `MapState` (`idle -> pending -> mapped | failed -> idle`) driven by `bufferMapRead` / `bufferMapState` / `bufferReadMapped` / `bufferUnmap`. `Readback` wraps texture -> CPU copies (256-byte row alignment included).
 
-Type-safe handles: `Device`, `Buffer`, `ShaderModule`, `Texture`, `TextureView`, `BindGroupLayout`, `BindGroup`, `PipelineLayout`, `ComputePipeline`, `RenderPipeline`, `CommandEncoder`, `ComputePassEncoder`, `RenderPassEncoder`, `CommandBuffer` -- all `bind.Handle` underneath.
+3D surface:
 
-ABI-matched structs `BindGroupLayoutEntry` (40 bytes) and `BindGroupEntry` (32 bytes) are read directly by JS via DataView for zero-copy bind group creation.
+- **Resources**: `createBuffer` (any usage incl. `INDEX`), `createTexture`, `createTextureMultisampled`, `createDepthTexture`, `createRenderTarget` (RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC), `createTextureView`, `createTextureFromAsset`, samplers, bind groups.
+- **Pipelines**: `createRenderPipelineDesc(RenderPipelineDescriptor)` with colour format (default: canvas format, see `canvasFormat`, `canvasSize`), `BlendMode` (none / alpha / premultiplied / additive), `PrimitiveTopology` (triangle-list, line-list, ...), `CullMode`, `FrontFace`, `DepthState` (format, write, compare, bias, slope bias) and `sample_count`. `createRenderPipeline` / `createRenderPipelineHDR` remain as thin wrappers.
+- **Passes**: `beginRenderPassDesc(RenderPassDescriptor)`: colour view (null = canvas), MSAA resolve view, depth view, load/store ops, clear values. `renderPassSetIndexBuffer` + `renderPassDrawIndexed`, `renderPassDraw` with `instance_count`/`first_instance` (vertex buffers with `step_mode = .instance` advance per instance), viewport and scissor.
+- **Readback**: `copyTextureToBuffer`, `Readback`.
+- **Stencil** is intentionally not exposed (no stencil formats or ops).
+
+Compute and the original API are unchanged: `createComputePipeline`, `computePass*`, `createCommandEncoder`, `encoderFinish`, `queueSubmit`, `beginRenderPass(r,g,b,a)`, `beginRenderPassHDR`.
+
+ABI-matched structs read directly by JS via DataView: `BindGroupLayoutEntry` (40 bytes), `BindGroupEntry` (32), `VertexBufferLayout` / `VertexAttribute` (16), `RawPipelineDesc` (76), `RawPassDesc` (48). `js_resolve.zig` has a test that every `zunk_gpu_*` extern in `gpu.zig` resolves.
 
 ### web/ui.zig -- HTML UI Overlay
 
@@ -272,7 +283,7 @@ Resolution {
 | `zunk_audio_*` | genAudio | Web Audio (init, load, play, decode_asset) |
 | `zunk_asset_*` | genAsset | Generic asset loading (fetch, is_ready, get_len, get_ptr) |
 | `zunk_app_*` | genApp | Lifecycle (set_title, cursor, log, perf) |
-| `zunk_gpu_*` | -- | WebGPU (stubs, pending implementation) |
+| `zunk_gpu_*` | genWebGPU | WebGPU (one-line bodies; multi-line logic in the generated `zunkGPU` helper) |
 | `canvas_*`, `input_*`, etc. | (same) | Generic prefixes (no `zunk_` prefix) |
 
 Each generator function produces the exact JS needed for that operation, setting the appropriate feature requirement flags.
@@ -417,6 +428,54 @@ pub export fn __zunk_file_dialog_result(
 zunk's JS bridge writes the chosen filename into the shared `__zunk_string_buf_ptr` region before calling the export, so consumers must copy the bytes out during the callback (the buffer is reused for any subsequent JS->Zig string transfer). Browsers without the File System Access API (Firefox / Safari today) take the cancel path -- a `console.warn` lands once per request and `__zunk_file_dialog_result` is invoked with `path_len == 0`. Ship a `bridge.js` override (e.g. `<input type="file">` fallback) when broader support is needed.
 
 **Gesture-gating.** The request must originate inside the same synchronous turn as the user input. Polling-style dispatch (input.poll() -> frame() -> request) works because the browser keeps "transient activation" for a few seconds after a click/keydown, and the frame callback fires well within that window. Calling the request from a setTimeout or async tick will throw a `SecurityError` inside the picker.
+
+## Host services (`web.fx`)
+
+`zunk.web.fx` (Zig, `src/web/fx.zig`) + `src/gen/js/fx.js` (JS) cover the asynchronous browser work an application needs: `fetch`, file downloads, a file picker, `localStorage`, the wall clock, URL query parameters, clipboard writes, and pasted / dropped images and files. It generalizes the request / poll idea above: **one** completion channel instead of one callback per feature. The JS is emitted only when the wasm imports a `zunk_fx_*` function.
+
+### Requests (wasm -> JS)
+
+Plain imports that return at once. JS copies whatever it needs out of wasm memory *before returning* (wasm memory may move or be reused afterwards), so callers may free or reuse their buffers immediately.
+
+| Zig | Import | Result |
+|---|---|---|
+| `fx.http(id, method, url, headers, body, timeout_ms)` | `zunk_fx_http` | `http`: status (0 = transport failure), body, error text |
+| `fx.download(id, name, mime, bytes)` | `zunk_fx_download` | `downloaded` ok flag (Blob + temporary `<a download>`) |
+| `fx.openFile(id, accept)` | `zunk_fx_open_file` | `file_opened` name/mime/bytes, or `file_cancelled` |
+| `fx.storageGet(id, key)` / `fx.storageSet(key, value)` | `zunk_fx_storage_*` | `storage_value`; set has no result, an empty value deletes |
+| `fx.clock(id)` | `zunk_fx_clock` | `clock`: unix ms + UTC offset minutes |
+| `fx.queryParam(id, name)` | `zunk_fx_query_param` | `query_value` |
+| `fx.clipboardWrite(text)` | `zunk_fx_clipboard_write` | none (`navigator.clipboard.writeText`, `execCommand('copy')` fallback) |
+
+HTTP: request body up to ~8 MB and response bodies up to 32 MB are supported; a failed request (network error, CORS, timeout via `AbortController`, oversized response) completes with status 0 and a readable message. `encodeHeaders` turns a slice of `{name, value}` into the header text and drops headers that could smuggle another.
+
+### Completions (JS -> wasm)
+
+Every result, solicited or not, is a *completion record* queued in JS. Wasm collects them with `fx.poll(out: []Completion)`, once per frame:
+
+1. `poll` frees the previous batch, then calls the import `zunk_fx_pump(max)`.
+2. For each queued record (at most `max`) JS calls the exported `zunk_fx_alloc(len)` (allocates in wasm memory; re-read `memory.buffer` afterwards, the allocation may have grown it), copies the record in, and calls the exported `zunk_fx_deliver(ptr, len)`.
+3. `poll` decodes the records into `Completion { kind, id, a, b, c, d, blobs[4] }` whose slices **alias the delivered memory and stay valid until the next `poll`**.
+
+JS calls into wasm only inside `zunk_fx_pump`, never from a promise callback or event handler, so wasm state is never touched mid-frame, and a frame loop that polls every frame leaks nothing. Records beyond `max` stay queued in JS (an unsolicited backlog is capped at 64, oldest dropped).
+
+Record layout (little endian; the table of per-kind fields is in `fx.js` and the `Completion` doc comment): `u32 kind, u32 id` (0 = unsolicited), `i32 a b c d`, `u32 len0..len3`, then the four blobs back to back.
+
+### Handle and id conventions
+
+Requests that expect an answer take a caller-chosen **id >= 1**, echoed in the completion. There are no JS handles: a request is identified only by its id, and unsolicited completions (paste, drop) carry id 0. The caller owns uniqueness.
+
+### The file picker and user activation
+
+Browsers open a picker only from a user activation. The effect that asks for a file is usually issued a frame after the click; `navigator.userActivation.isActive` is checked, and if the activation is still live the picker opens at once. If not, the request is **armed**: the picker opens on the next pointer press or key press. A new request cancels an armed or open one. The hidden `<input type="file" id="zunk-fx-file">` fires `cancel` when the user dismisses it.
+
+### Paste and drop
+
+`paste` and `drop` listeners on `document` turn clipboard / dropped data into `dropped` and `pasted_text` completions. Images are decoded with `createImageBitmap`, scaled so the long side is at most 1568 px, and re-encoded as PNG (a JPEG that needed no scaling keeps its bytes); a 64 px long-side RGBA thumbnail is produced alongside. Other files arrive as `kind = file` (up to 32 MB), dropped text as `kind = text`. Ctrl/Cmd+V is no longer swallowed by the input system, and is reported to wasm *together with* its paste event (or after 80 ms without one), so a host that reads the clipboard when it sees the key finds the data in the same frame.
+
+## Web fonts
+
+`zunk build --font <family> <weight> <path>` (repeatable; `InstallAppOptions.fonts` in `build.zig`) copies the file to `dist/fonts/<basename>`, adds an `@font-face` rule to the page, and makes the generated JS `await document.fonts.load(...)` for every face before `init()` runs, so the first text measurement already sees the real font. A font that fails to load logs a warning and startup continues. `zunk deploy` copies fonts the same way (names are not hashed). `gpu.measureText` / `gpu.rasterizeText` take the CSS font string (`"500 13px \"IBM Plex Mono\", monospace"`) plus a `letter_spacing` in px, applied through canvas `letterSpacing` (so weight and tracking are the caller's to compose).
 
 ## Per-Frame Allocation Pattern
 
