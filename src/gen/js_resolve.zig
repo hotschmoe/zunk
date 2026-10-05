@@ -1031,6 +1031,7 @@ test "every fx import has a method in fx.js, and every method is listed" {
         if (std.mem.find(u8, line, name) != null) listed += 1;
     }
     try std.testing.expectEqual(fx_methods.len, listed);
+}
 
 test "every zunk_gpu_* extern in web/gpu.zig resolves exactly" {
     const src = @embedFile("../web/gpu.zig");
