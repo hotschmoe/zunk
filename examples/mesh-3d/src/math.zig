@@ -62,10 +62,10 @@ pub fn lookAt(eye: Vec3, center: Vec3, up: Vec3) Mat4 {
     const s = normalize(cross(f, up));
     const u = cross(s, f);
     return .{
-        s[0],           u[0],           -f[0],         0,
-        s[1],           u[1],           -f[1],         0,
-        s[2],           u[2],           -f[2],         0,
-        -dot(s, eye),   -dot(u, eye),   dot(f, eye),   1,
+        s[0],         u[0],         -f[0],       0,
+        s[1],         u[1],         -f[1],       0,
+        s[2],         u[2],         -f[2],       0,
+        -dot(s, eye), -dot(u, eye), dot(f, eye), 1,
     };
 }
 
@@ -73,10 +73,10 @@ pub fn rotateY(t: f32) Mat4 {
     const c = @cos(t);
     const s = @sin(t);
     return .{
-        c,  0, -s, 0,
-        0,  1, 0,  0,
-        s,  0, c,  0,
-        0,  0, 0,  1,
+        c, 0, -s, 0,
+        0, 1, 0,  0,
+        s, 0, c,  0,
+        0, 0, 0,  1,
     };
 }
 
