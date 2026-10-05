@@ -548,13 +548,153 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
 }
 
 fn emitWebGPUState(w: *std.Io.Writer) !void {
+    // Multi-line GPU logic lives here, not in one-line `js_resolve.zig`
+    // snippets. The handle/async lifecycle is documented at the top of
+    // src/web/gpu.zig; the binary layouts decoded below (`createPipeline`,
+    // `beginPass`, `vertexBuffers`) mirror `RawPipelineDesc`, `RawPassDesc`
+    // and `VertexBufferLayout` there. Enum tables are indexed by the Zig
+    // enums' integer values.
     try w.writeAll(
         \\// --- WebGPU state ---
-        \\let zunkGPUEncoder = null;
         \\let zunkGPUContext = null;
         \\let zunkGPUFormat = null;
         \\let zunkTextCanvas = null;
         \\let zunkTextCtx = null;
+        \\const zunkGPU = {
+        \\  textureFormats: ['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float','r8unorm'],
+        \\  vertexFormats: ['float32','float32x2','float32x3','float32x4','uint32','uint32x2','uint32x3','uint32x4','sint32','sint32x2','sint32x3','sint32x4'],
+        \\  stepModes: ['vertex','instance'],
+        \\  topologies: ['triangle-list','line-list','line-strip','triangle-strip','point-list'],
+        \\  cullModes: ['none','front','back'],
+        \\  frontFaces: ['ccw','cw'],
+        \\  compares: ['never','less','equal','less-equal','greater','not-equal','greater-equal','always'],
+        \\  loadOps: ['clear','load'],
+        \\  storeOps: ['store','discard'],
+        \\  noFormat: 0xFFFFFFFF,
+        \\  // Indexed by BlendMode. `null` = write the source colour unblended.
+        \\  blends: [
+        \\    null,
+        \\    { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } },
+        \\    { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } },
+        \\    { color: { srcFactor: 'src-alpha', dstFactor: 'one' }, alpha: { srcFactor: 'one', dstFactor: 'one' } },
+        \\  ],
+        \\
+        \\  // Frame-scoped objects: created on first use, released by present().
+        \\  _encoderH: 0,
+        \\  _canvasViewH: 0,
+        \\  encoder() {
+        \\    if (!this._encoderH) this._encoderH = H.store(H.get(1).createCommandEncoder());
+        \\    return this._encoderH;
+        \\  },
+        \\  canvasView() {
+        \\    if (!this._canvasViewH) this._canvasViewH = H.store(zunkGPUContext.getCurrentTexture().createView());
+        \\    return this._canvasViewH;
+        \\  },
+        \\  present() {
+        \\    if (this._encoderH) {
+        \\      const enc = H.get(this._encoderH);
+        \\      H.release(this._encoderH);
+        \\      this._encoderH = 0;
+        \\      H.get(1).queue.submit([enc.finish()]);
+        \\    }
+        \\    if (this._canvasViewH) { H.release(this._canvasViewH); this._canvasViewH = 0; }
+        \\  },
+        \\
+        \\  // RenderPassDescriptor (12 words). Handle 0 = canvas / none.
+        \\  beginPass(ptr) {
+        \\    const v = new DataView(memory.buffer, ptr, 48);
+        \\    const u = (i) => v.getUint32(i * 4, true);
+        \\    const f = (i) => v.getFloat32(i * 4, true);
+        \\    const color = {
+        \\      view: H.get(u(0) || this.canvasView()),
+        \\      clearValue: { r: f(8), g: f(9), b: f(10), a: f(11) },
+        \\      loadOp: this.loadOps[u(3)],
+        \\      storeOp: this.storeOps[u(4)],
+        \\    };
+        \\    if (u(1)) color.resolveTarget = H.get(u(1));
+        \\    const desc = { colorAttachments: [color] };
+        \\    if (u(2)) {
+        \\      desc.depthStencilAttachment = {
+        \\        view: H.get(u(2)),
+        \\        depthClearValue: f(7),
+        \\        depthLoadOp: this.loadOps[u(5)],
+        \\        depthStoreOp: this.storeOps[u(6)],
+        \\      };
+        \\    }
+        \\    return H.store(H.get(this.encoder()).beginRenderPass(desc));
+        \\  },
+        \\
+        \\  // VertexBufferLayout[] (16 B each) -> GPUVertexBufferLayout[].
+        \\  vertexBuffers(ptr, len) {
+        \\    const buffers = [];
+        \\    if (!len) return buffers;
+        \\    const lv = new DataView(memory.buffer, ptr, len * 16);
+        \\    for (let i = 0; i < len; i++) {
+        \\      const o = i * 16;
+        \\      const attrPtr = lv.getUint32(o + 8, true), attrLen = lv.getUint32(o + 12, true);
+        \\      const av = new DataView(memory.buffer, attrPtr, attrLen * 16);
+        \\      const attributes = [];
+        \\      for (let j = 0; j < attrLen; j++) {
+        \\        attributes.push({
+        \\          format: this.vertexFormats[av.getUint32(j * 16, true)],
+        \\          offset: av.getUint32(j * 16 + 4, true),
+        \\          shaderLocation: av.getUint32(j * 16 + 8, true),
+        \\        });
+        \\      }
+        \\      buffers.push({
+        \\        arrayStride: lv.getUint32(o, true),
+        \\        stepMode: this.stepModes[lv.getUint32(o + 4, true)],
+        \\        attributes,
+        \\      });
+        \\    }
+        \\    return buffers;
+        \\  },
+        \\
+        \\  // RenderPipelineDescriptor (19 words).
+        \\  createPipeline(ptr) {
+        \\    const v = new DataView(memory.buffer, ptr, 76);
+        \\    const u = (i) => v.getUint32(i * 4, true);
+        \\    const module = H.get(u(1));
+        \\    const target = { format: u(8) === this.noFormat ? zunkGPUFormat : this.textureFormats[u(8)] };
+        \\    const blend = this.blends[u(9)];
+        \\    if (blend) target.blend = blend;
+        \\    const desc = {
+        \\      layout: H.get(u(0)),
+        \\      vertex: { module, entryPoint: readStr(u(2), u(3)), buffers: this.vertexBuffers(u(6), u(7)) },
+        \\      fragment: { module, entryPoint: readStr(u(4), u(5)), targets: [target] },
+        \\      primitive: { topology: this.topologies[u(10)], cullMode: this.cullModes[u(11)], frontFace: this.frontFaces[u(12)] },
+        \\    };
+        \\    if (u(13) !== this.noFormat) {
+        \\      desc.depthStencil = {
+        \\        format: this.textureFormats[u(13)],
+        \\        depthWriteEnabled: !!u(14),
+        \\        depthCompare: this.compares[u(15)],
+        \\        depthBias: v.getInt32(16 * 4, true),
+        \\        depthBiasSlopeScale: v.getFloat32(17 * 4, true),
+        \\      };
+        \\    }
+        \\    if (u(18) > 1) desc.multisample = { count: u(18) };
+        \\    return H.store(H.get(1).createRenderPipeline(desc));
+        \\  },
+        \\
+        \\  // Buffer readback. maps: buffer handle -> MapState (see gpu.zig):
+        \\  //   absent/idle -> pending (mapRead) -> mapped | failed -> idle (unmap)
+        \\  maps: new Map(),
+        \\  mapRead(h) {
+        \\    this.maps.set(h, 1);
+        \\    H.get(h).mapAsync(GPUMapMode.READ).then(
+        \\      () => { if (this.maps.has(h)) this.maps.set(h, 2); },
+        \\      () => { if (this.maps.has(h)) this.maps.set(h, 3); });
+        \\  },
+        \\  mapState(h) { return this.maps.get(h) || 0; },
+        \\  readMapped(h, dstPtr, len) {
+        \\    new Uint8Array(memory.buffer, dstPtr, len).set(new Uint8Array(H.get(h).getMappedRange(0, len)));
+        \\  },
+        \\  unmap(h) {
+        \\    H.get(h).unmap();
+        \\    this.maps.delete(h);
+        \\  },
+        \\};
         \\
         \\
     );
@@ -1035,4 +1175,19 @@ test "suggestMatch no match" {
 test "generate compiles" {
     _ = wa.Analysis;
     _ = resolver.Resolution;
+}
+
+test "WebGPU state helper is balanced JS and knows instance step mode" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try emitWebGPUState(&aw.writer);
+    const js = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, js, "stepModes: ['vertex','instance']") != null);
+    var depth: i32 = 0;
+    for (js) |c| switch (c) {
+        '{', '(', '[' => depth += 1,
+        '}', ')', ']' => depth -= 1,
+        else => {},
+    };
+    try std.testing.expectEqual(@as(i32, 0), depth);
 }

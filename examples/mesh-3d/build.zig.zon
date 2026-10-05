@@ -1,0 +1,14 @@
+.{
+    .name = .mesh_3d,
+    .version = "0.0.0",
+    .fingerprint = 0xb68080bde40fea0e,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zunk = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
