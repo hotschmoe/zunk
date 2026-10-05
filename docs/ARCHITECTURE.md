@@ -146,15 +146,23 @@ The most complex web module. Uses a **polling model** via shared memory -- JS wr
 **InputState** -- A packed struct at a known memory location:
 ```
 Keys:       3 x 32-byte bitmaps (down, pressed, released) -- 256 keys
-Mouse:      x, y, dx, dy (f32); wheel (f32); 3 button bitmaps (down, pressed, released)
+Mouse:      x, y, dx, dy (f32); wheel, wheel_x (f32); 3 button bitmaps (down, pressed, released); modifier bits
 Touch:      10 slots, each with id, x, y, active flag
 Gamepad:    connected flag, 4 axes (f32), 32-bit button mask
 Viewport:   width, height (u32), device pixel ratio (f32)
 Focus:      bool
-Typed:      length + 32-byte UTF-8 char buffer (printable characters only)
+Typed:      length + 64-byte UTF-8 buffer (whole code points; no control codes, no Ctrl/Cmd chords)
 ```
 
 **Coordinate space.** All pointer and viewport fields (`mouse_x/y`, `mouse_dx/dy`, `touch_x/y`, `viewport_width/height`) are in **CSS pixels**. This matches the `w, h` arguments passed to the optional `resize(w, h)` export. The canvas backing store is sized to `w * device_pixel_ratio` by `h * device_pixel_ratio` on HiDPI displays for crisp rendering; consumers who need the device-pixel size (e.g. for a WebGPU viewport) should multiply by `device_pixel_ratio` themselves.
+
+**Pointer and keyboard behavior** (generated JS, `emitInputSystem`):
+- Pointer coordinates are canvas-relative CSS pixels. `mousedown` is canvas-scoped; `mousemove`/`mouseup` are window-scoped, so a drag that leaves the canvas still reports its release. Window `blur` releases every held key and button.
+- Buttons are left/middle/right (`isMouseButtonPressed/Released` give per-frame edges; a press and release inside one frame both register).
+- Wheel deltas are CSS pixels, positive = down/right; line- and page-mode wheels are scaled to pixels. `wheel_x` carries horizontal scroll. A trackpad pinch arrives as a wheel event with `getModifiers().ctrl` set.
+- `getModifiers()` reports shift/ctrl/alt/meta of the most recent event.
+- Typed text is UTF-8 (`TextEncoder`), never a truncated UTF-16 unit.
+- The canvas calls `preventDefault` on wheel, `contextmenu`, middle-click, and (outside form fields) Tab, Space, arrows, Page/Home/End, Backspace/Delete, printable keys and Ctrl/Cmd+A/C/X/V/Y/Z. Other browser shortcuts (F5, F12, Ctrl+R ...) are left alone.
 
 **Key** -- Enum with 120+ named constants mapping to JavaScript key codes.
 

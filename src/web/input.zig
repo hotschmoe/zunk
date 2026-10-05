@@ -9,7 +9,15 @@ extern "env" fn zunk_input_set_touch_callback(callback_id: u32) void;
 extern "env" fn zunk_input_lock_pointer(canvas_handle: i32) void;
 extern "env" fn zunk_input_unlock_pointer() void;
 
-/// Layout must match the generated JS input flush routine.
+/// Layout must match the generated JS input flush routine (`emitInputSystem`
+/// in `gen/js_gen.zig`).
+///
+/// Mouse wheel deltas are CSS pixels, positive = down / right (DOM
+/// `WheelEvent` convention; line/page-mode wheels are scaled to pixels). A
+/// trackpad pinch arrives as a wheel event with the Ctrl modifier set.
+/// `modifiers` is the shift/ctrl/alt/meta state of the most recent input
+/// event. `typed_chars` holds the UTF-8 encoding of typed text, whole code
+/// points only; Ctrl/Cmd chords are keys, not text.
 ///
 /// Coordinate space: all pointer/viewport fields (`mouse_x/y`, `mouse_dx/dy`,
 /// `touch_x/y`, `viewport_width/height`) are in **CSS pixels**. This matches
@@ -28,9 +36,11 @@ pub const InputState = extern struct {
     mouse_dx: f32 align(1),
     mouse_dy: f32 align(1),
     mouse_wheel: f32 align(1),
+    mouse_wheel_x: f32 align(1),
     mouse_buttons: u8 align(1),
     mouse_buttons_pressed: u8 align(1),
     mouse_buttons_released: u8 align(1),
+    modifiers: u8 align(1),
 
     touch_count: u8 align(1),
     touch_x: [10]f32 align(1),
@@ -47,7 +57,7 @@ pub const InputState = extern struct {
     has_focus: u8 align(1),
 
     typed_chars_len: u8 align(1),
-    typed_chars: [32]u8 align(1),
+    typed_chars: [64]u8 align(1),
 };
 
 var input_state: InputState = std.mem.zeroes(InputState);
@@ -173,9 +183,31 @@ pub const Mouse = struct {
     y: f32,
     dx: f32,
     dy: f32,
+    /// Vertical wheel pixels since the last poll (positive = down).
     wheel: f32,
+    /// Horizontal wheel pixels since the last poll (positive = right).
+    wheel_x: f32,
     buttons: MouseButtons,
 };
+
+/// Modifier keys held at the most recent input event.
+pub const Modifiers = struct {
+    shift: bool,
+    ctrl: bool,
+    alt: bool,
+    /// Cmd on macOS / Win key elsewhere.
+    meta: bool,
+};
+
+pub fn getModifiers() Modifiers {
+    const m = input_state.modifiers;
+    return .{
+        .shift = (m & 1) != 0,
+        .ctrl = (m & 2) != 0,
+        .alt = (m & 4) != 0,
+        .meta = (m & 8) != 0,
+    };
+}
 
 pub fn getMouse() Mouse {
     return .{
@@ -184,6 +216,7 @@ pub fn getMouse() Mouse {
         .dx = input_state.mouse_dx,
         .dy = input_state.mouse_dy,
         .wheel = input_state.mouse_wheel,
+        .wheel_x = input_state.mouse_wheel_x,
         .buttons = .{
             .left = (input_state.mouse_buttons & 1) != 0,
             .middle = (input_state.mouse_buttons & 2) != 0,
@@ -255,6 +288,8 @@ pub fn hasFocus() bool {
     return input_state.has_focus != 0;
 }
 
+/// UTF-8 bytes typed since the last poll (whole code points; no control
+/// codes, no Ctrl/Cmd chords).
 pub fn getTypedChars() []const u8 {
     return input_state.typed_chars[0..input_state.typed_chars_len];
 }
@@ -269,4 +304,30 @@ pub fn onMouseMove(cb: bind.CallbackFn) void {
 
 pub fn onTouch(cb: bind.CallbackFn) void {
     zunk_input_set_touch_callback(bind.registerCallback(cb));
+}
+
+test "InputState layout matches the generated JS flush" {
+    // keys (3 x 32) then mouse f32 x6, 4 bytes, touch, gamepad, viewport,
+    // focus, typed chars — the offsets `emitInputSystem` writes.
+    try std.testing.expectEqual(@as(usize, 96), @offsetOf(InputState, "mouse_x"));
+    try std.testing.expectEqual(@as(usize, 112), @offsetOf(InputState, "mouse_wheel"));
+    try std.testing.expectEqual(@as(usize, 116), @offsetOf(InputState, "mouse_wheel_x"));
+    try std.testing.expectEqual(@as(usize, 120), @offsetOf(InputState, "mouse_buttons"));
+    try std.testing.expectEqual(@as(usize, 123), @offsetOf(InputState, "modifiers"));
+    try std.testing.expectEqual(@as(usize, 124), @offsetOf(InputState, "touch_count"));
+    try std.testing.expectEqual(@as(usize, 125 + 120), @offsetOf(InputState, "gamepad_connected"));
+    try std.testing.expectEqual(@as(usize, 245 + 21), @offsetOf(InputState, "viewport_width"));
+    try std.testing.expectEqual(@as(usize, 266 + 13), @offsetOf(InputState, "typed_chars_len"));
+    try std.testing.expectEqual(@as(usize, 280), @offsetOf(InputState, "typed_chars"));
+    try std.testing.expectEqual(@as(usize, 280 + 64), @sizeOf(InputState));
+}
+
+test "getModifiers decodes the modifier bits" {
+    input_state.modifiers = 0b1010; // ctrl + meta
+    defer input_state.modifiers = 0;
+    const m = getModifiers();
+    try std.testing.expect(!m.shift);
+    try std.testing.expect(m.ctrl);
+    try std.testing.expect(!m.alt);
+    try std.testing.expect(m.meta);
 }

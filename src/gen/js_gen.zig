@@ -419,6 +419,8 @@ fn emitAudioState(w: *std.Io.Writer) !void {
 fn emitInputSystem(w: *std.Io.Writer) !void {
     try w.writeAll(
         \\// --- Input system (shared memory polling) ---
+        \\// Layout written by flush() must match web/input.zig `InputState`.
+        \\// Modifier bits: 1 shift, 2 ctrl, 4 alt, 8 meta. Button bits: 1 left, 2 middle, 4 right.
         \\const zunkInput = {
         \\  ptr: 0, len: 0,
         \\  keysDown: new Set(),
@@ -426,17 +428,72 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\  keysReleased: new Set(),
         \\  typedChars: [],
         \\  mouseX: 0, mouseY: 0, mouseDx: 0, mouseDy: 0,
-        \\  mouseWheel: 0, mouseButtons: 0, mouseButtonsPressed: 0, mouseButtonsReleased: 0,
+        \\  mouseWheel: 0, mouseWheelX: 0,
+        \\  mouseButtons: 0, mouseButtonsPressed: 0, mouseButtonsReleased: 0,
+        \\  modifiers: 0,
         \\  touches: [],
         \\  init(ptr, len) {
         \\    this.ptr = ptr; this.len = len;
-        \\    document.addEventListener('keydown', e => { this.keysDown.add(e.keyCode); this.keysPressed.add(e.keyCode); if(e.key.length===1&&e.key.charCodeAt(0)>=0x20&&e.key.charCodeAt(0)!==0x7f&&this.typedChars.length<32)this.typedChars.push(e.key.charCodeAt(0)); e.preventDefault(); });
-        \\    document.addEventListener('keyup', e => { this.keysDown.delete(e.keyCode); this.keysReleased.add(e.keyCode); });
         \\    const canvas = document.getElementById('app') || document.querySelector('canvas') || document;
-        \\    canvas.addEventListener('mousemove', e => { this.mouseDx+=e.movementX; this.mouseDy+=e.movementY; this.mouseX=e.offsetX??e.clientX; this.mouseY=e.offsetY??e.clientY; });
-        \\    canvas.addEventListener('mousedown', e => { const b=1<<e.button; this.mouseButtons|=b; this.mouseButtonsPressed|=b; });
-        \\    canvas.addEventListener('mouseup', e => { const b=1<<e.button; this.mouseButtons&=~b; this.mouseButtonsReleased|=b; });
-        \\    canvas.addEventListener('wheel', e => { this.mouseWheel += e.deltaY; e.preventDefault(); }, {passive:false});
+        \\    const encoder = new TextEncoder();
+        \\    const navKeys = new Set(['Tab', ' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Backspace', 'Delete']);
+        \\    const editable = t => !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+        \\    // Every event carries the live modifier state; track it from all of them so it is right even
+        \\    // for a pinch (ctrlKey + wheel with no physical Ctrl held).
+        \\    const syncMods = e => { this.modifiers = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0); };
+        \\    // Pointer coordinates are canvas-relative CSS pixels.
+        \\    const place = e => {
+        \\      const r = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { left: 0, top: 0 };
+        \\      this.mouseX = e.clientX - r.left; this.mouseY = e.clientY - r.top;
+        \\    };
+        \\    document.addEventListener('keydown', e => {
+        \\      syncMods(e);
+        \\      this.keysDown.add(e.keyCode); this.keysPressed.add(e.keyCode);
+        \\      const k = e.key;
+        \\      const chord = (e.ctrlKey || e.metaKey) && !e.getModifierState('AltGraph');
+        \\      const single = [...k].length === 1;
+        \\      const printable = single && k.codePointAt(0) >= 0x20 && k.codePointAt(0) !== 0x7f;
+        \\      // Typed text is the UTF-8 encoding of the whole code point (never a truncated UTF-16 unit).
+        \\      // Ctrl/Cmd chords are keys, not text.
+        \\      if (printable && !chord && !e.isComposing) {
+        \\        const bytes = encoder.encode(k);
+        \\        if (this.typedChars.length + bytes.length <= 64) for (const b of bytes) this.typedChars.push(b);
+        \\      }
+        \\      // Keep the page from scrolling / tabbing / quick-finding under the app, but leave browser
+        \\      // shortcuts (F5, F12, Ctrl+R, Ctrl+L ...) and real form fields alone.
+        \\      const wanted = navKeys.has(k) || (printable && !chord && !e.altKey) || (chord && single && 'acxvyz'.includes(k.toLowerCase()));
+        \\      if (wanted && !editable(e.target)) e.preventDefault();
+        \\    });
+        \\    document.addEventListener('keyup', e => { syncMods(e); this.keysDown.delete(e.keyCode); this.keysReleased.add(e.keyCode); });
+        \\    // Losing focus swallows the matching keyup/mouseup events; release everything so nothing sticks.
+        \\    window.addEventListener('blur', () => {
+        \\      this.keysDown.clear();
+        \\      this.mouseButtonsReleased |= this.mouseButtons; this.mouseButtons = 0;
+        \\      this.modifiers = 0;
+        \\    });
+        \\    // Move/up are window-level so a drag that leaves the canvas still reports its release.
+        \\    window.addEventListener('mousemove', e => { syncMods(e); this.mouseDx += e.movementX; this.mouseDy += e.movementY; place(e); });
+        \\    canvas.addEventListener('mousedown', e => {
+        \\      syncMods(e); place(e);
+        \\      if (e.button > 2) return;
+        \\      const b = 1 << e.button; this.mouseButtons |= b; this.mouseButtonsPressed |= b;
+        \\      if (e.button === 1) e.preventDefault(); // middle-click autoscroll
+        \\    });
+        \\    window.addEventListener('mouseup', e => {
+        \\      syncMods(e); place(e);
+        \\      const b = 1 << e.button;
+        \\      if (e.button > 2 || !(this.mouseButtons & b)) return;
+        \\      this.mouseButtons &= ~b; this.mouseButtonsReleased |= b;
+        \\    });
+        \\    canvas.addEventListener('contextmenu', e => e.preventDefault());
+        \\    // Wheel deltas are CSS pixels, positive = down / right. Line- and page-mode wheels
+        \\    // (Firefox) are scaled to pixels; a trackpad pinch arrives as ctrlKey + wheel.
+        \\    canvas.addEventListener('wheel', e => {
+        \\      syncMods(e); place(e);
+        \\      const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? window.innerHeight : 1;
+        \\      this.mouseWheel += e.deltaY * scale; this.mouseWheelX += e.deltaX * scale;
+        \\      e.preventDefault();
+        \\    }, {passive:false});
         \\    canvas.addEventListener('touchstart', e => { this.touches = Array.from(e.touches); e.preventDefault(); }, {passive:false});
         \\    canvas.addEventListener('touchmove', e => { this.touches = Array.from(e.touches); }, {passive:false});
         \\    canvas.addEventListener('touchend', e => { this.touches = Array.from(e.touches); }, {passive:false});
@@ -457,9 +514,11 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    view.setFloat32(off, this.mouseDx, true); off += 4;
         \\    view.setFloat32(off, this.mouseDy, true); off += 4;
         \\    view.setFloat32(off, this.mouseWheel, true); off += 4;
+        \\    view.setFloat32(off, this.mouseWheelX, true); off += 4;
         \\    view.setUint8(off, this.mouseButtons); off += 1;
         \\    view.setUint8(off, this.mouseButtonsPressed); off += 1;
         \\    view.setUint8(off, this.mouseButtonsReleased); off += 1;
+        \\    view.setUint8(off, this.modifiers); off += 1;
         \\    // Touch
         \\    view.setUint8(off, Math.min(this.touches.length, 10)); off += 1;
         \\    for (let i = 0; i < 10; i++) { view.setFloat32(off + i*4, this.touches[i]?.clientX || 0, true); } off += 40;
@@ -471,13 +530,13 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    view.setUint32(off, window.innerHeight, true); off += 4;
         \\    view.setFloat32(off, window.devicePixelRatio, true); off += 4;
         \\    view.setUint8(off, document.hasFocus() ? 1 : 0); off += 1;
-        \\    // Typed chars buffer (1 byte count + up to 32 bytes)
-        \\    const tc = Math.min(this.typedChars.length, 32);
+        \\    // Typed text: UTF-8 bytes (1 byte count + up to 64 bytes; whole code points only)
+        \\    const tc = Math.min(this.typedChars.length, 64);
         \\    view.setUint8(off, tc); off += 1;
         \\    for (let i = 0; i < tc; i++) { view.setUint8(off + i, this.typedChars[i]); }
         \\    // Clear per-frame state
         \\    this.keysPressed.clear(); this.keysReleased.clear();
-        \\    this.mouseDx = 0; this.mouseDy = 0; this.mouseWheel = 0;
+        \\    this.mouseDx = 0; this.mouseDy = 0; this.mouseWheel = 0; this.mouseWheelX = 0;
         \\    this.mouseButtonsPressed = 0; this.mouseButtonsReleased = 0;
         \\    this.typedChars.length = 0;
         \\  },
@@ -922,6 +981,18 @@ fn suggestMatch(name: []const u8) ?[]const u8 {
     }
 
     return best;
+}
+
+test "input system: UTF-8 text, wheel x, modifiers, contextmenu and blur are wired" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try emitInputSystem(&aw.writer);
+    const js = aw.written();
+    for ([_][]const u8{ "TextEncoder", "mouseWheelX", "this.modifiers", "contextmenu", "'blur'", "deltaMode" }) |needle| {
+        try std.testing.expect(std.mem.indexOf(u8, js, needle) != null);
+    }
+    // The old truncating form must be gone.
+    try std.testing.expect(std.mem.indexOf(u8, js, "charCodeAt") == null);
 }
 
 test "editDistance identical" {
