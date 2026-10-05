@@ -53,6 +53,9 @@ pub const Category = enum {
     // Storage
     storage,
     clipboard,
+    // Async host services (src/gen/js/fx.js): fetch, downloads, file picker,
+    // storage, clock, query params, paste/drop
+    fx,
     // UI
     ui,
     // Accessibility (hidden DOM mirror for screen readers)
@@ -233,6 +236,7 @@ pub const prefix_rules = [_]PrefixRule{
     .{ .prefix = "zunk_app_", .category = .lifecycle, .generator = &genApp },
     .{ .prefix = "zunk_asset_", .category = .asset, .generator = &genAsset },
     .{ .prefix = "zunk_fetch", .category = .fetch, .generator = &genFetch },
+    .{ .prefix = "zunk_fx_", .category = .fx, .generator = &genFx },
     .{ .prefix = "zunk_gpu_", .category = .webgpu, .generator = &genWebGPU },
     .{ .prefix = "zunk_ui_", .category = .ui, .generator = &genUI },
     .{ .prefix = "canvas_", .category = .canvas2d, .generator = &genCanvas },
@@ -720,6 +724,29 @@ fn genFetch(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType)
     return null;
 }
 
+/// Imports of the host-services bridge (`src/gen/js/fx.js`, Zig side
+/// `src/web/fx.zig`). Each `zunk_fx_<name>` forwards to `zunkFx.<name>`.
+pub const fx_methods = [_][]const u8{
+    "pump",            "http",        "download", "open_file",
+    "storage_get",     "storage_set", "clock",    "query_param",
+    "clipboard_write",
+};
+
+fn genFx(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
+    _ = sig;
+    for (fx_methods) |name| {
+        if (!std.mem.eql(u8, method, name)) continue;
+        return .{
+            .js_body = std.fmt.allocPrint(allocator, "return zunkFx.{s}(...arguments);", .{name}) catch return null,
+            .needs_memory_view = true,
+            .confidence = .exact,
+            .category = .fx,
+            .description = "Host services bridge (src/gen/js/fx.js)",
+        };
+    }
+    return null;
+}
+
 fn genWebSocket(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
     _ = sig;
     const js_map = .{
@@ -1003,4 +1030,29 @@ test "prefix match webgpu create_buffer" {
     try std.testing.expect(res.category == .webgpu);
     try std.testing.expect(res.confidence == .exact);
     try std.testing.expect(res.needs_handles);
+}
+
+test "zunk_fx_ imports resolve to the host-services bridge, unknown ones do not" {
+    const res = (try prefixMatch(std.testing.allocator, "zunk_fx_open_file", null)).?;
+    defer std.testing.allocator.free(res.js_body);
+    try std.testing.expect(res.category == .fx);
+    try std.testing.expect(res.confidence == .exact);
+    try std.testing.expectEqualStrings("return zunkFx.open_file(...arguments);", res.js_body);
+    try std.testing.expect((try prefixMatch(std.testing.allocator, "zunk_fx_nope", null)) == null);
+}
+
+test "every fx import has a method in fx.js, and every method is listed" {
+    const js = @embedFile("js/fx.js");
+    for (fx_methods) |name| {
+        const decl = try std.fmt.allocPrint(std.testing.allocator, "function {s}(", .{name});
+        defer std.testing.allocator.free(decl);
+        try std.testing.expect(std.mem.find(u8, js, decl) != null);
+    }
+    const ret = std.mem.find(u8, js, "return { pump").?;
+    const line = js[ret..std.mem.findScalarPos(u8, js, ret, '\n').?];
+    var listed: usize = 0;
+    for (fx_methods) |name| {
+        if (std.mem.find(u8, line, name) != null) listed += 1;
+    }
+    try std.testing.expectEqual(fx_methods.len, listed);
 }
