@@ -556,6 +556,7 @@ extern "env" fn zunk_gpu_measure_text(
     font_ptr: [*]const u8,
     font_len: u32,
     out_ptr: *TextMetrics,
+    letter_spacing: f32,
 ) void;
 extern "env" fn zunk_gpu_rasterize_text(
     text_ptr: [*]const u8,
@@ -568,6 +569,7 @@ extern "env" fn zunk_gpu_rasterize_text(
     a: f32,
     width: u32,
     height: u32,
+    letter_spacing: f32,
 ) i32;
 
 pub fn getDevice() Device {
@@ -922,8 +924,9 @@ pub fn isTextureReady(handle: Texture) bool {
 }
 
 /// Measure a text run in pixels using the browser's canvas 2D text shaper.
-/// `font` is a CSS font string, e.g. "14px monospace".
-pub fn measureText(text: []const u8, font: []const u8) TextMetrics {
+/// `font` is a CSS font string, e.g. "500 14px monospace"; `letter_spacing` is
+/// the extra advance after every glyph in px (canvas `letterSpacing`).
+pub fn measureText(text: []const u8, font: []const u8, letter_spacing: f32) TextMetrics {
     var out: TextMetrics = .{ .width = 0, .height = 0 };
     zunk_gpu_measure_text(
         text.ptr,
@@ -931,6 +934,7 @@ pub fn measureText(text: []const u8, font: []const u8) TextMetrics {
         font.ptr,
         @intCast(font.len),
         &out,
+        letter_spacing,
     );
     return out;
 }
@@ -938,10 +942,12 @@ pub fn measureText(text: []const u8, font: []const u8) TextMetrics {
 /// Rasterize `text` into a freshly allocated rgba8unorm `Texture` of the given
 /// size, using the browser's canvas 2D text shaper. `color` is the foreground
 /// fill (0..1 RGBA). The texture has `TEXTURE_BINDING | COPY_DST` usage and is
-/// ready to bind in the same frame.
+/// ready to bind in the same frame. `font` and `letter_spacing` as in
+/// `measureText`.
 pub fn rasterizeText(
     text: []const u8,
     font: []const u8,
+    letter_spacing: f32,
     color: [4]f32,
     width: u32,
     height: u32,
@@ -957,6 +963,7 @@ pub fn rasterizeText(
         color[3],
         width,
         height,
+        letter_spacing,
     ));
 }
 
