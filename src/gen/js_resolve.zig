@@ -470,6 +470,8 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         // Handles / frame-scoped objects (see zunkGPU in js_gen.zig)
         .{ "release", "H.release(arguments[0]);", false, false, true },
         .{ "canvas_format", "return zunkGPU.textureFormats.indexOf(zunkGPUFormat);", false, false, true },
+        .{ "canvas_size", "const c=zunkGPUContext.canvas,dv=new DataView(memory.buffer,arguments[0],8);" ++
+            "dv.setUint32(0,c.width,true);dv.setUint32(4,c.height,true);", false, true, true },
         .{ "canvas_view", "return zunkGPU.canvasView();", false, false, true },
         .{ "frame_encoder", "return zunkGPU.encoder();", false, false, true },
 

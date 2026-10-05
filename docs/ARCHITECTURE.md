@@ -54,7 +54,7 @@ src/
     audio.zig               Web Audio API wrappers
     asset.zig               Generic URL-based asset loading
     app.zig                 Lifecycle utilities, logging, clipboard
-    gpu.zig                 WebGPU bindings (49 extern fns, typed handles, descriptors)
+    gpu.zig                 WebGPU bindings (50 extern fns, typed handles, descriptors)
     ui.zig                  HTML overlay UI (panels, sliders, checkboxes, buttons)
     imgui.zig               Immediate-mode canvas UI (comptime generic backend)
     render_backend.zig      Render backend abstraction (Canvas2DBackend)
@@ -178,7 +178,7 @@ The asset handle stores a raw `ArrayBuffer` in the JS handle table. Type-specifi
 
 ### web/gpu.zig -- WebGPU Bindings
 
-Typed WebGPU wrappers over 49 extern functions, covering the compute pipeline and a full 3D render path. The lifecycle rules (handles, frame encoder, async operations) are documented once, at the top of `src/web/gpu.zig`; the summary:
+Typed WebGPU wrappers over 50 extern functions, covering the compute pipeline and a full 3D render path. The lifecycle rules (handles, frame encoder, async operations) are documented once, at the top of `src/web/gpu.zig`; the summary:
 
 - **Handles.** Every GPU object is a `bind.Handle` (index into a JS table; 0 = none, 1 = device). Passes, encoders and command buffers are single-use and released by the call that consumes them. The *frame encoder* and the *canvas view* are created lazily per frame and released by `present`.
 - **Frame model.** `beginRenderPassDesc` records into the frame encoder; `present` finishes and submits it. Offscreen passes live in the same encoder, so a later pass can sample an earlier one's result. `frameEncoder()` exposes it for copies and compute.
@@ -187,7 +187,7 @@ Typed WebGPU wrappers over 49 extern functions, covering the compute pipeline an
 3D surface:
 
 - **Resources**: `createBuffer` (any usage incl. `INDEX`), `createTexture`, `createTextureMultisampled`, `createDepthTexture`, `createRenderTarget` (RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC), `createTextureView`, `createTextureFromAsset`, samplers, bind groups.
-- **Pipelines**: `createRenderPipelineDesc(RenderPipelineDescriptor)` with colour format (default: canvas format, see `canvasFormat`), `BlendMode` (none / alpha / premultiplied / additive), `PrimitiveTopology` (triangle-list, line-list, ...), `CullMode`, `FrontFace`, `DepthState` (format, write, compare, bias, slope bias) and `sample_count`. `createRenderPipeline` / `createRenderPipelineHDR` remain as thin wrappers.
+- **Pipelines**: `createRenderPipelineDesc(RenderPipelineDescriptor)` with colour format (default: canvas format, see `canvasFormat`, `canvasSize`), `BlendMode` (none / alpha / premultiplied / additive), `PrimitiveTopology` (triangle-list, line-list, ...), `CullMode`, `FrontFace`, `DepthState` (format, write, compare, bias, slope bias) and `sample_count`. `createRenderPipeline` / `createRenderPipelineHDR` remain as thin wrappers.
 - **Passes**: `beginRenderPassDesc(RenderPassDescriptor)`: colour view (null = canvas), MSAA resolve view, depth view, load/store ops, clear values. `renderPassSetIndexBuffer` + `renderPassDrawIndexed`, `renderPassDraw` with `instance_count`/`first_instance` (vertex buffers with `step_mode = .instance` advance per instance), viewport and scissor.
 - **Readback**: `copyTextureToBuffer`, `Readback`.
 - **Stencil** is intentionally not exposed (no stencil formats or ops).

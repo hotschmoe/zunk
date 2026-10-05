@@ -505,6 +505,7 @@ pub const MapState = enum(u32) {
 extern "env" fn zunk_gpu_release(handle: i32) void;
 extern "env" fn zunk_gpu_canvas_format() u32;
 extern "env" fn zunk_gpu_canvas_view() i32;
+extern "env" fn zunk_gpu_canvas_size(out: *[2]u32) void;
 extern "env" fn zunk_gpu_frame_encoder() i32;
 extern "env" fn zunk_gpu_create_buffer(size: u32, usage: u32) i32;
 extern "env" fn zunk_gpu_buffer_write(buffer_h: i32, offset: u32, data_ptr: [*]const u8, data_len: u32) void;
@@ -583,6 +584,15 @@ pub fn release(handle: bind.Handle) void {
 /// that resolve into the canvas must use this format.
 pub fn canvasFormat() TextureFormat {
     return @enumFromInt(zunk_gpu_canvas_format());
+}
+
+/// Pixel size of the canvas's swap-chain texture (CSS size x devicePixelRatio).
+/// Multisampled / depth targets that resolve into or accompany the canvas
+/// must match it exactly.
+pub fn canvasSize() struct { w: u32, h: u32 } {
+    var wh: [2]u32 = .{ 0, 0 };
+    zunk_gpu_canvas_size(&wh);
+    return .{ .w = wh[0], .h = wh[1] };
 }
 
 /// View of the canvas's current texture. Created on first call in a frame and
