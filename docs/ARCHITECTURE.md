@@ -475,7 +475,7 @@ Browsers open a picker only from a user activation. The effect that asks for a f
 
 ## Web fonts
 
-`zunk build --font <family> <weight> <path>` (repeatable; `InstallAppOptions.fonts` in `build.zig`) copies the file to `dist/fonts/<basename>`, adds an `@font-face` rule to the page, and makes the generated JS `await document.fonts.load(...)` for every face before `init()` runs, so the first text measurement already sees the real font. A font that fails to load logs a warning and startup continues. `zunk deploy` copies fonts the same way (names are not hashed).
+`zunk build --font <family> <weight> <path>` (repeatable; `InstallAppOptions.fonts` in `build.zig`) copies the file to `dist/fonts/<basename>`, adds an `@font-face` rule to the page, and makes the generated JS `await document.fonts.load(...)` for every face before `init()` runs, so the first text measurement already sees the real font. A font that fails to load logs a warning and startup continues. `zunk deploy` copies fonts the same way (names are not hashed). `gpu.measureText` / `gpu.rasterizeText` take the CSS font string (`"500 13px \"IBM Plex Mono\", monospace"`) plus a `letter_spacing` in px, applied through canvas `letterSpacing` (so weight and tracking are the caller's to compose).
 
 ## Per-Frame Allocation Pattern
 
