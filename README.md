@@ -245,7 +245,8 @@ zunk/
 │   ├── imgui-demo/               # Canvas-based immediate-mode UI
 │   ├── audio-demo-1-assets-bundled/  # Web Audio with bundled assets
 │   ├── audio-demo-2-assets-cached/   # Web Audio with cached asset loading
-│   └── particle-life/            # WebGPU compute + render pipeline
+│   ├── particle-life/            # WebGPU compute + render pipeline
+│   └── mesh-3d/                  # Depth-tested lit mesh, MSAA, instanced edges, offscreen inset + readback
 ├── docs/
 │   ├── ARCHITECTURE.md           # Deep dive on design decisions
 │   └── ROADMAP.md                # Development roadmap

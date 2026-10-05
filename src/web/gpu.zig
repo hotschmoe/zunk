@@ -1,3 +1,38 @@
+//! WebGPU bindings. Every `extern "env" fn zunk_gpu_*` below is resolved to a
+//! JS snippet by `gen/js_resolve.zig` (`genWebGPU`); multi-line logic lives in
+//! the `zunkGPU` helper object emitted by `gen/js_gen.zig` (`emitWebGPUState`).
+//!
+//! ## Handle lifecycle
+//!
+//! Every GPU object crosses the boundary as a `bind.Handle`: an index into a JS
+//! table. Handle 0 is "none"; handle 1 is the GPUDevice.
+//!   - Created by a `create*` call, valid until its `destroy*` / `release` call.
+//!   - Passes and command buffers are single-use: `renderPassEnd`,
+//!     `computePassEnd`, `encoderFinish` and `queueSubmit` release the handle
+//!     they consume, so per-frame use never grows the table.
+//!   - The *frame encoder* (`frameEncoder`) and the *canvas view*
+//!     (`canvasView`) are created lazily on first use in a frame and released
+//!     by `present`. Do not keep either across `present`.
+//!
+//! ## Frame model
+//!
+//! `beginRenderPass*` records into the frame encoder; `present` finishes and
+//! submits it. Compute work can use its own `createCommandEncoder` +
+//! `queueSubmit`, or share the frame encoder. Offscreen passes
+//! (`RenderPassDescriptor.color = view`) are recorded in the same encoder, so
+//! a later pass in the same frame can sample their result.
+//!
+//! ## Async operations (poll, never block)
+//!
+//! The wasm side cannot await, so each async operation is a handle plus a
+//! state that is polled from `frame`:
+//!   - `createTextureFromAsset`: `isTextureReady(tex)` flips false -> true.
+//!   - Buffer readback: `MapState` is idle -> pending (`bufferMapRead`) ->
+//!     mapped (`bufferMapState`) -> idle (`bufferUnmap`); a failed map reports
+//!     `.failed` until unmapped. `bufferMapRead` must come AFTER the `present`
+//!     (or `queueSubmit`) that submitted the copy; see `Readback`, which wraps
+//!     the whole sequence for texture readback.
+
 const std = @import("std");
 const bind = @import("../bind/bind.zig");
 
@@ -40,6 +75,9 @@ pub const TextureUsage = struct {
     pub const RENDER_ATTACHMENT: u32 = 0x10;
 };
 
+/// Index order is shared with the `textureFormats` table in js_gen.zig. Stencil
+/// formats are deliberately absent: nothing here sets stencil ops, and a
+/// stencil-bearing depth attachment would need them.
 pub const TextureFormat = enum(u32) {
     rgba16float = 0,
     rgba32float = 1,
@@ -262,12 +300,223 @@ pub const BindGroupEntry = extern struct {
     }
 };
 
+pub const IndexFormat = enum(u32) {
+    uint16 = 0,
+    uint32 = 1,
+};
+
+pub const BlendMode = enum(u32) {
+    /// Overwrite the target (opaque geometry).
+    none = 0,
+    /// Straight alpha: src*a + dst*(1-a).
+    alpha = 1,
+    /// Premultiplied alpha: src + dst*(1-a).
+    premultiplied = 2,
+    /// src*a + dst. Particles, glows.
+    additive = 3,
+};
+
+pub const PrimitiveTopology = enum(u32) {
+    triangle_list = 0,
+    line_list = 1,
+    line_strip = 2,
+    triangle_strip = 3,
+    point_list = 4,
+};
+
+pub const CullMode = enum(u32) {
+    none = 0,
+    front = 1,
+    back = 2,
+};
+
+pub const FrontFace = enum(u32) {
+    ccw = 0,
+    cw = 1,
+};
+
+pub const CompareFunction = enum(u32) {
+    never = 0,
+    less = 1,
+    equal = 2,
+    less_equal = 3,
+    greater = 4,
+    not_equal = 5,
+    greater_equal = 6,
+    always = 7,
+};
+
+pub const LoadOp = enum(u32) {
+    clear = 0,
+    load = 1,
+};
+
+pub const StoreOp = enum(u32) {
+    store = 0,
+    discard = 1,
+};
+
+/// `Handle` 0 is "none" everywhere in this file.
+const none_handle: u32 = 0;
+/// Sentinel for "no format" in `RawPipelineDesc` (depth disabled / canvas colour).
+const no_format: u32 = 0xFFFF_FFFF;
+
+fn rawHandle(h: ?bind.Handle) u32 {
+    return if (h) |x| @bitCast(x.toInt()) else none_handle;
+}
+
+/// A wasm32 linear-memory address as the u32 JS reads. Truncation is the
+/// identity on wasm32; it only matters so host-side tests can lower
+/// descriptors without a 64-bit pointer panicking.
+fn ptr32(p: anytype) u32 {
+    return @truncate(@intFromPtr(p));
+}
+
+pub const DepthState = struct {
+    format: TextureFormat = .depth32float,
+    write_enabled: bool = true,
+    compare: CompareFunction = .less,
+    /// Constant + slope-scaled depth bias; lets coplanar lines win against
+    /// the faces they outline without touching the shader.
+    bias: i32 = 0,
+    bias_slope_scale: f32 = 0,
+};
+
+/// Everything a render pipeline needs. Defaults are "draw alpha-blended
+/// triangles into the canvas, no depth, no MSAA", which is what the plain
+/// `createRenderPipeline` does.
+pub const RenderPipelineDescriptor = struct {
+    layout: PipelineLayout,
+    shader: ShaderModule,
+    vertex_entry: []const u8,
+    fragment_entry: []const u8,
+    vertex_buffers: []const VertexBufferLayout = &.{},
+    /// Colour target format; null = the canvas's preferred format (`canvasFormat`).
+    color_format: ?TextureFormat = null,
+    blend: BlendMode = .alpha,
+    topology: PrimitiveTopology = .triangle_list,
+    cull_mode: CullMode = .none,
+    front_face: FrontFace = .ccw,
+    /// null = no depth attachment is allowed in passes using this pipeline.
+    depth: ?DepthState = null,
+    /// Must equal the sample count of every attachment it renders into.
+    sample_count: u32 = 1,
+
+    pub fn raw(self: RenderPipelineDescriptor) RawPipelineDesc {
+        const d = self.depth;
+        return .{
+            .layout = rawHandle(self.layout),
+            .shader = rawHandle(self.shader),
+            .vertex_entry_ptr = ptr32(self.vertex_entry.ptr),
+            .vertex_entry_len = @intCast(self.vertex_entry.len),
+            .fragment_entry_ptr = ptr32(self.fragment_entry.ptr),
+            .fragment_entry_len = @intCast(self.fragment_entry.len),
+            .vertex_buffers_ptr = ptr32(self.vertex_buffers.ptr),
+            .vertex_buffers_len = @intCast(self.vertex_buffers.len),
+            .color_format = if (self.color_format) |f| @intFromEnum(f) else no_format,
+            .blend = @intFromEnum(self.blend),
+            .topology = @intFromEnum(self.topology),
+            .cull_mode = @intFromEnum(self.cull_mode),
+            .front_face = @intFromEnum(self.front_face),
+            .depth_format = if (d) |x| @intFromEnum(x.format) else no_format,
+            .depth_write = if (d) |x| @intFromBool(x.write_enabled) else 0,
+            .depth_compare = if (d) |x| @intFromEnum(x.compare) else @intFromEnum(CompareFunction.always),
+            .depth_bias = if (d) |x| x.bias else 0,
+            .depth_bias_slope = if (d) |x| x.bias_slope_scale else 0,
+            .sample_count = self.sample_count,
+        };
+    }
+};
+
+/// 19 little-endian words, field order == `zunkGPU.createPipeline` in
+/// js_gen.zig. Keep the two in lock-step.
+pub const RawPipelineDesc = extern struct {
+    layout: u32,
+    shader: u32,
+    vertex_entry_ptr: u32,
+    vertex_entry_len: u32,
+    fragment_entry_ptr: u32,
+    fragment_entry_len: u32,
+    vertex_buffers_ptr: u32,
+    vertex_buffers_len: u32,
+    color_format: u32,
+    blend: u32,
+    topology: u32,
+    cull_mode: u32,
+    front_face: u32,
+    depth_format: u32,
+    depth_write: u32,
+    depth_compare: u32,
+    depth_bias: i32,
+    depth_bias_slope: f32,
+    sample_count: u32,
+};
+
+/// One colour attachment (+ optional MSAA resolve, + optional depth).
+pub const RenderPassDescriptor = struct {
+    /// Colour target; null = the canvas's current texture (`canvasView`).
+    color: ?TextureView = null,
+    /// Single-sample view the MSAA `color` resolves into at pass end.
+    resolve: ?TextureView = null,
+    clear: [4]f32 = .{ 0, 0, 0, 1 },
+    color_load: LoadOp = .clear,
+    color_store: StoreOp = .store,
+    depth: ?TextureView = null,
+    depth_clear: f32 = 1.0,
+    depth_load: LoadOp = .clear,
+    depth_store: StoreOp = .store,
+
+    pub fn raw(self: RenderPassDescriptor) RawPassDesc {
+        return .{
+            .color = rawHandle(self.color),
+            .resolve = rawHandle(self.resolve),
+            .depth = rawHandle(self.depth),
+            .color_load = @intFromEnum(self.color_load),
+            .color_store = @intFromEnum(self.color_store),
+            .depth_load = @intFromEnum(self.depth_load),
+            .depth_store = @intFromEnum(self.depth_store),
+            .depth_clear = self.depth_clear,
+            .clear = self.clear,
+        };
+    }
+};
+
+/// 12 little-endian words, field order == `zunkGPU.beginPass` in js_gen.zig.
+pub const RawPassDesc = extern struct {
+    color: u32,
+    resolve: u32,
+    depth: u32,
+    color_load: u32,
+    color_store: u32,
+    depth_load: u32,
+    depth_store: u32,
+    depth_clear: f32,
+    clear: [4]f32,
+};
+
+/// State of the (single) pending map on a buffer; see the module doc.
+pub const MapState = enum(u32) {
+    idle = 0,
+    pending = 1,
+    mapped = 2,
+    failed = 3,
+};
+
+extern "env" fn zunk_gpu_release(handle: i32) void;
+extern "env" fn zunk_gpu_canvas_format() u32;
+extern "env" fn zunk_gpu_canvas_view() i32;
+extern "env" fn zunk_gpu_frame_encoder() i32;
 extern "env" fn zunk_gpu_create_buffer(size: u32, usage: u32) i32;
 extern "env" fn zunk_gpu_buffer_write(buffer_h: i32, offset: u32, data_ptr: [*]const u8, data_len: u32) void;
 extern "env" fn zunk_gpu_buffer_destroy(buffer_h: i32) void;
+extern "env" fn zunk_gpu_buffer_map_read(buffer_h: i32) void;
+extern "env" fn zunk_gpu_buffer_map_state(buffer_h: i32) u32;
+extern "env" fn zunk_gpu_buffer_read_mapped(buffer_h: i32, dst_ptr: [*]u8, len: u32) void;
+extern "env" fn zunk_gpu_buffer_unmap(buffer_h: i32) void;
 extern "env" fn zunk_gpu_copy_buffer_in_encoder(encoder_h: i32, src: i32, src_off: u32, dst: i32, dst_off: u32, size: u32) void;
+extern "env" fn zunk_gpu_copy_texture_to_buffer(encoder_h: i32, texture_h: i32, buffer_h: i32, bytes_per_row: u32, width: u32, height: u32) void;
 extern "env" fn zunk_gpu_create_shader_module(source_ptr: [*]const u8, source_len: u32) i32;
-extern "env" fn zunk_gpu_create_texture(width: u32, height: u32, format: u32, usage: u32) i32;
+extern "env" fn zunk_gpu_create_texture(width: u32, height: u32, format: u32, usage: u32, sample_count: u32) i32;
 extern "env" fn zunk_gpu_create_texture_view(texture_h: i32) i32;
 extern "env" fn zunk_gpu_destroy_texture(texture_h: i32) void;
 extern "env" fn zunk_gpu_write_texture(texture_h: i32, data_ptr: [*]const u8, data_len: u32, bytes_per_row: u32, width: u32, height: u32) void;
@@ -277,8 +526,7 @@ extern "env" fn zunk_gpu_create_bind_group_layout(entries_ptr: [*]const u8, entr
 extern "env" fn zunk_gpu_create_bind_group(layout_h: i32, entries_ptr: [*]const u8, entries_len: u32) i32;
 extern "env" fn zunk_gpu_create_pipeline_layout(layouts_ptr: [*]const u8, layouts_len: u32) i32;
 extern "env" fn zunk_gpu_create_compute_pipeline(layout_h: i32, shader_h: i32, entry_ptr: [*]const u8, entry_len: u32) i32;
-extern "env" fn zunk_gpu_create_render_pipeline(layout_h: i32, shader_h: i32, vert_ptr: [*]const u8, vert_len: u32, frag_ptr: [*]const u8, frag_len: u32, vbuf_layouts_ptr: [*]const u8, vbuf_layouts_len: u32) i32;
-extern "env" fn zunk_gpu_create_render_pipeline_hdr(layout_h: i32, shader_h: i32, vert_ptr: [*]const u8, vert_len: u32, frag_ptr: [*]const u8, frag_len: u32, format: u32, blending: u32, vbuf_layouts_ptr: [*]const u8, vbuf_layouts_len: u32) i32;
+extern "env" fn zunk_gpu_create_render_pipeline(desc_ptr: *const RawPipelineDesc) i32;
 extern "env" fn zunk_gpu_create_command_encoder() i32;
 extern "env" fn zunk_gpu_begin_compute_pass(encoder_h: i32) i32;
 extern "env" fn zunk_gpu_compute_pass_set_pipeline(pass_h: i32, pipeline_h: i32) void;
@@ -288,12 +536,15 @@ extern "env" fn zunk_gpu_compute_pass_dispatch(pass_h: i32, x: u32, y: u32, z: u
 extern "env" fn zunk_gpu_compute_pass_end(pass_h: i32) void;
 extern "env" fn zunk_gpu_encoder_finish(encoder_h: i32) i32;
 extern "env" fn zunk_gpu_queue_submit(cmd_buffer_h: i32) void;
-extern "env" fn zunk_gpu_begin_render_pass(r: f32, g: f32, b: f32, a: f32) i32;
-extern "env" fn zunk_gpu_begin_render_pass_hdr(texture_view_h: i32, r: f32, g: f32, b: f32, a: f32) i32;
+extern "env" fn zunk_gpu_begin_render_pass(desc_ptr: *const RawPassDesc) i32;
 extern "env" fn zunk_gpu_render_pass_set_pipeline(pass_h: i32, pipeline_h: i32) void;
 extern "env" fn zunk_gpu_render_pass_set_bind_group(pass_h: i32, index: u32, group_h: i32) void;
 extern "env" fn zunk_gpu_render_pass_set_vertex_buffer(pass_h: i32, slot: u32, buffer_h: i32, offset_lo: u32, offset_hi: u32, size_lo: u32, size_hi: u32) void;
+extern "env" fn zunk_gpu_render_pass_set_index_buffer(pass_h: i32, buffer_h: i32, format: u32, offset_lo: u32, offset_hi: u32, size_lo: u32, size_hi: u32) void;
+extern "env" fn zunk_gpu_render_pass_set_viewport(pass_h: i32, x: f32, y: f32, w: f32, h: f32, min_depth: f32, max_depth: f32) void;
+extern "env" fn zunk_gpu_render_pass_set_scissor_rect(pass_h: i32, x: u32, y: u32, w: u32, h: u32) void;
 extern "env" fn zunk_gpu_render_pass_draw(pass_h: i32, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void;
+extern "env" fn zunk_gpu_render_pass_draw_indexed(pass_h: i32, index_count: u32, instance_count: u32, first_index: u32, base_vertex: i32, first_instance: u32) void;
 extern "env" fn zunk_gpu_render_pass_end(pass_h: i32) void;
 extern "env" fn zunk_gpu_present() void;
 extern "env" fn zunk_gpu_create_texture_from_asset(asset_h: i32) i32;
@@ -322,6 +573,32 @@ pub fn getDevice() Device {
     return bind.Handle.fromInt(1);
 }
 
+/// Drop the JS-side reference to any handle. Only needed for objects without
+/// a dedicated `destroy*` (views, bind groups, pipelines, layouts).
+pub fn release(handle: bind.Handle) void {
+    zunk_gpu_release(handle.toInt());
+}
+
+/// The swap-chain format the canvas was configured with. MSAA colour targets
+/// that resolve into the canvas must use this format.
+pub fn canvasFormat() TextureFormat {
+    return @enumFromInt(zunk_gpu_canvas_format());
+}
+
+/// View of the canvas's current texture. Created on first call in a frame and
+/// released by `present`; do not keep it across frames.
+pub fn canvasView() TextureView {
+    return bind.Handle.fromInt(zunk_gpu_canvas_view());
+}
+
+/// The encoder `beginRenderPass*` records into, created on first use in a
+/// frame and submitted by `present`. Use it for `copyTextureToBuffer`,
+/// `copyBufferInEncoder` or `beginComputePass` work that must be ordered
+/// with the frame's render passes.
+pub fn frameEncoder() CommandEncoder {
+    return bind.Handle.fromInt(zunk_gpu_frame_encoder());
+}
+
 pub fn createBuffer(size: u32, usage: u32) Buffer {
     return bind.Handle.fromInt(zunk_gpu_create_buffer(size, usage));
 }
@@ -346,6 +623,26 @@ pub fn bufferDestroy(buf: Buffer) void {
     zunk_gpu_buffer_destroy(buf.toInt());
 }
 
+/// Start mapping `buf` (MAP_READ usage) for reading. Poll `bufferMapState`;
+/// call only after the work that fills the buffer has been submitted.
+pub fn bufferMapRead(buf: Buffer) void {
+    zunk_gpu_buffer_map_read(buf.toInt());
+}
+
+pub fn bufferMapState(buf: Buffer) MapState {
+    return @enumFromInt(zunk_gpu_buffer_map_state(buf.toInt()));
+}
+
+/// Copy `dst.len` bytes of a `.mapped` buffer into wasm memory.
+pub fn bufferReadMapped(buf: Buffer, dst: []u8) void {
+    zunk_gpu_buffer_read_mapped(buf.toInt(), dst.ptr, @intCast(dst.len));
+}
+
+/// End a map (successful or failed) and return the buffer to `.idle`.
+pub fn bufferUnmap(buf: Buffer) void {
+    zunk_gpu_buffer_unmap(buf.toInt());
+}
+
 pub fn copyBufferInEncoder(encoder: CommandEncoder, src: Buffer, src_off: u32, dst: Buffer, dst_off: u32, size: u32) void {
     zunk_gpu_copy_buffer_in_encoder(encoder.toInt(), src.toInt(), src_off, dst.toInt(), dst_off, size);
 }
@@ -355,7 +652,25 @@ pub fn createShaderModule(source: []const u8) ShaderModule {
 }
 
 pub fn createTexture(w: u32, h: u32, fmt: TextureFormat, usage: u32) Texture {
-    return bind.Handle.fromInt(zunk_gpu_create_texture(w, h, @intFromEnum(fmt), usage));
+    return createTextureMultisampled(w, h, fmt, usage, 1);
+}
+
+/// `sample_count` 1 or 4. A multisampled texture can only be a render
+/// attachment (`RENDER_ATTACHMENT`); resolve it into a single-sample texture
+/// to sample or read it.
+pub fn createTextureMultisampled(w: u32, h: u32, fmt: TextureFormat, usage: u32, sample_count: u32) Texture {
+    return bind.Handle.fromInt(zunk_gpu_create_texture(w, h, @intFromEnum(fmt), usage, sample_count));
+}
+
+/// A depth buffer matching a colour target's size and sample count.
+pub fn createDepthTexture(w: u32, h: u32, fmt: TextureFormat, sample_count: u32) Texture {
+    std.debug.assert(fmt == .depth24plus or fmt == .depth32float);
+    return createTextureMultisampled(w, h, fmt, TextureUsage.RENDER_ATTACHMENT, sample_count);
+}
+
+/// A colour texture that can be rendered into and then sampled / copied out.
+pub fn createRenderTarget(w: u32, h: u32, fmt: TextureFormat) Texture {
+    return createTexture(w, h, fmt, TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_SRC);
 }
 
 pub fn createTextureView(tex: Texture) TextureView {
@@ -428,6 +743,12 @@ pub fn createComputePipeline(layout: PipelineLayout, shader: ShaderModule, entry
     ));
 }
 
+pub fn createRenderPipelineDesc(desc: RenderPipelineDescriptor) RenderPipeline {
+    const raw = desc.raw();
+    return bind.Handle.fromInt(zunk_gpu_create_render_pipeline(&raw));
+}
+
+/// Alpha-blended triangle list into the canvas, no depth.
 pub fn createRenderPipeline(
     layout: PipelineLayout,
     shader: ShaderModule,
@@ -435,18 +756,16 @@ pub fn createRenderPipeline(
     fragment_entry: []const u8,
     vertex_buffers: []const VertexBufferLayout,
 ) RenderPipeline {
-    return bind.Handle.fromInt(zunk_gpu_create_render_pipeline(
-        layout.toInt(),
-        shader.toInt(),
-        vertex_entry.ptr,
-        @intCast(vertex_entry.len),
-        fragment_entry.ptr,
-        @intCast(fragment_entry.len),
-        @ptrCast(vertex_buffers.ptr),
-        @intCast(vertex_buffers.len),
-    ));
+    return createRenderPipelineDesc(.{
+        .layout = layout,
+        .shader = shader,
+        .vertex_entry = vertex_entry,
+        .fragment_entry = fragment_entry,
+        .vertex_buffers = vertex_buffers,
+    });
 }
 
+/// Triangle list into an offscreen `format` target; additive or no blending.
 pub fn createRenderPipelineHDR(
     layout: PipelineLayout,
     shader: ShaderModule,
@@ -456,18 +775,15 @@ pub fn createRenderPipelineHDR(
     blending: bool,
     vertex_buffers: []const VertexBufferLayout,
 ) RenderPipeline {
-    return bind.Handle.fromInt(zunk_gpu_create_render_pipeline_hdr(
-        layout.toInt(),
-        shader.toInt(),
-        vertex_entry.ptr,
-        @intCast(vertex_entry.len),
-        fragment_entry.ptr,
-        @intCast(fragment_entry.len),
-        @intFromEnum(format),
-        @intFromBool(blending),
-        @ptrCast(vertex_buffers.ptr),
-        @intCast(vertex_buffers.len),
-    ));
+    return createRenderPipelineDesc(.{
+        .layout = layout,
+        .shader = shader,
+        .vertex_entry = vertex_entry,
+        .fragment_entry = fragment_entry,
+        .vertex_buffers = vertex_buffers,
+        .color_format = format,
+        .blend = if (blending) .additive else .none,
+    });
 }
 
 pub fn createCommandEncoder() CommandEncoder {
@@ -506,12 +822,19 @@ pub fn queueSubmit(cmd: CommandBuffer) void {
     zunk_gpu_queue_submit(cmd.toInt());
 }
 
-pub fn beginRenderPass(r: f32, g: f32, b: f32, a: f32) RenderPassEncoder {
-    return bind.Handle.fromInt(zunk_gpu_begin_render_pass(r, g, b, a));
+pub fn beginRenderPassDesc(desc: RenderPassDescriptor) RenderPassEncoder {
+    const raw = desc.raw();
+    return bind.Handle.fromInt(zunk_gpu_begin_render_pass(&raw));
 }
 
+/// Clear the canvas to a colour and begin drawing into it.
+pub fn beginRenderPass(r: f32, g: f32, b: f32, a: f32) RenderPassEncoder {
+    return beginRenderPassDesc(.{ .clear = .{ r, g, b, a } });
+}
+
+/// Clear an offscreen view to a colour and begin drawing into it.
 pub fn beginRenderPassHDR(view: TextureView, r: f32, g: f32, b: f32, a: f32) RenderPassEncoder {
-    return bind.Handle.fromInt(zunk_gpu_begin_render_pass_hdr(view.toInt(), r, g, b, a));
+    return beginRenderPassDesc(.{ .color = view, .clear = .{ r, g, b, a } });
 }
 
 pub fn renderPassSetPipeline(pass: RenderPassEncoder, pip: RenderPipeline) void {
@@ -534,14 +857,48 @@ pub fn renderPassSetVertexBuffer(pass: RenderPassEncoder, slot: u32, buffer: Buf
     );
 }
 
+pub fn renderPassSetIndexBuffer(pass: RenderPassEncoder, buffer: Buffer, format: IndexFormat, offset: u64, size: u64) void {
+    zunk_gpu_render_pass_set_index_buffer(
+        pass.toInt(),
+        buffer.toInt(),
+        @intFromEnum(format),
+        @truncate(offset),
+        @truncate(offset >> 32),
+        @truncate(size),
+        @truncate(size >> 32),
+    );
+}
+
+/// Viewport in target pixels; depth range is normally 0..1.
+pub fn renderPassSetViewport(pass: RenderPassEncoder, x: f32, y: f32, w: f32, h: f32, min_depth: f32, max_depth: f32) void {
+    zunk_gpu_render_pass_set_viewport(pass.toInt(), x, y, w, h, min_depth, max_depth);
+}
+
+pub fn renderPassSetScissorRect(pass: RenderPassEncoder, x: u32, y: u32, w: u32, h: u32) void {
+    zunk_gpu_render_pass_set_scissor_rect(pass.toInt(), x, y, w, h);
+}
+
+/// `instance_count > 1` repeats the draw; vertex buffers whose layout has
+/// `step_mode = .instance` advance once per instance instead of per vertex.
 pub fn renderPassDraw(pass: RenderPassEncoder, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void {
     zunk_gpu_render_pass_draw(pass.toInt(), vertex_count, instance_count, first_vertex, first_instance);
+}
+
+pub fn renderPassDrawIndexed(pass: RenderPassEncoder, index_count: u32, instance_count: u32, first_index: u32, base_vertex: i32, first_instance: u32) void {
+    zunk_gpu_render_pass_draw_indexed(pass.toInt(), index_count, instance_count, first_index, base_vertex, first_instance);
 }
 
 pub fn renderPassEnd(pass: RenderPassEncoder) void {
     zunk_gpu_render_pass_end(pass.toInt());
 }
 
+/// Record a copy of `texture` (COPY_SRC) into `buffer` (COPY_DST).
+/// `bytes_per_row` must be a multiple of 256 (`Readback` handles this).
+pub fn copyTextureToBuffer(encoder: CommandEncoder, texture: Texture, buffer: Buffer, bytes_per_row: u32, width: u32, height: u32) void {
+    zunk_gpu_copy_texture_to_buffer(encoder.toInt(), texture.toInt(), buffer.toInt(), bytes_per_row, width, height);
+}
+
+/// Finish and submit the frame encoder, then release the canvas view.
 pub fn present() void {
     zunk_gpu_present();
 }
@@ -591,6 +948,148 @@ pub fn rasterizeText(
         width,
         height,
     ));
+}
+
+/// Texture -> CPU readback, for headless pixel tests and screenshots of
+/// offscreen targets. Usage, in order, across frames:
+///
+///     var rb = Readback.init(w, h, 4);
+///     rb.encode(gpu.frameEncoder(), target);   // while recording the frame
+///     gpu.present();
+///     rb.request();                            // after the submit
+///     ...                                      // later frames: poll()
+///     if (rb.poll() == .mapped) rb.read(buf);  // buf.len >= rb.paddedSize()
+///
+/// Rows in `buf` are `bytes_per_row` apart (padded to 256), not `w * bpp`.
+pub const Readback = struct {
+    buffer: Buffer,
+    width: u32,
+    height: u32,
+    bytes_per_row: u32,
+
+    pub fn init(width: u32, height: u32, bytes_per_pixel: u32) Readback {
+        const bpr = alignRow(width * bytes_per_pixel);
+        return .{
+            .buffer = createBuffer(bpr * height, BufferUsage.MAP_READ | BufferUsage.COPY_DST),
+            .width = width,
+            .height = height,
+            .bytes_per_row = bpr,
+        };
+    }
+
+    pub fn deinit(self: Readback) void {
+        bufferDestroy(self.buffer);
+    }
+
+    pub fn paddedSize(self: Readback) u32 {
+        return self.bytes_per_row * self.height;
+    }
+
+    pub fn encode(self: Readback, encoder: CommandEncoder, texture: Texture) void {
+        copyTextureToBuffer(encoder, texture, self.buffer, self.bytes_per_row, self.width, self.height);
+    }
+
+    pub fn request(self: Readback) void {
+        bufferMapRead(self.buffer);
+    }
+
+    pub fn poll(self: Readback) MapState {
+        return bufferMapState(self.buffer);
+    }
+
+    /// Copy out and unmap; the Readback can be reused for another capture.
+    pub fn read(self: Readback, dst: []u8) void {
+        bufferReadMapped(self.buffer, dst[0..self.paddedSize()]);
+        bufferUnmap(self.buffer);
+    }
+
+    /// RGBA/BGRA pixel at (x, y) of a buffer filled by `read`.
+    pub fn pixel(self: Readback, data: []const u8, x: u32, y: u32) [4]u8 {
+        const o = y * self.bytes_per_row + x * 4;
+        return data[o..][0..4].*;
+    }
+};
+
+/// WebGPU requires `bytesPerRow` of texture copies to be a multiple of 256.
+pub fn alignRow(bytes: u32) u32 {
+    return (bytes + 255) & ~@as(u32, 255);
+}
+
+test "struct layout RawPipelineDesc" {
+    try std.testing.expectEqual(@as(usize, 19 * 4), @sizeOf(RawPipelineDesc));
+}
+
+test "struct layout RawPassDesc" {
+    try std.testing.expectEqual(@as(usize, 12 * 4), @sizeOf(RawPassDesc));
+    try std.testing.expectEqual(@as(usize, 32), @offsetOf(RawPassDesc, "clear"));
+}
+
+test "alignRow pads to 256" {
+    try std.testing.expectEqual(@as(u32, 256), alignRow(4));
+    try std.testing.expectEqual(@as(u32, 256), alignRow(256));
+    try std.testing.expectEqual(@as(u32, 512), alignRow(257));
+    try std.testing.expectEqual(@as(u32, 1024), alignRow(1000));
+}
+
+test "RenderPassDescriptor lowers null views to handle 0" {
+    const r = (RenderPassDescriptor{}).raw();
+    try std.testing.expectEqual(@as(u32, 0), r.color);
+    try std.testing.expectEqual(@as(u32, 0), r.depth);
+    try std.testing.expectEqual(@as(f32, 1.0), r.depth_clear);
+
+    const d = (RenderPassDescriptor{
+        .color = bind.Handle.fromInt(7),
+        .resolve = bind.Handle.fromInt(8),
+        .depth = bind.Handle.fromInt(9),
+        .color_store = .discard,
+        .depth_load = .load,
+    }).raw();
+    try std.testing.expectEqual(@as(u32, 7), d.color);
+    try std.testing.expectEqual(@as(u32, 8), d.resolve);
+    try std.testing.expectEqual(@as(u32, 9), d.depth);
+    try std.testing.expectEqual(@as(u32, 1), d.color_store);
+    try std.testing.expectEqual(@as(u32, 1), d.depth_load);
+}
+
+test "RenderPipelineDescriptor lowering: instanced vertex layout, depth, msaa" {
+    const attrs = [_]VertexAttribute{.{ .format = .float32x3, .offset = 0, .shader_location = 0 }};
+    const layouts = [_]VertexBufferLayout{
+        VertexBufferLayout.fromSlice(12, .vertex, &attrs),
+        VertexBufferLayout.fromSlice(12, .instance, &attrs),
+    };
+    try std.testing.expectEqual(VertexStepMode.instance, layouts[1].step_mode);
+
+    const raw = (RenderPipelineDescriptor{
+        .layout = bind.Handle.fromInt(2),
+        .shader = bind.Handle.fromInt(3),
+        .vertex_entry = "vs",
+        .fragment_entry = "fs",
+        .vertex_buffers = &layouts,
+        .color_format = .rgba8unorm,
+        .blend = .none,
+        .topology = .line_list,
+        .cull_mode = .back,
+        .depth = .{ .format = .depth24plus, .compare = .less_equal, .write_enabled = false, .bias = -2 },
+        .sample_count = 4,
+    }).raw();
+    try std.testing.expectEqual(@as(u32, 2), raw.vertex_buffers_len);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(TextureFormat.rgba8unorm)), raw.color_format);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(PrimitiveTopology.line_list)), raw.topology);
+    try std.testing.expectEqual(@as(u32, @intFromEnum(TextureFormat.depth24plus)), raw.depth_format);
+    try std.testing.expectEqual(@as(u32, 0), raw.depth_write);
+    try std.testing.expectEqual(@as(i32, -2), raw.depth_bias);
+    try std.testing.expectEqual(@as(u32, 4), raw.sample_count);
+
+    // Defaults: canvas format, no depth, single sample.
+    const plain = (RenderPipelineDescriptor{
+        .layout = bind.Handle.fromInt(2),
+        .shader = bind.Handle.fromInt(3),
+        .vertex_entry = "vs",
+        .fragment_entry = "fs",
+    }).raw();
+    try std.testing.expectEqual(no_format, plain.color_format);
+    try std.testing.expectEqual(no_format, plain.depth_format);
+    try std.testing.expectEqual(@as(u32, 1), plain.sample_count);
 }
 
 test "struct layout BindGroupLayoutEntry" {

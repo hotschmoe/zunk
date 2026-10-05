@@ -54,7 +54,7 @@ src/
     audio.zig               Web Audio API wrappers
     asset.zig               Generic URL-based asset loading
     app.zig                 Lifecycle utilities, logging, clipboard
-    gpu.zig                 WebGPU bindings (33 extern fns, typed handles)
+    gpu.zig                 WebGPU bindings (49 extern fns, typed handles, descriptors)
     ui.zig                  HTML overlay UI (panels, sliders, checkboxes, buttons)
     imgui.zig               Immediate-mode canvas UI (comptime generic backend)
     render_backend.zig      Render backend abstraction (Canvas2DBackend)
@@ -178,20 +178,23 @@ The asset handle stores a raw `ArrayBuffer` in the JS handle table. Type-specifi
 
 ### web/gpu.zig -- WebGPU Bindings
 
-Comprehensive WebGPU API wrappers with 33 extern function declarations covering the full render and compute pipeline:
+Typed WebGPU wrappers over 49 extern functions, covering the compute pipeline and a full 3D render path. The lifecycle rules (handles, frame encoder, async operations) are documented once, at the top of `src/web/gpu.zig`; the summary:
 
-- **Resources**: `createBuffer`, `createShaderModule`, `createTexture`, `createTextureView`, `createHDRTexture`, `createTextureFromAsset`
-- **Buffer ops**: `bufferWrite`, `bufferWriteTyped`, `bufferDestroy`, `copyBufferInEncoder`
-- **Bind groups**: `createBindGroupLayout`, `createBindGroup`, `createPipelineLayout`
-- **Pipelines**: `createComputePipeline`, `createRenderPipeline`, `createRenderPipelineHDR`
-- **Command encoding**: `createCommandEncoder`, `encoderFinish`, `queueSubmit`
-- **Compute pass**: `beginComputePass`, `computePassSetPipeline`, `computePassSetBindGroup`, `computePassDispatch`, `computePassEnd`
-- **Render pass**: `beginRenderPass`, `beginRenderPassHDR`, `renderPassSetPipeline`, `renderPassSetBindGroup`, `renderPassDraw`, `renderPassEnd`
-- **Present**: `present` (flushes encoder to screen)
+- **Handles.** Every GPU object is a `bind.Handle` (index into a JS table; 0 = none, 1 = device). Passes, encoders and command buffers are single-use and released by the call that consumes them. The *frame encoder* and the *canvas view* are created lazily per frame and released by `present`.
+- **Frame model.** `beginRenderPassDesc` records into the frame encoder; `present` finishes and submits it. Offscreen passes live in the same encoder, so a later pass can sample an earlier one's result. `frameEncoder()` exposes it for copies and compute.
+- **Async = polling.** WASM cannot await. `createTextureFromAsset` is polled with `isTextureReady`; buffer readback is a named state machine `MapState` (`idle -> pending -> mapped | failed -> idle`) driven by `bufferMapRead` / `bufferMapState` / `bufferReadMapped` / `bufferUnmap`. `Readback` wraps texture -> CPU copies (256-byte row alignment included).
 
-Type-safe handles: `Device`, `Buffer`, `ShaderModule`, `Texture`, `TextureView`, `BindGroupLayout`, `BindGroup`, `PipelineLayout`, `ComputePipeline`, `RenderPipeline`, `CommandEncoder`, `ComputePassEncoder`, `RenderPassEncoder`, `CommandBuffer` -- all `bind.Handle` underneath.
+3D surface:
 
-ABI-matched structs `BindGroupLayoutEntry` (40 bytes) and `BindGroupEntry` (32 bytes) are read directly by JS via DataView for zero-copy bind group creation.
+- **Resources**: `createBuffer` (any usage incl. `INDEX`), `createTexture`, `createTextureMultisampled`, `createDepthTexture`, `createRenderTarget` (RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC), `createTextureView`, `createTextureFromAsset`, samplers, bind groups.
+- **Pipelines**: `createRenderPipelineDesc(RenderPipelineDescriptor)` with colour format (default: canvas format, see `canvasFormat`), `BlendMode` (none / alpha / premultiplied / additive), `PrimitiveTopology` (triangle-list, line-list, ...), `CullMode`, `FrontFace`, `DepthState` (format, write, compare, bias, slope bias) and `sample_count`. `createRenderPipeline` / `createRenderPipelineHDR` remain as thin wrappers.
+- **Passes**: `beginRenderPassDesc(RenderPassDescriptor)`: colour view (null = canvas), MSAA resolve view, depth view, load/store ops, clear values. `renderPassSetIndexBuffer` + `renderPassDrawIndexed`, `renderPassDraw` with `instance_count`/`first_instance` (vertex buffers with `step_mode = .instance` advance per instance), viewport and scissor.
+- **Readback**: `copyTextureToBuffer`, `Readback`.
+- **Stencil** is intentionally not exposed (no stencil formats or ops).
+
+Compute and the original API are unchanged: `createComputePipeline`, `computePass*`, `createCommandEncoder`, `encoderFinish`, `queueSubmit`, `beginRenderPass(r,g,b,a)`, `beginRenderPassHDR`.
+
+ABI-matched structs read directly by JS via DataView: `BindGroupLayoutEntry` (40 bytes), `BindGroupEntry` (32), `VertexBufferLayout` / `VertexAttribute` (16), `RawPipelineDesc` (76), `RawPassDesc` (48). `js_resolve.zig` has a test that every `zunk_gpu_*` extern in `gpu.zig` resolves.
 
 ### web/ui.zig -- HTML UI Overlay
 
@@ -272,7 +275,7 @@ Resolution {
 | `zunk_audio_*` | genAudio | Web Audio (init, load, play, decode_asset) |
 | `zunk_asset_*` | genAsset | Generic asset loading (fetch, is_ready, get_len, get_ptr) |
 | `zunk_app_*` | genApp | Lifecycle (set_title, cursor, log, perf) |
-| `zunk_gpu_*` | -- | WebGPU (stubs, pending implementation) |
+| `zunk_gpu_*` | genWebGPU | WebGPU (one-line bodies; multi-line logic in the generated `zunkGPU` helper) |
 | `canvas_*`, `input_*`, etc. | (same) | Generic prefixes (no `zunk_` prefix) |
 
 Each generator function produces the exact JS needed for that operation, setting the appropriate feature requirement flags.
