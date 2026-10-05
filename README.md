@@ -345,6 +345,8 @@ Phases 1-3 (Foundation, Build Pipeline, Developer Experience) and Phase 4.1 (Web
 
 Developer experience tooling is in place: `zunk init` scaffolds new projects, `zunk doctor` diagnoses environment issues, build caching skips unchanged rebuilds, and the resolution report has color-coded output with fuzzy "did you mean?" suggestions (`--verbose` and `--report-json` flags available).
 
+The `kerf` branch adds what a real CAD app needed: the WebGPU 3D surface (depth attachments, index and instanced draws, MSAA, offscreen render targets, buffer readback; `examples/mesh-3d`), the `web.fx` host-services bridge (fetch with headers/bodies/timeouts, downloads, file pick, localStorage, clock, clipboard, paste/drop with in-JS image downscale), `--font` registration (`@font-face` + wait-for-load) and canvas `letterSpacing`, UTF-8 typed text, modifiers, horizontal wheel, and a stricter `preventDefault` policy.
+
 See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap.
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deep dive on design decisions.
 
