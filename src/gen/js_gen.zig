@@ -10,6 +10,16 @@ pub const BridgeJsChunk = struct {
     source: []const u8,
 };
 
+/// A web font the page must have loaded before the app starts. The file
+/// lives at `<public_url>fonts/<file>` (copied there by `zunk build`).
+pub const FontFace = struct {
+    family: []const u8,
+    /// CSS `font-weight` (400 regular, 500 medium, 700 bold, ...).
+    weight: u16,
+    /// Basename of the font file inside `fonts/`.
+    file: []const u8,
+};
+
 pub const GenOptions = struct {
     public_url: []const u8 = "/",
     wasm_filename: []const u8,
@@ -18,6 +28,10 @@ pub const GenOptions = struct {
     bridge_js_chunks: []const BridgeJsChunk = &.{},
     js_filename: []const u8 = "app.js",
     wasm_preload: bool = false,
+    /// `@font-face` rules go into the page; the app starts only after every
+    /// face has loaded (`document.fonts.load`), so the first text measurement
+    /// already sees the real font.
+    fonts: []const FontFace = &.{},
     js_integrity: ?[]const u8 = null,
     verbose_report: bool = false,
     json_report: bool = false,
@@ -84,6 +98,7 @@ pub fn generate(
     if (categories_used.contains(.webgpu)) needs.webgpu_init = true;
     if (categories_used.contains(.ui)) needs.ui_system = true;
     if (categories_used.contains(.a11y)) needs.a11y_state = true;
+    if (categories_used.contains(.fx)) needs.fx = true;
 
     var js_aw: std.Io.Writer.Allocating = .init(allocator);
     defer js_aw.deinit();
@@ -102,6 +117,7 @@ pub fn generate(
     if (categories_used.contains(.fetch)) try w.writeAll("let zunkFetchBuf = null;\n\n");
     if (needs.ui_system) try emitUISystem(w);
     if (needs.a11y_state) try emitA11yState(w);
+    if (needs.fx) try w.writeAll(fx_js ++ "\n\n");
 
     // Mutable WASM bindings. Held at module scope so that HMR can swap the
     // underlying instance while env methods (which close over this scope
@@ -167,6 +183,8 @@ pub fn generate(
         \\
         \\
     , .{ opts.public_url, opts.wasm_filename });
+
+    try emitFontLoad(w, opts.fonts);
 
     if (needs.webgpu_init) try emitWebGPUInit(w);
 
@@ -306,7 +324,47 @@ const Features = struct {
     webgpu_init: bool = false,
     ui_system: bool = false,
     a11y_state: bool = false,
+    fx: bool = false,
 };
+
+/// The host-services bridge (see the header of `js/fx.js`).
+const fx_js = @embedFile("js/fx.js");
+
+/// Write `s` escaped for use inside a double-quoted JS or CSS string.
+fn writeEscaped(w: *std.Io.Writer, s: []const u8) !void {
+    for (s) |c| switch (c) {
+        '\\', '"' => {
+            try w.writeByte('\\');
+            try w.writeByte(c);
+        },
+        '\n', '\r' => try w.writeByte(' '),
+        else => try w.writeByte(c),
+    };
+}
+
+/// Block startup until every registered font face is loaded.
+fn emitFontLoad(w: *std.Io.Writer, fonts: []const FontFace) !void {
+    if (fonts.len == 0) return;
+    try w.writeAll("// --- Fonts: the app starts once every face is loaded ---\nawait Promise.all([\n");
+    for (fonts) |f| {
+        try w.print("  document.fonts.load(\"{d} 16px \\\"", .{f.weight});
+        try writeEscaped(w, f.family);
+        try w.writeAll("\\\"\"),\n");
+    }
+    try w.writeAll("].map(p => p.catch(e => console.warn('[zunk] font failed to load:', e))));\n\n");
+}
+
+fn emitFontFaces(w: *std.Io.Writer, public_url: []const u8, fonts: []const FontFace) !void {
+    for (fonts) |f| {
+        try w.writeAll("    @font-face { font-family: \"");
+        try writeEscaped(w, f.family);
+        try w.print("\"; font-weight: {d}; font-display: block; src: url(\"", .{f.weight});
+        try writeEscaped(w, public_url);
+        try w.writeAll("fonts/");
+        try writeEscaped(w, f.file);
+        try w.writeAll("\"); }\n");
+    }
+}
 
 /// Generate the `__zunkHmrSwap(wasmUrl)` function and expose it on
 /// `window`. The dev server calls this via a WebSocket message when only
@@ -427,10 +485,16 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\  keysPressed: new Set(),
         \\  keysReleased: new Set(),
         \\  typedChars: [],
+        \\  // Ctrl/Cmd+V is reported to wasm together with its `paste` event (or after 80 ms without one), so a host
+        \\  // that reads the clipboard when it sees the key finds the pasted data in the same frame.
+        \\  pasteKey: null, pasteMods: 0, pasteTimer: 0,
+        \\  releasePaste() { if (this.pasteKey !== null) { this.keysPressed.add(this.pasteKey); this.modLatch |= this.pasteMods; this.pasteKey = null; } clearTimeout(this.pasteTimer); },
         \\  mouseX: 0, mouseY: 0, mouseDx: 0, mouseDy: 0,
         \\  mouseWheel: 0, mouseWheelX: 0,
         \\  mouseButtons: 0, mouseButtonsPressed: 0, mouseButtonsReleased: 0,
-        \\  modifiers: 0,
+        \\  // `modifiers` is the live state; `modLatch` also holds every modifier seen since the last flush, so a
+        \\  // quick Ctrl+key tap that is over before the frame still arrives with Ctrl.
+        \\  modifiers: 0, modLatch: 0,
         \\  touches: [],
         \\  init(ptr, len) {
         \\    this.ptr = ptr; this.len = len;
@@ -440,7 +504,7 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    const editable = t => !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
         \\    // Every event carries the live modifier state; track it from all of them so it is right even
         \\    // for a pinch (ctrlKey + wheel with no physical Ctrl held).
-        \\    const syncMods = e => { this.modifiers = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0); };
+        \\    const syncMods = e => { this.modifiers = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0); this.modLatch |= this.modifiers; };
         \\    // Pointer coordinates are canvas-relative CSS pixels.
         \\    const place = e => {
         \\      const r = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { left: 0, top: 0 };
@@ -448,9 +512,12 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    };
         \\    document.addEventListener('keydown', e => {
         \\      syncMods(e);
-        \\      this.keysDown.add(e.keyCode); this.keysPressed.add(e.keyCode);
+        \\      this.keysDown.add(e.keyCode);
         \\      const k = e.key;
         \\      const chord = (e.ctrlKey || e.metaKey) && !e.getModifierState('AltGraph');
+        \\      if (chord && k.toLowerCase() === 'v' && !editable(e.target)) {
+        \\        this.releasePaste(); this.pasteKey = e.keyCode; this.pasteMods = this.modifiers; this.pasteTimer = setTimeout(() => this.releasePaste(), 80);
+        \\      } else this.keysPressed.add(e.keyCode);
         \\      const single = [...k].length === 1;
         \\      const printable = single && k.codePointAt(0) >= 0x20 && k.codePointAt(0) !== 0x7f;
         \\      // Typed text is the UTF-8 encoding of the whole code point (never a truncated UTF-16 unit).
@@ -460,10 +527,12 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\        if (this.typedChars.length + bytes.length <= 64) for (const b of bytes) this.typedChars.push(b);
         \\      }
         \\      // Keep the page from scrolling / tabbing / quick-finding under the app, but leave browser
-        \\      // shortcuts (F5, F12, Ctrl+R, Ctrl+L ...) and real form fields alone.
-        \\      const wanted = navKeys.has(k) || (printable && !chord && !e.altKey) || (chord && single && 'acxvyz'.includes(k.toLowerCase()));
+        \\      // shortcuts (F5, F12, Ctrl+R, Ctrl+L ...) and real form fields alone. Ctrl/Cmd+V is left
+        \\      // alone too: the browser then fires `paste`, which the host-services bridge turns into data.
+        \\      const wanted = navKeys.has(k) || (printable && !chord && !e.altKey) || (chord && single && 'acxyz'.includes(k.toLowerCase()));
         \\      if (wanted && !editable(e.target)) e.preventDefault();
         \\    });
+        \\    document.addEventListener('paste', () => this.releasePaste(), true);
         \\    document.addEventListener('keyup', e => { syncMods(e); this.keysDown.delete(e.keyCode); this.keysReleased.add(e.keyCode); });
         \\    // Losing focus swallows the matching keyup/mouseup events; release everything so nothing sticks.
         \\    window.addEventListener('blur', () => {
@@ -518,7 +587,7 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    view.setUint8(off, this.mouseButtons); off += 1;
         \\    view.setUint8(off, this.mouseButtonsPressed); off += 1;
         \\    view.setUint8(off, this.mouseButtonsReleased); off += 1;
-        \\    view.setUint8(off, this.modifiers); off += 1;
+        \\    view.setUint8(off, this.modifiers | this.modLatch); off += 1; this.modLatch = this.modifiers;
         \\    // Touch
         \\    view.setUint8(off, Math.min(this.touches.length, 10)); off += 1;
         \\    for (let i = 0; i < 10; i++) { view.setFloat32(off + i*4, this.touches[i]?.clientX || 0, true); } off += 40;
@@ -857,6 +926,7 @@ pub fn generateHtml(
     try w.writeAll("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
     try w.writeAll("  <title>zunk app</title>\n");
     try w.writeAll("  <style>\n");
+    try emitFontFaces(w, opts.public_url, opts.fonts);
 
     if (has_canvas and has_frame) {
         try w.writeAll("    * { margin: 0; padding: 0; box-sizing: border-box; }\n");
@@ -1133,6 +1203,46 @@ test "input system: UTF-8 text, wheel x, modifiers, contextmenu and blur are wir
     }
     // The old truncating form must be gone.
     try std.testing.expect(std.mem.indexOf(u8, js, "charCodeAt") == null);
+}
+
+test "fonts: @font-face rules and a startup wait for every face" {
+    const fonts = [_]FontFace{
+        .{ .family = "IBM Plex Mono", .weight = 400, .file = "IBMPlexMono-Regular.ttf" },
+        .{ .family = "IBM Plex Mono", .weight = 700, .file = "IBMPlexMono-Bold.ttf" },
+    };
+    var css: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer css.deinit();
+    try emitFontFaces(&css.writer, "/", &fonts);
+    try std.testing.expectEqualStrings(
+        "    @font-face { font-family: \"IBM Plex Mono\"; font-weight: 400; font-display: block; src: url(\"/fonts/IBMPlexMono-Regular.ttf\"); }\n" ++
+            "    @font-face { font-family: \"IBM Plex Mono\"; font-weight: 700; font-display: block; src: url(\"/fonts/IBMPlexMono-Bold.ttf\"); }\n",
+        css.written(),
+    );
+
+    var js: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer js.deinit();
+    try emitFontLoad(&js.writer, &fonts);
+    try std.testing.expect(std.mem.find(u8, js.written(), "document.fonts.load(\"400 16px \\\"IBM Plex Mono\\\"\")") != null);
+    try std.testing.expect(std.mem.find(u8, js.written(), "document.fonts.load(\"700 16px") != null);
+    try std.testing.expect(std.mem.startsWith(u8, js.written(), "// --- Fonts"));
+
+    // No fonts: nothing emitted.
+    var none: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer none.deinit();
+    try emitFontLoad(&none.writer, &.{});
+    try emitFontFaces(&none.writer, "/", &.{});
+    try std.testing.expectEqual(@as(usize, 0), none.written().len);
+}
+
+test "fx bridge is embedded and Ctrl+V is left to the browser" {
+    try std.testing.expect(std.mem.find(u8, fx_js, "const zunkFx") != null);
+    try std.testing.expect(std.mem.find(u8, fx_js, "addEventListener('paste'") != null);
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try emitInputSystem(&aw.writer);
+    try std.testing.expect(std.mem.find(u8, aw.written(), "'acxyz'") != null);
+    try std.testing.expect(std.mem.find(u8, aw.written(), "releasePaste") != null);
+    try std.testing.expect(std.mem.find(u8, aw.written(), "modLatch") != null);
 }
 
 test "editDistance identical" {

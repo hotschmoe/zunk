@@ -63,7 +63,29 @@ pub const InstallAppOptions = struct {
     /// If non-null, also register a build-only step with this name that
     /// produces the `dist/` artifacts without starting the dev server.
     build_step_name: ?[]const u8 = null,
+    /// Web fonts: copied to `dist/fonts/`, declared with `@font-face`, and
+    /// loaded before the app's `init` runs.
+    fonts: []const FontFile = &.{},
 };
+
+/// One font file for `InstallAppOptions.fonts`.
+pub const FontFile = struct {
+    /// CSS `font-family` name, e.g. "IBM Plex Mono".
+    family: []const u8,
+    /// CSS `font-weight`: 400 regular, 500 medium, 700 bold.
+    weight: u16 = 400,
+    path: std.Build.LazyPath,
+};
+
+/// Add `--font family weight path` for each file to a zunk CLI run.
+pub fn addFontArgs(run: *std.Build.Step.Run, fonts: []const FontFile) void {
+    for (fonts) |f| {
+        run.addArg("--font");
+        run.addArg(f.family);
+        run.addArg(run.step.owner.fmt("{d}", .{f.weight}));
+        run.addFileArg(f.path);
+    }
+}
 
 pub fn installApp(
     b: *std.Build,
@@ -84,6 +106,7 @@ pub fn installApp(
         gen_cmd.addArg("--bridge-dep");
         gen_cmd.addFileArg(bd.path("bridge.js"));
     }
+    addFontArgs(gen_cmd, options.fonts);
     gen_cmd.setCwd(b.path("."));
     b.getInstallStep().dependOn(&gen_cmd.step);
 
@@ -105,6 +128,7 @@ pub fn installApp(
         serve_cmd.addArg("--bridge-dep");
         serve_cmd.addFileArg(bd.path("bridge.js"));
     }
+    addFontArgs(serve_cmd, options.fonts);
     serve_cmd.setCwd(b.path("."));
     run_step.dependOn(&serve_cmd.step);
 }

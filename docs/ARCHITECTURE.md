@@ -429,6 +429,54 @@ zunk's JS bridge writes the chosen filename into the shared `__zunk_string_buf_p
 
 **Gesture-gating.** The request must originate inside the same synchronous turn as the user input. Polling-style dispatch (input.poll() -> frame() -> request) works because the browser keeps "transient activation" for a few seconds after a click/keydown, and the frame callback fires well within that window. Calling the request from a setTimeout or async tick will throw a `SecurityError` inside the picker.
 
+## Host services (`web.fx`)
+
+`zunk.web.fx` (Zig, `src/web/fx.zig`) + `src/gen/js/fx.js` (JS) cover the asynchronous browser work an application needs: `fetch`, file downloads, a file picker, `localStorage`, the wall clock, URL query parameters, clipboard writes, and pasted / dropped images and files. It generalizes the request / poll idea above: **one** completion channel instead of one callback per feature. The JS is emitted only when the wasm imports a `zunk_fx_*` function.
+
+### Requests (wasm -> JS)
+
+Plain imports that return at once. JS copies whatever it needs out of wasm memory *before returning* (wasm memory may move or be reused afterwards), so callers may free or reuse their buffers immediately.
+
+| Zig | Import | Result |
+|---|---|---|
+| `fx.http(id, method, url, headers, body, timeout_ms)` | `zunk_fx_http` | `http`: status (0 = transport failure), body, error text |
+| `fx.download(id, name, mime, bytes)` | `zunk_fx_download` | `downloaded` ok flag (Blob + temporary `<a download>`) |
+| `fx.openFile(id, accept)` | `zunk_fx_open_file` | `file_opened` name/mime/bytes, or `file_cancelled` |
+| `fx.storageGet(id, key)` / `fx.storageSet(key, value)` | `zunk_fx_storage_*` | `storage_value`; set has no result, an empty value deletes |
+| `fx.clock(id)` | `zunk_fx_clock` | `clock`: unix ms + UTC offset minutes |
+| `fx.queryParam(id, name)` | `zunk_fx_query_param` | `query_value` |
+| `fx.clipboardWrite(text)` | `zunk_fx_clipboard_write` | none (`navigator.clipboard.writeText`, `execCommand('copy')` fallback) |
+
+HTTP: request body up to ~8 MB and response bodies up to 32 MB are supported; a failed request (network error, CORS, timeout via `AbortController`, oversized response) completes with status 0 and a readable message. `encodeHeaders` turns a slice of `{name, value}` into the header text and drops headers that could smuggle another.
+
+### Completions (JS -> wasm)
+
+Every result, solicited or not, is a *completion record* queued in JS. Wasm collects them with `fx.poll(out: []Completion)`, once per frame:
+
+1. `poll` frees the previous batch, then calls the import `zunk_fx_pump(max)`.
+2. For each queued record (at most `max`) JS calls the exported `zunk_fx_alloc(len)` (allocates in wasm memory; re-read `memory.buffer` afterwards, the allocation may have grown it), copies the record in, and calls the exported `zunk_fx_deliver(ptr, len)`.
+3. `poll` decodes the records into `Completion { kind, id, a, b, c, d, blobs[4] }` whose slices **alias the delivered memory and stay valid until the next `poll`**.
+
+JS calls into wasm only inside `zunk_fx_pump`, never from a promise callback or event handler, so wasm state is never touched mid-frame, and a frame loop that polls every frame leaks nothing. Records beyond `max` stay queued in JS (an unsolicited backlog is capped at 64, oldest dropped).
+
+Record layout (little endian; the table of per-kind fields is in `fx.js` and the `Completion` doc comment): `u32 kind, u32 id` (0 = unsolicited), `i32 a b c d`, `u32 len0..len3`, then the four blobs back to back.
+
+### Handle and id conventions
+
+Requests that expect an answer take a caller-chosen **id >= 1**, echoed in the completion. There are no JS handles: a request is identified only by its id, and unsolicited completions (paste, drop) carry id 0. The caller owns uniqueness.
+
+### The file picker and user activation
+
+Browsers open a picker only from a user activation. The effect that asks for a file is usually issued a frame after the click; `navigator.userActivation.isActive` is checked, and if the activation is still live the picker opens at once. If not, the request is **armed**: the picker opens on the next pointer press or key press. A new request cancels an armed or open one. The hidden `<input type="file" id="zunk-fx-file">` fires `cancel` when the user dismisses it.
+
+### Paste and drop
+
+`paste` and `drop` listeners on `document` turn clipboard / dropped data into `dropped` and `pasted_text` completions. Images are decoded with `createImageBitmap`, scaled so the long side is at most 1568 px, and re-encoded as PNG (a JPEG that needed no scaling keeps its bytes); a 64 px long-side RGBA thumbnail is produced alongside. Other files arrive as `kind = file` (up to 32 MB), dropped text as `kind = text`. Ctrl/Cmd+V is no longer swallowed by the input system, and is reported to wasm *together with* its paste event (or after 80 ms without one), so a host that reads the clipboard when it sees the key finds the data in the same frame.
+
+## Web fonts
+
+`zunk build --font <family> <weight> <path>` (repeatable; `InstallAppOptions.fonts` in `build.zig`) copies the file to `dist/fonts/<basename>`, adds an `@font-face` rule to the page, and makes the generated JS `await document.fonts.load(...)` for every face before `init()` runs, so the first text measurement already sees the real font. A font that fails to load logs a warning and startup continues. `zunk deploy` copies fonts the same way (names are not hashed).
+
 ## Per-Frame Allocation Pattern
 
 wasm-freestanding has no libc `malloc`, so consumers bring their own allocator. For game-loop-style code where allocations live at most one frame (command buffers, vertex scratch, UI retained-mode state), a `std.heap.ArenaAllocator` with `reset(.retain_capacity)` called at the end of each `frame()` is a good default:

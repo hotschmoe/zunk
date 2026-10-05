@@ -202,6 +202,10 @@ Zunk detects these exports from your WASM and wires them up automatically:
 
 If you export `frame`, zunk generates a render loop. If you don't, it doesn't. If you export `resize`, zunk generates a resize handler and a fullscreen canvas. Everything is adaptive.
 
+### Host services and web fonts
+
+`zunk.web.fx` wraps the async browser work apps need behind one poll-style completion channel: `fetch` (headers, ~8 MB bodies, timeout), downloads, a file picker that waits for a user activation, `localStorage`, the clock, URL query parameters, clipboard writes, and pasted / dropped images (downscaled, re-encoded, thumbnailed) and files. `zunk build --font <family> <weight> <path>` (or `InstallAppOptions.fonts`) ships web fonts and holds startup until they load. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) ("Host services", "Web fonts").
+
 ### Memory Model
 
 | Data Type | Strategy | Overhead |
