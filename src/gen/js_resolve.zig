@@ -56,6 +56,8 @@ pub const Category = enum {
     // Async host services (src/gen/js/fx.js): fetch, downloads, file picker,
     // storage, clock, query params, paste/drop
     fx,
+    // IME bridge (src/gen/js/ime.js): hidden <textarea> for composition input
+    ime,
     // UI
     ui,
     // Accessibility (hidden DOM mirror for screen readers)
@@ -237,6 +239,7 @@ pub const prefix_rules = [_]PrefixRule{
     .{ .prefix = "zunk_asset_", .category = .asset, .generator = &genAsset },
     .{ .prefix = "zunk_fetch", .category = .fetch, .generator = &genFetch },
     .{ .prefix = "zunk_fx_", .category = .fx, .generator = &genFx },
+    .{ .prefix = "zunk_ime_", .category = .ime, .generator = &genIme },
     .{ .prefix = "zunk_gpu_", .category = .webgpu, .generator = &genWebGPU },
     .{ .prefix = "zunk_text_", .category = .webgpu, .generator = &genWebGPU },
     .{ .prefix = "zunk_ui_", .category = .ui, .generator = &genUI },
@@ -751,6 +754,24 @@ fn genFx(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?R
     return null;
 }
 
+/// Imports of the IME bridge (`src/gen/js/ime.js`, Zig side `src/web/ime.zig`).
+pub const ime_methods = [_][]const u8{ "set_active", "set_spot", "poll" };
+
+fn genIme(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
+    _ = sig;
+    for (ime_methods) |name| {
+        if (!std.mem.eql(u8, method, name)) continue;
+        return .{
+            .js_body = std.fmt.allocPrint(allocator, "return zunkIme.{s}(...arguments);", .{name}) catch return null,
+            .needs_memory_view = true,
+            .confidence = .exact,
+            .category = .ime,
+            .description = "IME bridge (src/gen/js/ime.js)",
+        };
+    }
+    return null;
+}
+
 fn genWebSocket(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
     _ = sig;
     const js_map = .{
@@ -1059,6 +1080,21 @@ test "every fx import has a method in fx.js, and every method is listed" {
         if (std.mem.find(u8, line, name) != null) listed += 1;
     }
     try std.testing.expectEqual(fx_methods.len, listed);
+}
+
+test "zunk_ime_ imports resolve to the IME bridge, and every one has a JS method" {
+    const res = (try prefixMatch(std.testing.allocator, "zunk_ime_poll", null)).?;
+    defer std.testing.allocator.free(res.js_body);
+    try std.testing.expect(res.category == .ime);
+    try std.testing.expectEqualStrings("return zunkIme.poll(...arguments);", res.js_body);
+    try std.testing.expect((try prefixMatch(std.testing.allocator, "zunk_ime_nope", null)) == null);
+    const js = @embedFile("js/ime.js");
+    for (ime_methods) |name| {
+        const decl = try std.fmt.allocPrint(std.testing.allocator, "function {s}(", .{name});
+        defer std.testing.allocator.free(decl);
+        try std.testing.expect(std.mem.find(u8, js, decl) != null);
+    }
+    try std.testing.expect(std.mem.find(u8, js, "return { set_active, set_spot, poll }") != null);
 }
 
 test "every zunk_gpu_* extern in web/gpu.zig resolves exactly" {
