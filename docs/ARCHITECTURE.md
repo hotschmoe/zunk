@@ -521,3 +521,17 @@ Ship custom JavaScript alongside your project or library. zunk merges it into th
 | Callback model | Complex closure wrapping | Simple callback table (id -> fn ptr) |
 | Build steps | cargo build -> wasm-bindgen -> bundler | zunk run (one step) |
 | Input handling | Per-event callbacks (async) | Polling model (sync, game-friendly) |
+
+## No WebGPU
+
+An app that uses the `webgpu` category requests the adapter and device at the top of `app.js` (so a slow GPU start overlaps the wasm
+download). If `navigator.gpu` is missing or no adapter/device is returned (Firefox on Linux/Android, a blocklisted driver, headless
+Chromium without GPU flags), startup does not continue into wasm and the user is not left with a blank canvas:
+
+1. If the page defines `window.zunkFallback` (an inline script in `index.html`, before `app.js`), it is called as
+   `await zunkFallback({ reason: string, webgl2: boolean })`. Return `true` after taking over (showing a static page, loading another build,
+   redirecting); startup then stays parked, no further zunk code runs.
+2. Otherwise (hook absent, returns a falsy value, or throws) a built-in full-page message "This app needs WebGPU" is shown, with the
+   failure reason and whether WebGL2 exists, and `console.error` names the cause. The container is `#zunk-no-webgpu` (`role=alert`).
+
+Either way `await __zunkNoWebGPU(e)` never resolves, so nothing after it (wasm `init`, the frame loop) runs.
