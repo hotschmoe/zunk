@@ -57,7 +57,7 @@ pub const InputState = extern struct {
     has_focus: u8 align(1),
 
     typed_chars_len: u8 align(1),
-    typed_chars: [64]u8 align(1),
+    typed_chars: [255]u8 align(1),
 };
 
 var input_state: InputState = std.mem.zeroes(InputState);
@@ -319,7 +319,7 @@ test "InputState layout matches the generated JS flush" {
     try std.testing.expectEqual(@as(usize, 245 + 21), @offsetOf(InputState, "viewport_width"));
     try std.testing.expectEqual(@as(usize, 266 + 13), @offsetOf(InputState, "typed_chars_len"));
     try std.testing.expectEqual(@as(usize, 280), @offsetOf(InputState, "typed_chars"));
-    try std.testing.expectEqual(@as(usize, 280 + 64), @sizeOf(InputState));
+    try std.testing.expectEqual(@as(usize, 280 + 255), @sizeOf(InputState));
 }
 
 test "getModifiers decodes the modifier bits" {

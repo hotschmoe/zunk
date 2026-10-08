@@ -333,6 +333,9 @@ const Features = struct {
 /// The host-services bridge (see the header of `js/fx.js`).
 const fx_js = @embedFile("js/fx.js");
 
+/// The a11y DOM mirror (see the header of `js/a11y.js`).
+const a11y_js = @embedFile("js/a11y.js");
+
 /// The IME bridge (see the header of `js/ime.js`).
 const ime_js = @embedFile("js/ime.js");
 
@@ -491,6 +494,7 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\  keysPressed: new Set(),
         \\  keysReleased: new Set(),
         \\  typedChars: [],
+        \\  typedDropWarned: false,
         \\  // Ctrl/Cmd+V is reported to wasm together with its `paste` event (or after 80 ms without one), so a host
         \\  // that reads the clipboard when it sees the key finds the pasted data in the same frame.
         \\  pasteKey: null, pasteMods: 0, pasteTimer: 0,
@@ -530,7 +534,8 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\      // Ctrl/Cmd chords are keys, not text.
         \\      if (printable && !chord && !e.isComposing) {
         \\        const bytes = encoder.encode(k);
-        \\        if (this.typedChars.length + bytes.length <= 64) for (const b of bytes) this.typedChars.push(b);
+        \\        if (this.typedChars.length + bytes.length <= 255) for (const b of bytes) this.typedChars.push(b);
+        \\        else if (!this.typedDropWarned) { this.typedDropWarned = true; console.warn('[zunk] typed-character queue full (255 bytes/frame): dropping input'); }
         \\      }
         \\      // Keep the page from scrolling / tabbing / quick-finding under the app, but leave browser
         \\      // shortcuts (F5, F12, Ctrl+R, Ctrl+L ...) and real form fields alone. Ctrl/Cmd+V is left
@@ -606,15 +611,15 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    view.setUint32(off, window.innerHeight, true); off += 4;
         \\    view.setFloat32(off, window.devicePixelRatio, true); off += 4;
         \\    view.setUint8(off, document.hasFocus() ? 1 : 0); off += 1;
-        \\    // Typed text: UTF-8 bytes (1 byte count + up to 64 bytes; whole code points only)
-        \\    const tc = Math.min(this.typedChars.length, 64);
+        \\    // Typed text: UTF-8 bytes (1 byte count + up to 255 bytes; whole code points only)
+        \\    const tc = Math.min(this.typedChars.length, 255);
         \\    view.setUint8(off, tc); off += 1;
         \\    for (let i = 0; i < tc; i++) { view.setUint8(off + i, this.typedChars[i]); }
         \\    // Clear per-frame state
         \\    this.keysPressed.clear(); this.keysReleased.clear();
         \\    this.mouseDx = 0; this.mouseDy = 0; this.mouseWheel = 0; this.mouseWheelX = 0;
         \\    this.mouseButtonsPressed = 0; this.mouseButtonsReleased = 0;
-        \\    this.typedChars.length = 0;
+        \\    this.typedChars.length = 0; this.typedDropWarned = false;
         \\  },
         \\  poll() { this.flush(); },
         \\};
@@ -793,20 +798,9 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
 }
 
 fn emitA11yState(w: *std.Io.Writer) !void {
-    // Hidden DOM subtree for screen-reader announcement of canvas-rendered
-    // widgets. Root container is created lazily inside the shim on first
-    // publish; the per-cmd_index element Map lives across frames so the
-    // diff can add/update/remove elements without rebuilding from scratch.
-    // Role tag indexes match teak's `a11y.Role` enum order (see issue #15).
-    try w.writeAll(
-        \\// --- A11y DOM mirror state ---
-        \\let zunkA11yRoot = null;
-        \\const zunkA11yElements = new Map();
-        \\const zunkA11yAria = ['group','region',null,null,'button','textbox','checkbox','radio','slider','separator','img','dialog'];
-        \\const zunkA11yTags = ['div','div','div','div','button','input','div','div','div','div','img','div'];
-        \\
-        \\
-    );
+    // The DOM mirror + action queue for Teak's accessibility bridge; the
+    // `__zunk_publish_a11y_tree` / `__zunk_poll_a11y_actions` externs call into it.
+    try w.writeAll(a11y_js ++ "\n\n");
 }
 
 fn emitWebGPUInit(w: *std.Io.Writer) !void {
