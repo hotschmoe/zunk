@@ -218,5 +218,7 @@ Phase 1 (Foundation) -- project is freshly initialized. `src/root.zig` and `src/
 
 ### Versioning
 
-Bump `.version` in `build.zig.zon` following SemVer rules at meaningful milestones (new features, breaking changes, bug fixes). CI enforces that every PR to `master` includes a version bump, and merging automatically creates a GitHub Release tagged with that version.
+The version lives only in `build.zig.zon` and is exposed as `zunk.version` (the CLI `version`/`--version` prints it). Releases are explicit: `tools/release.sh <semver>`. See `docs/VERSIONING.md`.
 
+## Versioning
+`build.zig.zon` `.version` is the single source of truth; code reads `zunk.version` (from `build_options`). Never write a version literal elsewhere, never bump it in a feature PR. Releases are cut explicitly with `tools/release.sh <semver>`. See [`docs/VERSIONING.md`](docs/VERSIONING.md).
