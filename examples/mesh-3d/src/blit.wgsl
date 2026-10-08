@@ -22,3 +22,8 @@ struct Out {
 @fragment fn fs_blit(i: Out) -> @location(0) vec4f {
   return textureSample(tex, samp, i.uv);
 }
+
+// Solid highlight colour; the pipeline's stencil test restricts where it lands.
+@fragment fn fs_tint(i: Out) -> @location(0) vec4f {
+  return vec4f(1.0, 0.85, 0.1, 0.45);
+}

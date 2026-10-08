@@ -3,7 +3,10 @@
 //! the same cube rendered offscreen and composited as an inset. Exercises
 //! zunk's 3D surface: depth attachment, index buffers, instanced draws,
 //! MSAA + resolve, offscreen targets, line topology, depth bias, and
-//! texture readback (the inset's pixels are logged once after frame 3).
+//! texture readback, a stencil pass and region readback: the cube writes
+//! stencil 1 (`depth24plus_stencil8`), then a translucent yellow quad is drawn
+//! only where stencil == 1 (a silhouette highlight), and two 1x1 readbacks of
+//! the inset (cube centre, empty corner) are logged once after frame 3.
 
 const std = @import("std");
 const zunk = @import("zunk");
@@ -16,7 +19,7 @@ const scene_src = @embedFile("scene.wgsl");
 const blit_src = @embedFile("blit.wgsl");
 
 const sample_count: u32 = 4;
-const depth_format: gpu.TextureFormat = .depth32float;
+const depth_format: gpu.TextureFormat = .depth24plus_stencil8;
 const inset_size: u32 = 256;
 const clear_color = [4]f32{ 0.10, 0.12, 0.16, 1.0 };
 
@@ -146,6 +149,7 @@ var mesh_pipeline: gpu.RenderPipeline = undefined;
 var grid_pipeline: gpu.RenderPipeline = undefined;
 var edge_pipeline: gpu.RenderPipeline = undefined;
 var blit_pipeline: gpu.RenderPipeline = undefined;
+var tint_pipeline: gpu.RenderPipeline = undefined;
 
 var vertex_buf: gpu.Buffer = undefined;
 var index_buf: gpu.Buffer = undefined;
@@ -168,9 +172,10 @@ var css_h: u32 = 0;
 var time: f32 = 0;
 var frame_count: u32 = 0;
 
-var readback: gpu.Readback = undefined;
+/// Two 1x1 region readbacks of the inset: [0] cube centre, [1] empty corner.
+var readbacks: [2]gpu.Readback = undefined;
 var readback_state: enum { idle, requested, done } = .idle;
-var readback_data: [inset_size * inset_size * 4]u8 = undefined;
+var readback_data: [2][256]u8 = undefined;
 
 export fn init() void {
     input.init();
@@ -212,7 +217,11 @@ export fn init() void {
         .color_format = fmt,
         .blend = .none,
         .cull_mode = .back,
-        .depth = .{ .format = depth_format },
+        // Mark every covered sample with stencil = reference (1).
+        .depth = .{ .format = depth_format, .stencil = .{
+            .front = .{ .pass_op = .replace },
+            .back = .{ .pass_op = .replace },
+        } },
         .sample_count = sample_count,
     });
     grid_pipeline = gpu.createRenderPipelineDesc(.{
@@ -240,6 +249,21 @@ export fn init() void {
     });
 
     const blit = gpu.createShaderModule(blit_src);
+    // Highlight: full-screen quad that only passes where the cube set stencil 1.
+    tint_pipeline = gpu.createRenderPipelineDesc(.{
+        .layout = gpu.createPipelineLayout(&.{}),
+        .shader = blit,
+        .vertex_entry = "vs_blit",
+        .fragment_entry = "fs_tint",
+        .color_format = fmt,
+        .blend = .alpha,
+        .depth = .{ .format = depth_format, .write_enabled = false, .compare = .always, .stencil = .{
+            .front = .{ .compare = .equal },
+            .back = .{ .compare = .equal },
+            .write_mask = 0,
+        } },
+        .sample_count = sample_count,
+    });
     const blit_bgl = gpu.createBindGroupLayout(&.{
         gpu.BindGroupLayoutEntry.initTexture(0, gpu.ShaderVisibility.FRAGMENT, .float),
         gpu.BindGroupLayoutEntry.initSampler(1, gpu.ShaderVisibility.FRAGMENT, .filtering),
@@ -275,7 +299,8 @@ export fn init() void {
         gpu.BindGroupEntry.initSampler(1, gpu.createSampler(.{ .mag_filter = .linear, .min_filter = .linear })),
     });
 
-    readback = gpu.Readback.init(inset_size, inset_size, 4);
+    readbacks[0] = gpu.Readback.initRegion(inset_size / 2, inset_size / 2, 1, 1, 4);
+    readbacks[1] = gpu.Readback.initRegion(2, 2, 1, 1, 4);
 }
 
 fn createWith(usage: u32, comptime T: type, items: []const T) gpu.Buffer {
@@ -304,6 +329,7 @@ fn globals(model: math.Mat4, eye: math.Vec3, w: f32, h: f32, edge_px: f32) Globa
 /// depend on its depth.
 fn drawScene(pass: gpu.RenderPassEncoder, group: gpu.BindGroup) void {
     gpu.renderPassSetBindGroup(pass, 0, group);
+    gpu.renderPassSetStencilReference(pass, 1);
 
     gpu.renderPassSetPipeline(pass, grid_pipeline);
     gpu.renderPassSetVertexBuffer(pass, 0, grid_buf, 0, @sizeOf(@TypeOf(grid_vertices)));
@@ -317,6 +343,10 @@ fn drawScene(pass: gpu.RenderPassEncoder, group: gpu.BindGroup) void {
     gpu.renderPassSetPipeline(pass, edge_pipeline);
     gpu.renderPassSetVertexBuffer(pass, 0, edge_buf, 0, @sizeOf(@TypeOf(cube_edges)));
     gpu.renderPassDraw(pass, 6, cube_edges.len, 0, 0); // 6 verts x 12 instances
+
+    // Stencil-masked highlight over the cube silhouette.
+    gpu.renderPassSetPipeline(pass, tint_pipeline);
+    gpu.renderPassDraw(pass, 6, 1, 0, 0);
 }
 
 export fn frame(dt: f32) void {
@@ -345,6 +375,7 @@ export fn frame(dt: f32) void {
         .clear = .{ 0.16, 0.12, 0.10, 1 },
         .depth = inset_target.depth_view,
         .depth_store = .discard,
+        .stencil = .{ .store = .discard },
     });
     drawScene(ipass, inset_group);
     gpu.renderPassEnd(ipass);
@@ -357,6 +388,7 @@ export fn frame(dt: f32) void {
         .clear = clear_color,
         .depth = main_target.depth_view,
         .depth_store = .discard,
+        .stencil = .{ .store = .discard },
     });
     drawScene(pass, main_group);
 
@@ -369,10 +401,12 @@ export fn frame(dt: f32) void {
     gpu.renderPassDraw(pass, 6, 1, 0, 0);
     gpu.renderPassEnd(pass);
 
-    if (frame_count == 3 and readback_state == .idle) readback.encode(gpu.frameEncoder(), inset_texture);
+    if (frame_count == 3 and readback_state == .idle) {
+        for (readbacks) |rb| rb.encode(gpu.frameEncoder(), inset_texture);
+    }
     gpu.present();
     if (frame_count == 3 and readback_state == .idle) {
-        readback.request();
+        for (readbacks) |rb| rb.request();
         readback_state = .requested;
     }
     pollReadback();
@@ -380,22 +414,21 @@ export fn frame(dt: f32) void {
 
 fn pollReadback() void {
     if (readback_state != .requested) return;
-    switch (readback.poll()) {
-        .pending, .idle => {},
-        .failed => {
-            app.logWarn("readback failed");
-            readback.deinit();
-            readback_state = .done;
-        },
-        .mapped => {
-            readback.read(&readback_data);
-            const corner = readback.pixel(&readback_data, 2, 2);
-            const center = readback.pixel(&readback_data, inset_size / 2, inset_size / 2);
-            var buf: [160]u8 = undefined;
-            const msg = std.fmt.bufPrint(&buf, "readback corner={any} center={any}", .{ corner, center }) catch "readback ok";
-            app.logInfo(msg);
-            readback.deinit();
-            readback_state = .done;
-        },
+    const a = readbacks[0].poll();
+    const b = readbacks[1].poll();
+    if (a == .failed or b == .failed) {
+        app.logWarn("readback failed");
+        for (readbacks) |rb| rb.deinit();
+        readback_state = .done;
+    } else if (a == .mapped and b == .mapped) {
+        readbacks[0].read(&readback_data[0]);
+        readbacks[1].read(&readback_data[1]);
+        const center = readbacks[0].pixel(&readback_data[0], 0, 0);
+        const corner = readbacks[1].pixel(&readback_data[1], 0, 0);
+        var buf: [160]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "readback 1x1 centre={any} corner={any}", .{ center, corner }) catch "readback ok";
+        app.logInfo(msg);
+        for (readbacks) |rb| rb.deinit();
+        readback_state = .done;
     }
 }
