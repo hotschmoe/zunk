@@ -824,7 +824,48 @@ fn emitA11yState(w: *std.Io.Writer) !void {
 
 /// Kick off the adapter + device request at the very top of the script: acquiring them (a GPU
 /// process start in a cold browser) overlaps the wasm download and compile instead of following them.
+/// What a browser without usable WebGPU gets (see docs/ARCHITECTURE.md, "No WebGPU"): a clear message in the
+/// page instead of a blank canvas, after giving the page a chance to take over through `window.zunkFallback`.
+const no_webgpu_js =
+    \\// --- No WebGPU: tell the user (or let the page take over) and stop startup ---
+    \\// A page may define `window.zunkFallback = async ({ reason, webgl2 }) => handled` BEFORE app.js runs (e.g. an
+    \\// inline script in index.html). Return true after showing its own fallback (a static page, a WebGL2 build,
+    \\// a redirect); return false or throw to get the built-in message.
+    \\async function __zunkNoWebGPU(err) {
+    \\  const reason = (err && err.message) || String(err);
+    \\  console.error('[zunk] WebGPU is not available:', reason);
+    \\  let webgl2 = false;
+    \\  try { webgl2 = !!document.createElement('canvas').getContext('webgl2'); } catch (e) {}
+    \\  if (typeof window.zunkFallback === 'function') {
+    \\    try { if (await window.zunkFallback({ reason, webgl2 })) return new Promise(() => {}); }
+    \\    catch (e) { console.error('[zunk] zunkFallback threw:', e); }
+    \\  }
+    \\  const box = document.createElement('div');
+    \\  box.id = 'zunk-no-webgpu';
+    \\  box.setAttribute('role', 'alert');
+    \\  box.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#16171b;color:#e6e6ea;font:16px/1.5 system-ui,sans-serif;padding:24px;text-align:center;z-index:2147483647';
+    \\  const inner = document.createElement('div');
+    \\  inner.style.cssText = 'max-width:34em';
+    \\  const h = document.createElement('h1');
+    \\  h.style.cssText = 'font-size:1.4em;margin:0 0 .6em';
+    \\  h.textContent = 'This app needs WebGPU';
+    \\  const p = document.createElement('p');
+    \\  p.textContent = 'Your browser or graphics driver does not provide it. Recent Chrome, Edge and Safari support WebGPU on desktop; ' +
+    \\    'Firefox does on Windows, but not yet on Linux or Android. Updating the browser or enabling hardware acceleration may help.';
+    \\  const d = document.createElement('p');
+    \\  d.style.cssText = 'opacity:.6;font-size:.85em';
+    \\  d.textContent = reason + (webgl2 ? ' (WebGL2 is available, but this app does not use it.)' : '');
+    \\  inner.append(h, p, d);
+    \\  box.append(inner);
+    \\  document.body.append(box);
+    \\  return new Promise(() => {});
+    \\}
+    \\
+    \\
+;
+
 fn emitWebGPUStart(w: *std.Io.Writer) !void {
+    try w.writeAll(no_webgpu_js);
     try w.writeAll(
         \\// --- WebGPU: request the adapter and device now; `emitWebGPUInit` awaits them ---
         \\performance.mark('zunk:gpu-start');
@@ -843,7 +884,8 @@ fn emitWebGPUStart(w: *std.Io.Writer) !void {
 fn emitWebGPUInit(w: *std.Io.Writer) !void {
     try w.writeAll(
         \\// --- WebGPU initialization ---
-        \\const zunkGPUDevice = await zunkGPUPromise;
+        \\let zunkGPUDevice;
+        \\try { zunkGPUDevice = await zunkGPUPromise; } catch (e) { await __zunkNoWebGPU(e); } // never resolves: the app does not start
         \\performance.mark('zunk:gpu-ready');
         \\zunkGPUFormat = navigator.gpu.getPreferredCanvasFormat();
         \\const zunkGPUCanvas = document.getElementById('app');
@@ -1365,4 +1407,15 @@ test "WebGPU state helper is balanced JS and knows instance step mode" {
         else => {},
     };
     try std.testing.expectEqual(@as(i32, 0), depth);
+}
+
+test "no-WebGPU path: the message, the fallback hook and an await that stops startup are generated" {
+    var js: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer js.deinit();
+    try emitWebGPUStart(&js.writer);
+    try emitWebGPUInit(&js.writer);
+    const out = js.written();
+    try std.testing.expect(std.mem.find(u8, out, "window.zunkFallback") != null);
+    try std.testing.expect(std.mem.find(u8, out, "This app needs WebGPU") != null);
+    try std.testing.expect(std.mem.find(u8, out, "catch (e) { await __zunkNoWebGPU(e); }") != null);
 }
