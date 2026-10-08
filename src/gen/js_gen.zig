@@ -99,6 +99,7 @@ pub fn generate(
     if (categories_used.contains(.ui)) needs.ui_system = true;
     if (categories_used.contains(.a11y)) needs.a11y_state = true;
     if (categories_used.contains(.fx)) needs.fx = true;
+    if (categories_used.contains(.ime)) needs.ime = true;
 
     var js_aw: std.Io.Writer.Allocating = .init(allocator);
     defer js_aw.deinit();
@@ -118,6 +119,7 @@ pub fn generate(
     if (needs.ui_system) try emitUISystem(w);
     if (needs.a11y_state) try emitA11yState(w);
     if (needs.fx) try w.writeAll(fx_js ++ "\n\n");
+    if (needs.ime) try w.writeAll(ime_js ++ "\n\n");
 
     // Mutable WASM bindings. Held at module scope so that HMR can swap the
     // underlying instance while env methods (which close over this scope
@@ -325,10 +327,14 @@ const Features = struct {
     ui_system: bool = false,
     a11y_state: bool = false,
     fx: bool = false,
+    ime: bool = false,
 };
 
 /// The host-services bridge (see the header of `js/fx.js`).
 const fx_js = @embedFile("js/fx.js");
+
+/// The IME bridge (see the header of `js/ime.js`).
+const ime_js = @embedFile("js/ime.js");
 
 /// Write `s` escaped for use inside a double-quoted JS or CSS string.
 fn writeEscaped(w: *std.Io.Writer, s: []const u8) !void {
@@ -501,7 +507,7 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    const canvas = document.getElementById('app') || document.querySelector('canvas') || document;
         \\    const encoder = new TextEncoder();
         \\    const navKeys = new Set(['Tab', ' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Backspace', 'Delete']);
-        \\    const editable = t => !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+        \\    const editable = t => !!t && !t.hasAttribute('data-zunk-ime') && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
         \\    // Every event carries the live modifier state; track it from all of them so it is right even
         \\    // for a pinch (ctrlKey + wheel with no physical Ctrl held).
         \\    const syncMods = e => { this.modifiers = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0); this.modLatch |= this.modifiers; };
@@ -529,7 +535,8 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\      // Keep the page from scrolling / tabbing / quick-finding under the app, but leave browser
         \\      // shortcuts (F5, F12, Ctrl+R, Ctrl+L ...) and real form fields alone. Ctrl/Cmd+V is left
         \\      // alone too: the browser then fires `paste`, which the host-services bridge turns into data.
-        \\      const wanted = navKeys.has(k) || (printable && !chord && !e.altKey) || (chord && single && 'acxyz'.includes(k.toLowerCase()));
+        \\      const composing = e.isComposing || e.keyCode === 229; // the IME owns these keys
+        \\      const wanted = !composing && (navKeys.has(k) || (printable && !chord && !e.altKey) || (chord && single && 'acxyz'.includes(k.toLowerCase())));
         \\      if (wanted && !editable(e.target)) e.preventDefault();
         \\    });
         \\    document.addEventListener('paste', () => this.releasePaste(), true);
