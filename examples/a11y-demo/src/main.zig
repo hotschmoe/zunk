@@ -130,7 +130,7 @@ fn appendNode(
 
     records[count] = .{
         .cmd_index = cmd_index,
-        .role = @intFromEnum(role),
+        .role = @backingInt(role),
         .label_offset = label_offset,
         .label_len = label_len,
         .bounds_x = 0,

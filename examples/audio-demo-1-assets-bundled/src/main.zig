@@ -23,7 +23,7 @@ var prev_mouse_left: bool = false;
 
 // Visual feedback for each click-to-play
 const max_rings = 8;
-var rings: [max_rings]Ring = [_]Ring{.{}} ** max_rings;
+var rings: [max_rings]Ring = @splat(.{});
 var next_ring: usize = 0;
 
 const Ring = struct {

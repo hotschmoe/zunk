@@ -823,7 +823,7 @@ fn doctorCommand(allocator: std.mem.Allocator, io: std.Io, console: *rich.Consol
 }
 
 fn checkZigVersion(ver_str: []const u8) bool {
-    // Parse "0.16.0" or "0.16.0-dev.123+abc" -- we only need major.minor.patch
+    // Parse "0.17.0" or "0.17.0-dev.123+abc" -- we only need major.minor.patch
     var parts: [3]u16 = .{ 0, 0, 0 };
     var seg: usize = 0;
     var i: usize = 0;
@@ -835,9 +835,9 @@ fn checkZigVersion(ver_str: []const u8) bool {
             parts[seg] = parts[seg] * 10 + @as(u16, @intCast(ver_str[i] - '0'));
         } else break;
     }
-    // Minimum: 0.16.0
+    // Minimum: 0.17.0
     if (parts[0] > 0) return true;
-    if (parts[1] >= 16) return true;
+    if (parts[1] >= 17) return true;
     return false;
 }
 
@@ -930,8 +930,8 @@ fn buildZigTemplate() []const u8 {
     \\    const optimize = b.option(
     \\        std.builtin.OptimizeMode,
     \\        "optimize",
-    \\        "Optimization mode (default: ReleaseFast)",
-    \\    ) orelse .ReleaseFast;
+    \\        "Optimization mode (default: fast)",
+    \\    ) orelse .fast;
     \\
     \\    const wasm_target = b.resolveTargetQuery(.{
     \\        .cpu_arch = .wasm32,
@@ -971,7 +971,7 @@ fn buildZigZonTemplate() []const u8 {
     \\.{
     \\    .name = .app,
     \\    .version = "0.0.0",
-    \\    .minimum_zig_version = "0.16.0",
+    \\    .minimum_zig_version = "0.17.0",
     \\    .dependencies = .{
     \\        // TODO: replace with git URL once zunk is published
     \\        .zunk = .{ .path = "../.." },

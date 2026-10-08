@@ -89,11 +89,11 @@ pub const Handle = enum(i32) {
     }
 
     pub fn toInt(self: Handle) i32 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 
     pub fn fromInt(id: i32) Handle {
-        return @enumFromInt(id);
+        return @fromBackingInt(@intCast(id));
     }
 };
 
@@ -123,7 +123,7 @@ const MAX_CALLBACKS = 256;
 
 pub const CallbackFn = *const fn (arg0: i32, arg1: i32, arg2: i32, arg3: i32) void;
 
-var callback_table: [MAX_CALLBACKS]?CallbackFn = [_]?CallbackFn{null} ** MAX_CALLBACKS;
+var callback_table: [MAX_CALLBACKS]?CallbackFn = @splat(null);
 var next_callback_id: u32 = 1;
 
 pub fn registerCallback(cb: CallbackFn) u32 {
@@ -185,14 +185,14 @@ fn serializeManifest(comptime descs: []const FuncDesc) []const u8 {
                     buf[pos] = c;
                     pos += 1;
                 }
-                buf[pos] = @intFromEnum(p.kind);
+                buf[pos] = @backingInt(p.kind);
                 pos += 1;
                 buf[pos] = @intFromBool(p.optional);
                 pos += 1;
             }
-            buf[pos] = @intFromEnum(d.ret.kind);
+            buf[pos] = @backingInt(d.ret.kind);
             pos += 1;
-            buf[pos] = if (d.js_hint) |h| @intFromEnum(h) else 0;
+            buf[pos] = if (d.js_hint) |h| @backingInt(h) else 0;
             pos += 1;
             buf[pos] = @intFromBool(d.is_callback);
             pos += 1;

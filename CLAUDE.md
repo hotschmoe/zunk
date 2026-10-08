@@ -136,7 +136,7 @@ zunk is a build tool and runtime library for writing browser applications entire
 
 ### Toolchain
 
-- **Language**: Zig (minimum 0.15.2, see `build.zig.zon`)
+- **Language**: Zig (minimum 0.17.0, see `build.zig.zon`)
 - **Build**: `zig build` (native CLI), `zig build test` (tests), `zig build run` (run CLI)
 - **Target**: The zunk CLI is a native executable; user projects compile to `wasm32-freestanding`
 

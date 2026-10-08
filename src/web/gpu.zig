@@ -211,7 +211,7 @@ pub const BindGroupLayoutEntry = extern struct {
             .binding = b,
             .visibility = vis,
             .entry_type = 0,
-            .type_variant = @intFromEnum(buf_type),
+            .type_variant = @backingInt(buf_type),
             .has_min_size = 0,
             .has_dynamic_offset = 0,
             .min_size = 0,
@@ -223,7 +223,7 @@ pub const BindGroupLayoutEntry = extern struct {
             .binding = b,
             .visibility = vis,
             .entry_type = 1,
-            .type_variant = @intFromEnum(sample_type),
+            .type_variant = @backingInt(sample_type),
             .has_min_size = 0,
             .has_dynamic_offset = 0,
             .min_size = 0,
@@ -235,7 +235,7 @@ pub const BindGroupLayoutEntry = extern struct {
             .binding = b,
             .visibility = vis,
             .entry_type = 2,
-            .type_variant = @intFromEnum(sampler_type),
+            .type_variant = @backingInt(sampler_type),
             .has_min_size = 0,
             .has_dynamic_offset = 0,
             .min_size = 0,
@@ -413,14 +413,14 @@ pub const RenderPipelineDescriptor = struct {
             .fragment_entry_len = @intCast(self.fragment_entry.len),
             .vertex_buffers_ptr = ptr32(self.vertex_buffers.ptr),
             .vertex_buffers_len = @intCast(self.vertex_buffers.len),
-            .color_format = if (self.color_format) |f| @intFromEnum(f) else no_format,
-            .blend = @intFromEnum(self.blend),
-            .topology = @intFromEnum(self.topology),
-            .cull_mode = @intFromEnum(self.cull_mode),
-            .front_face = @intFromEnum(self.front_face),
-            .depth_format = if (d) |x| @intFromEnum(x.format) else no_format,
+            .color_format = if (self.color_format) |f| @backingInt(f) else no_format,
+            .blend = @backingInt(self.blend),
+            .topology = @backingInt(self.topology),
+            .cull_mode = @backingInt(self.cull_mode),
+            .front_face = @backingInt(self.front_face),
+            .depth_format = if (d) |x| @backingInt(x.format) else no_format,
             .depth_write = if (d) |x| @intFromBool(x.write_enabled) else 0,
-            .depth_compare = if (d) |x| @intFromEnum(x.compare) else @intFromEnum(CompareFunction.always),
+            .depth_compare = if (d) |x| @backingInt(x.compare) else @backingInt(CompareFunction.always),
             .depth_bias = if (d) |x| x.bias else 0,
             .depth_bias_slope = if (d) |x| x.bias_slope_scale else 0,
             .sample_count = self.sample_count,
@@ -471,10 +471,10 @@ pub const RenderPassDescriptor = struct {
             .color = rawHandle(self.color),
             .resolve = rawHandle(self.resolve),
             .depth = rawHandle(self.depth),
-            .color_load = @intFromEnum(self.color_load),
-            .color_store = @intFromEnum(self.color_store),
-            .depth_load = @intFromEnum(self.depth_load),
-            .depth_store = @intFromEnum(self.depth_store),
+            .color_load = @backingInt(self.color_load),
+            .color_store = @backingInt(self.color_store),
+            .depth_load = @backingInt(self.depth_load),
+            .depth_store = @backingInt(self.depth_store),
             .depth_clear = self.depth_clear,
             .clear = self.clear,
         };
@@ -585,7 +585,7 @@ pub fn release(handle: bind.Handle) void {
 /// The swap-chain format the canvas was configured with. MSAA colour targets
 /// that resolve into the canvas must use this format.
 pub fn canvasFormat() TextureFormat {
-    return @enumFromInt(zunk_gpu_canvas_format());
+    return @fromBackingInt(@intCast(zunk_gpu_canvas_format()));
 }
 
 /// Pixel size of the canvas's swap-chain texture (CSS size x devicePixelRatio).
@@ -642,7 +642,7 @@ pub fn bufferMapRead(buf: Buffer) void {
 }
 
 pub fn bufferMapState(buf: Buffer) MapState {
-    return @enumFromInt(zunk_gpu_buffer_map_state(buf.toInt()));
+    return @fromBackingInt(@intCast(zunk_gpu_buffer_map_state(buf.toInt())));
 }
 
 /// Copy `dst.len` bytes of a `.mapped` buffer into wasm memory.
@@ -671,7 +671,7 @@ pub fn createTexture(w: u32, h: u32, fmt: TextureFormat, usage: u32) Texture {
 /// attachment (`RENDER_ATTACHMENT`); resolve it into a single-sample texture
 /// to sample or read it.
 pub fn createTextureMultisampled(w: u32, h: u32, fmt: TextureFormat, usage: u32, sample_count: u32) Texture {
-    return bind.Handle.fromInt(zunk_gpu_create_texture(w, h, @intFromEnum(fmt), usage, sample_count));
+    return bind.Handle.fromInt(zunk_gpu_create_texture(w, h, @backingInt(fmt), usage, sample_count));
 }
 
 /// A depth buffer matching a colour target's size and sample count.
@@ -873,7 +873,7 @@ pub fn renderPassSetIndexBuffer(pass: RenderPassEncoder, buffer: Buffer, format:
     zunk_gpu_render_pass_set_index_buffer(
         pass.toInt(),
         buffer.toInt(),
-        @intFromEnum(format),
+        @backingInt(format),
         @truncate(offset),
         @truncate(offset >> 32),
         @truncate(size),
@@ -1090,9 +1090,9 @@ test "RenderPipelineDescriptor lowering: instanced vertex layout, depth, msaa" {
         .sample_count = 4,
     }).raw();
     try std.testing.expectEqual(@as(u32, 2), raw.vertex_buffers_len);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(TextureFormat.rgba8unorm)), raw.color_format);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(PrimitiveTopology.line_list)), raw.topology);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(TextureFormat.depth24plus)), raw.depth_format);
+    try std.testing.expectEqual(@as(u32, @backingInt(TextureFormat.rgba8unorm)), raw.color_format);
+    try std.testing.expectEqual(@as(u32, @backingInt(PrimitiveTopology.line_list)), raw.topology);
+    try std.testing.expectEqual(@as(u32, @backingInt(TextureFormat.depth24plus)), raw.depth_format);
     try std.testing.expectEqual(@as(u32, 0), raw.depth_write);
     try std.testing.expectEqual(@as(i32, -2), raw.depth_bias);
     try std.testing.expectEqual(@as(u32, 4), raw.sample_count);

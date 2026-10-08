@@ -70,7 +70,7 @@ const WsSlot = struct {
 
 const WsRegistry = struct {
     mutex: Io.Mutex = .init,
-    slots: [16]?WsSlot = .{null} ** 16,
+    slots: [16]?WsSlot = @splat(null),
 
     fn add(self: *WsRegistry, io: Io, stream: net.Stream) void {
         self.mutex.lockUncancelable(io);
@@ -324,7 +324,7 @@ fn wsReadLoop(reader: *net.Stream.Reader) void {
         r.fillMore() catch return;
         const chunk = r.buffered();
         if (chunk.len == 0) return;
-        if (chunk[0] == @intFromEnum(webzocket.OpCode.close)) return;
+        if (chunk[0] == @backingInt(webzocket.OpCode.close)) return;
         r.tossBuffered();
     }
 }

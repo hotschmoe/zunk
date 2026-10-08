@@ -360,7 +360,7 @@ The `init` command:
 3. Scaffolds 4 files from comptime templates: `build.zig`, `build.zig.zon`, `src/main.zig`, `.gitignore`
 
 The `doctor` command:
-1. Checks zig version (spawns `zig version`, parses semver, validates >= 0.15.2)
+1. Checks zig version (spawns `zig version`, parses semver, validates >= 0.17.0)
 2. Reports wasm32 target availability (bundled with zig)
 3. Checks project structure (`build.zig`, `build.zig.zon`, `src/main.zig`)
 4. Checks `.gitignore` presence (warns about dist/ being committed)

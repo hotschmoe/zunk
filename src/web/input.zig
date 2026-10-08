@@ -147,15 +147,15 @@ fn testBit(bitmap: [32]u8, code: u8) bool {
 }
 
 pub fn isKeyDown(key: Key) bool {
-    return testBit(input_state.keys_down, @intFromEnum(key));
+    return testBit(input_state.keys_down, @backingInt(key));
 }
 
 pub fn isKeyPressed(key: Key) bool {
-    return testBit(input_state.keys_pressed, @intFromEnum(key));
+    return testBit(input_state.keys_pressed, @backingInt(key));
 }
 
 pub fn isKeyReleased(key: Key) bool {
-    return testBit(input_state.keys_released, @intFromEnum(key));
+    return testBit(input_state.keys_released, @backingInt(key));
 }
 
 pub const MouseButtons = struct {
@@ -171,11 +171,11 @@ pub const MouseButton = enum(u3) {
 };
 
 pub fn isMouseButtonPressed(btn: MouseButton) bool {
-    return (input_state.mouse_buttons_pressed & (@as(u8, 1) << @intFromEnum(btn))) != 0;
+    return (input_state.mouse_buttons_pressed & (@as(u8, 1) << @backingInt(btn))) != 0;
 }
 
 pub fn isMouseButtonReleased(btn: MouseButton) bool {
-    return (input_state.mouse_buttons_released & (@as(u8, 1) << @intFromEnum(btn))) != 0;
+    return (input_state.mouse_buttons_released & (@as(u8, 1) << @backingInt(btn))) != 0;
 }
 
 pub const Mouse = struct {
