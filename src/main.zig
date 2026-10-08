@@ -71,6 +71,7 @@ fn printUsage(console: *rich.Console) !void {
     try console.print("    [yellow]--proxy[/] <prefix=url>  Proxy requests (e.g. --proxy /api=http://localhost:3000)");
     try console.print("    [yellow]--bridge-dep[/] <path>    Include a dep-provided bridge.js (repeatable; typically wired by installApp)");
     try console.print("    [yellow]--font[/] <family> <weight> <path>  Ship a font file as fonts/<name> + @font-face; the app starts once it has loaded (repeatable)");
+    try console.print("    [yellow]--font-nowait[/]                      Do not hold startup for --font files (they are preloaded and load in the background)");
     try console.print("    [yellow]--verbose[/] / [yellow]-v[/]        Show all resolutions in build report");
     try console.print("    [yellow]--report-json[/]          Output build report as JSON");
     try console.print("    [yellow]--force[/]                Bypass build cache");
@@ -101,6 +102,7 @@ const BuildArgs = struct {
     bridge_deps_len: usize = 0,
     fonts_buf: [max_fonts]FontArg = undefined,
     fonts_len: usize = 0,
+    fonts_nowait: bool = false,
     /// Set by the parser when an argument is unusable; the build then stops.
     arg_error: ?[]const u8 = null,
 
@@ -145,6 +147,8 @@ fn parseBuildArgs(args: []const []const u8) BuildArgs {
                 result.bridge_deps_len += 1;
             }
             i += 1;
+        } else if (std.mem.eql(u8, args[i], "--font-nowait")) {
+            result.fonts_nowait = true;
         } else if (std.mem.eql(u8, args[i], "--font")) {
             if (i + 3 >= args.len) {
                 result.arg_error = "--font needs <family> <weight> <path>";
@@ -193,6 +197,7 @@ const BuildContext = struct {
     wasm_basename: []const u8,
     bridge_chunks: []js_gen.BridgeJsChunk,
     fonts: []js_gen.FontFace,
+    fonts_blocking: bool = true,
 
     fn deinit(self: *BuildContext, allocator: std.mem.Allocator) void {
         allocator.free(self.fonts);
@@ -259,6 +264,7 @@ fn prepareBuild(allocator: std.mem.Allocator, io: std.Io, parsed: BuildArgs, con
         .wasm_basename = std.Io.Dir.path.basename(wasm_path),
         .bridge_chunks = bridge_chunks,
         .fonts = fonts,
+        .fonts_blocking = !parsed.fonts_nowait,
     };
 }
 
@@ -322,6 +328,7 @@ fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
         .wasm_filename = ctx.wasm_basename,
         .bridge_js_chunks = ctx.bridge_chunks,
         .fonts = ctx.fonts,
+        .fonts_blocking = ctx.fonts_blocking,
         .verbose_report = parsed.verbose,
         .json_report = parsed.json_report,
     });
@@ -406,6 +413,7 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
         .wasm_filename = hashed_wasm_name,
         .bridge_js_chunks = ctx.bridge_chunks,
         .fonts = ctx.fonts,
+        .fonts_blocking = ctx.fonts_blocking,
         .verbose_report = parsed.verbose,
         .json_report = parsed.json_report,
     });
@@ -438,6 +446,7 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
         .wasm_filename = hashed_wasm_name,
         .bridge_js_chunks = ctx.bridge_chunks,
         .fonts = ctx.fonts,
+        .fonts_blocking = ctx.fonts_blocking,
         .js_filename = hashed_js_name,
         .wasm_preload = true,
         .js_integrity = sri,

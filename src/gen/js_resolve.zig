@@ -471,7 +471,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         .{ "copy_texture_region_to_buffer", "H.get(arguments[0]).copyTextureToBuffer({texture:H.get(arguments[1]),origin:[arguments[4],arguments[5]]}," ++
             "{buffer:H.get(arguments[2]),bytesPerRow:arguments[3]},{width:arguments[6],height:arguments[7]});", false, false, true },
 
-        .{ "create_shader_module", "return H.store(H.get(1).createShaderModule({code:readStr(arguments[0],arguments[1])}));", true, false, true },
+        .{ "create_shader_module", "const t0=performance.now();const sm=H.get(1).createShaderModule({code:readStr(arguments[0],arguments[1])});const st=(window.__zunkStats||={pipelines:0,pipelineMs:0,shaders:0,shaderMs:0});st.shaders++;st.shaderMs+=performance.now()-t0;return H.store(sm);", true, false, true },
 
         // Texture
         .{ "create_texture", "return H.store(H.get(1).createTexture({size:[arguments[0],arguments[1]]," ++

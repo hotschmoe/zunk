@@ -27,11 +27,15 @@ pub const GenOptions = struct {
     /// own project chunk last, so the user can override symbols from deps.
     bridge_js_chunks: []const BridgeJsChunk = &.{},
     js_filename: []const u8 = "app.js",
-    wasm_preload: bool = false,
+    /// `<link rel=preload>` for the wasm, so its download starts at HTML parse, before the script runs.
+    wasm_preload: bool = true,
     /// `@font-face` rules go into the page; the app starts only after every
     /// face has loaded (`document.fonts.load`), so the first text measurement
     /// already sees the real font.
     fonts: []const FontFace = &.{},
+    /// false (`--font-nowait`): the faces still load and are `preload`ed, but startup does not wait for them (apps
+    /// that rasterize text themselves, like teak's stb path, use the page fonts only as a fallback).
+    fonts_blocking: bool = true,
     js_integrity: ?[]const u8 = null,
     verbose_report: bool = false,
     json_report: bool = false,
@@ -164,8 +168,10 @@ pub fn generate(
     try w.writeAll(
         \\// --- WASM load helper ---
         \\async function __zunkLoad(wasmUrl) {
+        \\  performance.mark('zunk:load-start');
         \\  const response = await fetch(wasmUrl);
         \\  const result = await WebAssembly.instantiateStreaming(response, { env });
+        \\  performance.mark('zunk:wasm-ready');
         \\  instance = result.instance;
         \\  exports = instance.exports;
         \\  memory = exports.memory;
@@ -180,18 +186,20 @@ pub fn generate(
     try w.writeAll("  window.wasmBindings = exports;\n  window.wasmMemory = memory;\n");
     try w.writeAll("}\n\n");
 
+    if (needs.webgpu_init) try emitWebGPUStart(w);
+
     try w.print(
         \\await __zunkLoad('{s}{s}');
         \\
         \\
     , .{ opts.public_url, opts.wasm_filename });
 
-    try emitFontLoad(w, opts.fonts);
+    try emitFontLoad(w, opts.fonts, opts.fonts_blocking);
 
     if (needs.webgpu_init) try emitWebGPUInit(w);
 
     if (has_init) {
-        try w.writeAll("// Init\nexports.init();\n\n");
+        try w.writeAll("// Init\nperformance.mark('zunk:init-start');\nexports.init();\nperformance.mark('zunk:init-end');\n\n");
     }
 
     if (needs.render_loop) {
@@ -199,14 +207,18 @@ pub fn generate(
             \\// --- Render loop ---
             \\let zunkLastTime = 0;
             \\let zunkFrameId = 0;
+            \\let zunkFrameId_first = false;
+            \\let zunkFirstDone = false;
             \\function zunkFrame(time) {
             \\  const dt = (time - zunkLastTime) / 1000;
             \\  zunkLastTime = time;
+            \\  if (!zunkFrameId_first) { zunkFrameId_first = true; performance.mark('zunk:first-frame-start'); }
             \\
         );
         // Input flush is WASM-driven via input.poll() to avoid wiping per-frame state early.
         try w.writeAll(
             \\  exports.frame(Math.min(dt, 0.1));
+            \\  if (!zunkFirstDone) { zunkFirstDone = true; performance.mark('zunk:first-frame-end'); }
             \\  zunkFrameId = requestAnimationFrame(zunkFrame);
             \\}
             \\zunkFrameId = requestAnimationFrame(zunkFrame);
@@ -352,9 +364,12 @@ fn writeEscaped(w: *std.Io.Writer, s: []const u8) !void {
 }
 
 /// Block startup until every registered font face is loaded.
-fn emitFontLoad(w: *std.Io.Writer, fonts: []const FontFace) !void {
+fn emitFontLoad(w: *std.Io.Writer, fonts: []const FontFace, blocking: bool) !void {
     if (fonts.len == 0) return;
-    try w.writeAll("// --- Fonts: the app starts once every face is loaded ---\nawait Promise.all([\n");
+    try w.writeAll(if (blocking)
+        "// --- Fonts: the app starts once every face is loaded ---\nawait Promise.all([\n"
+    else
+        "// --- Fonts: loading in the background (the app does not wait) ---\nvoid Promise.all([\n");
     for (fonts) |f| {
         try w.print("  document.fonts.load(\"{d} 16px \\\"", .{f.weight});
         try writeEscaped(w, f.family);
@@ -771,7 +786,11 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\      };
         \\    }
         \\    if (u(18) > 1) desc.multisample = { count: u(18) };
-        \\    return H.store(H.get(1).createRenderPipeline(desc));
+        \\    const t0 = performance.now();
+        \\    const pipeline = H.get(1).createRenderPipeline(desc);
+        \\    const st = (window.__zunkStats ||= { pipelines: 0, pipelineMs: 0, shaders: 0, shaderMs: 0 });
+        \\    st.pipelines++; st.pipelineMs += performance.now() - t0;
+        \\    return H.store(pipeline);
         \\  },
         \\
         \\  // Buffer readback. maps: buffer handle -> MapState (see gpu.zig):
@@ -803,13 +822,29 @@ fn emitA11yState(w: *std.Io.Writer) !void {
     try w.writeAll(a11y_js ++ "\n\n");
 }
 
+/// Kick off the adapter + device request at the very top of the script: acquiring them (a GPU
+/// process start in a cold browser) overlaps the wasm download and compile instead of following them.
+fn emitWebGPUStart(w: *std.Io.Writer) !void {
+    try w.writeAll(
+        \\// --- WebGPU: request the adapter and device now; `emitWebGPUInit` awaits them ---
+        \\performance.mark('zunk:gpu-start');
+        \\const zunkGPUPromise = (async () => {
+        \\  if (!navigator.gpu) throw new Error('WebGPU not supported');
+        \\  const adapter = await navigator.gpu.requestAdapter();
+        \\  if (!adapter) throw new Error('No WebGPU adapter');
+        \\  return await adapter.requestDevice();
+        \\})();
+        \\zunkGPUPromise.catch(() => {}); // surfaced where it is awaited
+        \\
+        \\
+    );
+}
+
 fn emitWebGPUInit(w: *std.Io.Writer) !void {
     try w.writeAll(
         \\// --- WebGPU initialization ---
-        \\if (!navigator.gpu) throw new Error('WebGPU not supported');
-        \\const zunkGPUAdapter = await navigator.gpu.requestAdapter();
-        \\if (!zunkGPUAdapter) throw new Error('No WebGPU adapter');
-        \\const zunkGPUDevice = await zunkGPUAdapter.requestDevice();
+        \\const zunkGPUDevice = await zunkGPUPromise;
+        \\performance.mark('zunk:gpu-ready');
         \\zunkGPUFormat = navigator.gpu.getPreferredCanvasFormat();
         \\const zunkGPUCanvas = document.getElementById('app');
         \\zunkGPUContext = zunkGPUCanvas.getContext('webgpu');
@@ -979,6 +1014,10 @@ pub fn generateHtml(
 
     if (opts.wasm_preload) {
         try w.print("  <link rel=\"preload\" href=\"{s}{s}\" as=\"fetch\" type=\"application/wasm\" crossorigin>\n", .{ opts.public_url, opts.wasm_filename });
+    }
+
+    for (opts.fonts) |f| {
+        try w.print("  <link rel=\"preload\" href=\"{s}fonts/{s}\" as=\"font\" type=\"font/ttf\" crossorigin>\n", .{ opts.public_url, f.file });
     }
 
     try w.writeAll("</head>\n<body>\n");
@@ -1238,7 +1277,7 @@ test "fonts: @font-face rules and a startup wait for every face" {
 
     var js: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer js.deinit();
-    try emitFontLoad(&js.writer, &fonts);
+    try emitFontLoad(&js.writer, &fonts, true);
     try std.testing.expect(std.mem.find(u8, js.written(), "document.fonts.load(\"400 16px \\\"IBM Plex Mono\\\"\")") != null);
     try std.testing.expect(std.mem.find(u8, js.written(), "document.fonts.load(\"700 16px") != null);
     try std.testing.expect(std.mem.startsWith(u8, js.written(), "// --- Fonts"));
@@ -1246,9 +1285,18 @@ test "fonts: @font-face rules and a startup wait for every face" {
     // No fonts: nothing emitted.
     var none: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer none.deinit();
-    try emitFontLoad(&none.writer, &.{});
+    try emitFontLoad(&none.writer, &.{}, true);
     try emitFontFaces(&none.writer, "/", &.{});
     try std.testing.expectEqual(@as(usize, 0), none.written().len);
+}
+
+test "fonts: non-blocking mode loads in the background; fonts and the wasm are preloaded" {
+    const fonts = [_]FontFace{.{ .family = "IBM Plex Mono", .weight = 400, .file = "IBMPlexMono-Regular.ttf" }};
+    var js: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer js.deinit();
+    try emitFontLoad(&js.writer, &fonts, false);
+    try std.testing.expect(std.mem.find(u8, js.written(), "void Promise.all") != null);
+    try std.testing.expect(std.mem.find(u8, js.written(), "await Promise.all") == null);
 }
 
 test "fx bridge is embedded and Ctrl+V is left to the browser" {
