@@ -446,6 +446,7 @@ Plain imports that return at once. JS copies whatever it needs out of wasm memor
 | `fx.clock(id)` | `zunk_fx_clock` | `clock`: unix ms + UTC offset minutes |
 | `fx.queryParam(id, name)` | `zunk_fx_query_param` | `query_value` |
 | `fx.clipboardWrite(text)` | `zunk_fx_clipboard_write` | none (`navigator.clipboard.writeText`, `execCommand('copy')` fallback) |
+| `fx.clipboardWriteImage(png)` | `zunk_fx_clipboard_write_image` | none (`navigator.clipboard.write` with an `image/png` `ClipboardItem`; needs a user activation and a secure context, a refusal is logged) |
 
 HTTP: request body up to ~8 MB and response bodies up to 32 MB are supported; a failed request (network error, CORS, timeout via `AbortController`, oversized response) completes with status 0 and a readable message. `encodeHeaders` turns a slice of `{name, value}` into the header text and drops headers that could smuggle another.
 

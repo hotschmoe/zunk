@@ -236,6 +236,18 @@ const zunkFx = (() => {
     else fallback();
   }
 
+  function clipboard_write_image(ptr, len) {
+    // Copy out of wasm memory first: the buffer may be reused before the async write runs.
+    const bytes = new Uint8Array(len);
+    bytes.set(new Uint8Array(memory.buffer, ptr, len));
+    if (!navigator.clipboard || !navigator.clipboard.write || typeof ClipboardItem === 'undefined') {
+      console.warn('[zunk fx] image clipboard is not available in this browser/context');
+      return;
+    }
+    const item = new ClipboardItem({ 'image/png': new Blob([bytes], { type: 'image/png' }) });
+    navigator.clipboard.write([item]).catch((e) => console.warn('[zunk fx] clipboard image write failed:', e));
+  }
+
   // ---- paste and drop (JS -> wasm, unsolicited) ----------------------------
 
   const editable = t => !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
@@ -309,5 +321,5 @@ const zunkFx = (() => {
     }
   });
 
-  return { pump, http, download, open_file, storage_get, storage_set, clock, query_param, clipboard_write };
+  return { pump, http, download, open_file, storage_get, storage_set, clock, query_param, clipboard_write, clipboard_write_image };
 })();

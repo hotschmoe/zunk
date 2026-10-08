@@ -51,6 +51,7 @@ extern "env" fn zunk_fx_storage_set(key_ptr: [*]const u8, key_len: u32, val_ptr:
 extern "env" fn zunk_fx_clock(id: u32) void;
 extern "env" fn zunk_fx_query_param(id: u32, name_ptr: [*]const u8, name_len: u32) void;
 extern "env" fn zunk_fx_clipboard_write(ptr: [*]const u8, len: u32) void;
+extern "env" fn zunk_fx_clipboard_write_image(ptr: [*]const u8, len: u32) void;
 
 /// Allocator for completion records (shared with the app on wasm).
 const gpa = std.heap.page_allocator;
@@ -158,6 +159,13 @@ pub fn queryParam(id: u32, name: []const u8) void {
 /// `execCommand('copy')` fallback). No result.
 pub fn clipboardWrite(text: []const u8) void {
     zunk_fx_clipboard_write(text.ptr, @intCast(text.len));
+}
+
+/// Write a PNG image to the clipboard (`navigator.clipboard.write` with an
+/// `image/png` `ClipboardItem`). Browsers require a user activation and a
+/// secure context; a refusal is logged. No result.
+pub fn clipboardWriteImage(png: []const u8) void {
+    zunk_fx_clipboard_write_image(png.ptr, @intCast(png.len));
 }
 
 /// Encode headers as "Name: value\n" lines for `http`. `headers` is any
