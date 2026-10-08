@@ -491,6 +491,9 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         .{ "copy_texture_to_buffer", "H.get(arguments[0]).copyTextureToBuffer({texture:H.get(arguments[1])}," ++
             "{buffer:H.get(arguments[2]),bytesPerRow:arguments[3]},{width:arguments[4],height:arguments[5]});", false, false, true },
 
+        .{ "copy_texture_region_to_buffer", "H.get(arguments[0]).copyTextureToBuffer({texture:H.get(arguments[1]),origin:[arguments[4],arguments[5]]}," ++
+            "{buffer:H.get(arguments[2]),bytesPerRow:arguments[3]},{width:arguments[6],height:arguments[7]});", false, false, true },
+
         .{ "create_shader_module", "return H.store(H.get(1).createShaderModule({code:readStr(arguments[0],arguments[1])}));", true, false, true },
 
         // Texture
@@ -572,6 +575,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "const sz=arguments[5]+arguments[6]*0x100000000;" ++
             "H.get(arguments[0]).setIndexBuffer(H.get(arguments[1]),['uint16','uint32'][arguments[2]],off,sz);", false, false, true },
         .{ "render_pass_set_viewport", "H.get(arguments[0]).setViewport(arguments[1],arguments[2],arguments[3],arguments[4],arguments[5],arguments[6]);", false, false, true },
+        .{ "render_pass_set_stencil_reference", "H.get(arguments[0]).setStencilReference(arguments[1]);", false, false, true },
         .{ "render_pass_set_scissor_rect", "H.get(arguments[0]).setScissorRect(arguments[1],arguments[2],arguments[3],arguments[4]);", false, false, true },
         .{ "render_pass_draw", "H.get(arguments[0]).draw(arguments[1],arguments[2],arguments[3],arguments[4]);", false, false, true },
         .{ "render_pass_draw_indexed", "H.get(arguments[0]).drawIndexed(arguments[1],arguments[2],arguments[3],arguments[4],arguments[5]);", false, false, true },

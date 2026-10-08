@@ -630,7 +630,7 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\let zunkTextCanvas = null;
         \\let zunkTextCtx = null;
         \\const zunkGPU = {
-        \\  textureFormats: ['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float','r8unorm'],
+        \\  textureFormats: ['rgba16float','rgba32float','bgra8unorm','rgba8unorm','rgba8unorm-srgb','depth24plus','depth32float','r8unorm','depth24plus-stencil8'],
         \\  vertexFormats: ['float32','float32x2','float32x3','float32x4','uint32','uint32x2','uint32x3','uint32x4','sint32','sint32x2','sint32x3','sint32x4'],
         \\  stepModes: ['vertex','instance'],
         \\  topologies: ['triangle-list','line-list','line-strip','triangle-strip','point-list'],
@@ -639,6 +639,7 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\  compares: ['never','less','equal','less-equal','greater','not-equal','greater-equal','always'],
         \\  loadOps: ['clear','load'],
         \\  storeOps: ['store','discard'],
+        \\  stencilOps: ['keep','zero','replace','invert','increment-clamp','decrement-clamp','increment-wrap','decrement-wrap'],
         \\  noFormat: 0xFFFFFFFF,
         \\  // Indexed by BlendMode. `null` = write the source colour unblended.
         \\  blends: [
@@ -669,9 +670,9 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\    if (this._canvasViewH) { H.release(this._canvasViewH); this._canvasViewH = 0; }
         \\  },
         \\
-        \\  // RenderPassDescriptor (12 words). Handle 0 = canvas / none.
+        \\  // RenderPassDescriptor (16 words). Handle 0 = canvas / none.
         \\  beginPass(ptr) {
-        \\    const v = new DataView(memory.buffer, ptr, 48);
+        \\    const v = new DataView(memory.buffer, ptr, 64);
         \\    const u = (i) => v.getUint32(i * 4, true);
         \\    const f = (i) => v.getFloat32(i * 4, true);
         \\    const color = {
@@ -689,6 +690,11 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\        depthLoadOp: this.loadOps[u(5)],
         \\        depthStoreOp: this.storeOps[u(6)],
         \\      };
+        \\      if (u(12)) {
+        \\        desc.depthStencilAttachment.stencilClearValue = u(15);
+        \\        desc.depthStencilAttachment.stencilLoadOp = this.loadOps[u(13)];
+        \\        desc.depthStencilAttachment.stencilStoreOp = this.storeOps[u(14)];
+        \\      }
         \\    }
         \\    return H.store(H.get(this.encoder()).beginRenderPass(desc));
         \\  },
@@ -719,9 +725,15 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\    return buffers;
         \\  },
         \\
-        \\  // RenderPipelineDescriptor (19 words).
+        \\  // GPUStencilFaceState from 4 words at `at`: compare, fail, depthFail, pass.
+        \\  stencilFace(u, at) {
+        \\    return { compare: this.compares[u(at)], failOp: this.stencilOps[u(at + 1)],
+        \\             depthFailOp: this.stencilOps[u(at + 2)], passOp: this.stencilOps[u(at + 3)] };
+        \\  },
+        \\
+        \\  // RenderPipelineDescriptor (29 words).
         \\  createPipeline(ptr) {
-        \\    const v = new DataView(memory.buffer, ptr, 76);
+        \\    const v = new DataView(memory.buffer, ptr, 116);
         \\    const u = (i) => v.getUint32(i * 4, true);
         \\    const module = H.get(u(1));
         \\    const target = { format: u(8) === this.noFormat ? zunkGPUFormat : this.textureFormats[u(8)] };
@@ -740,6 +752,10 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\        depthCompare: this.compares[u(15)],
         \\        depthBias: v.getInt32(16 * 4, true),
         \\        depthBiasSlopeScale: v.getFloat32(17 * 4, true),
+        \\        stencilFront: this.stencilFace(u, 19),
+        \\        stencilBack: this.stencilFace(u, 23),
+        \\        stencilReadMask: u(27),
+        \\        stencilWriteMask: u(28),
         \\      };
         \\    }
         \\    if (u(18) > 1) desc.multisample = { count: u(18) };

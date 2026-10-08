@@ -156,7 +156,7 @@ Full WebGPU bindings are implemented and working. The particle-life example uses
 - [x] DPR-aware resize handler for WebGPU canvas
 - [x] Layer 2 ergonomic wrappers with typed handles in `web/gpu.zig` (50 extern fns, typed Device/Buffer/Texture/Pipeline aliases, convenience constructors)
 - [x] ABI-matched struct layouts (`BindGroupLayoutEntry` = 40 bytes, `BindGroupEntry` = 32 bytes)
-- [x] Texture format enum (rgba16float, rgba32float, bgra8unorm, rgba8unorm, rgba8unorm_srgb, depth24plus, depth32float, r8unorm)
+- [x] Texture format enum (rgba16float, rgba32float, bgra8unorm, rgba8unorm, rgba8unorm_srgb, depth24plus, depth32float, r8unorm, depth24plus_stencil8) + StencilState in pipelines, stencil load/store in passes, region readback
 - [x] Usage flag constants matching WebGPU spec (`BufferUsage`, `TextureUsage`, `ShaderVisibility`)
 
 ### 4.1b 3D rendering surface -- DONE

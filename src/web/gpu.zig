@@ -75,9 +75,10 @@ pub const TextureUsage = struct {
     pub const RENDER_ATTACHMENT: u32 = 0x10;
 };
 
-/// Index order is shared with the `textureFormats` table in js_gen.zig. Stencil
-/// formats are deliberately absent: nothing here sets stencil ops, and a
-/// stencil-bearing depth attachment would need them.
+/// Index order is shared with the `textureFormats` table in js_gen.zig.
+/// `depth24plus_stencil8` carries a stencil aspect: passes that attach it must
+/// also set `RenderPassDescriptor.stencil`, and pipelines drawing into it
+/// should set `DepthState.stencil` (the default is a no-op).
 pub const TextureFormat = enum(u32) {
     rgba16float = 0,
     rgba32float = 1,
@@ -87,6 +88,7 @@ pub const TextureFormat = enum(u32) {
     depth24plus = 5,
     depth32float = 6,
     r8unorm = 7,
+    depth24plus_stencil8 = 8,
 };
 
 pub const TextureSampleType = enum(u32) {
@@ -372,8 +374,42 @@ fn ptr32(p: anytype) u32 {
     return @truncate(@intFromPtr(p));
 }
 
+pub const StencilOp = enum(u32) {
+    keep = 0,
+    zero = 1,
+    replace = 2,
+    invert = 3,
+    increment_clamp = 4,
+    decrement_clamp = 5,
+    increment_wrap = 6,
+    decrement_wrap = 7,
+};
+
+/// Per-face stencil test + update. Default = always pass, never modify.
+pub const StencilFace = struct {
+    compare: CompareFunction = .always,
+    /// Stencil test failed.
+    fail_op: StencilOp = .keep,
+    /// Stencil passed, depth test failed.
+    depth_fail_op: StencilOp = .keep,
+    /// Both passed.
+    pass_op: StencilOp = .keep,
+};
+
+/// Stencil state of a pipeline. Only meaningful when `DepthState.format` has a
+/// stencil aspect (`depth24plus_stencil8`); the default is the WebGPU default
+/// (a no-op), valid for every format. The reference value is per draw:
+/// `renderPassSetStencilReference`.
+pub const StencilState = struct {
+    front: StencilFace = .{},
+    back: StencilFace = .{},
+    read_mask: u32 = 0xFFFF_FFFF,
+    write_mask: u32 = 0xFFFF_FFFF,
+};
+
 pub const DepthState = struct {
     format: TextureFormat = .depth32float,
+    stencil: StencilState = .{},
     write_enabled: bool = true,
     compare: CompareFunction = .less,
     /// Constant + slope-scaled depth bias; lets coplanar lines win against
@@ -424,11 +460,19 @@ pub const RenderPipelineDescriptor = struct {
             .depth_bias = if (d) |x| x.bias else 0,
             .depth_bias_slope = if (d) |x| x.bias_slope_scale else 0,
             .sample_count = self.sample_count,
+            .stencil_front = rawFace(if (d) |x| x.stencil.front else .{}),
+            .stencil_back = rawFace(if (d) |x| x.stencil.back else .{}),
+            .stencil_read_mask = if (d) |x| x.stencil.read_mask else 0xFFFF_FFFF,
+            .stencil_write_mask = if (d) |x| x.stencil.write_mask else 0xFFFF_FFFF,
         };
     }
 };
 
-/// 19 little-endian words, field order == `zunkGPU.createPipeline` in
+fn rawFace(f: StencilFace) [4]u32 {
+    return .{ @backingInt(f.compare), @backingInt(f.fail_op), @backingInt(f.depth_fail_op), @backingInt(f.pass_op) };
+}
+
+/// 29 little-endian words, field order == `zunkGPU.createPipeline` in
 /// js_gen.zig. Keep the two in lock-step.
 pub const RawPipelineDesc = extern struct {
     layout: u32,
@@ -450,9 +494,22 @@ pub const RawPipelineDesc = extern struct {
     depth_bias: i32,
     depth_bias_slope: f32,
     sample_count: u32,
+    /// `{compare, fail_op, depth_fail_op, pass_op}` per face.
+    stencil_front: [4]u32,
+    stencil_back: [4]u32,
+    stencil_read_mask: u32,
+    stencil_write_mask: u32,
 };
 
-/// One colour attachment (+ optional MSAA resolve, + optional depth).
+/// Stencil aspect of the depth attachment; required (and only valid) when the
+/// depth view's format has stencil (`depth24plus_stencil8`).
+pub const StencilAttachment = struct {
+    clear: u32 = 0,
+    load: LoadOp = .clear,
+    store: StoreOp = .store,
+};
+
+/// One colour attachment (+ optional MSAA resolve, + optional depth/stencil).
 pub const RenderPassDescriptor = struct {
     /// Colour target; null = the canvas's current texture (`canvasView`).
     color: ?TextureView = null,
@@ -465,6 +522,7 @@ pub const RenderPassDescriptor = struct {
     depth_clear: f32 = 1.0,
     depth_load: LoadOp = .clear,
     depth_store: StoreOp = .store,
+    stencil: ?StencilAttachment = null,
 
     pub fn raw(self: RenderPassDescriptor) RawPassDesc {
         return .{
@@ -477,11 +535,15 @@ pub const RenderPassDescriptor = struct {
             .depth_store = @backingInt(self.depth_store),
             .depth_clear = self.depth_clear,
             .clear = self.clear,
+            .stencil_enabled = @intFromBool(self.stencil != null),
+            .stencil_load = if (self.stencil) |x| @backingInt(x.load) else 0,
+            .stencil_store = if (self.stencil) |x| @backingInt(x.store) else 0,
+            .stencil_clear = if (self.stencil) |x| x.clear else 0,
         };
     }
 };
 
-/// 12 little-endian words, field order == `zunkGPU.beginPass` in js_gen.zig.
+/// 16 little-endian words, field order == `zunkGPU.beginPass` in js_gen.zig.
 pub const RawPassDesc = extern struct {
     color: u32,
     resolve: u32,
@@ -492,6 +554,10 @@ pub const RawPassDesc = extern struct {
     depth_store: u32,
     depth_clear: f32,
     clear: [4]f32,
+    stencil_enabled: u32,
+    stencil_load: u32,
+    stencil_store: u32,
+    stencil_clear: u32,
 };
 
 /// State of the (single) pending map on a buffer; see the module doc.
@@ -516,6 +582,7 @@ extern "env" fn zunk_gpu_buffer_read_mapped(buffer_h: i32, dst_ptr: [*]u8, len: 
 extern "env" fn zunk_gpu_buffer_unmap(buffer_h: i32) void;
 extern "env" fn zunk_gpu_copy_buffer_in_encoder(encoder_h: i32, src: i32, src_off: u32, dst: i32, dst_off: u32, size: u32) void;
 extern "env" fn zunk_gpu_copy_texture_to_buffer(encoder_h: i32, texture_h: i32, buffer_h: i32, bytes_per_row: u32, width: u32, height: u32) void;
+extern "env" fn zunk_gpu_copy_texture_region_to_buffer(encoder_h: i32, texture_h: i32, buffer_h: i32, bytes_per_row: u32, x: u32, y: u32, width: u32, height: u32) void;
 extern "env" fn zunk_gpu_create_shader_module(source_ptr: [*]const u8, source_len: u32) i32;
 extern "env" fn zunk_gpu_create_texture(width: u32, height: u32, format: u32, usage: u32, sample_count: u32) i32;
 extern "env" fn zunk_gpu_create_texture_view(texture_h: i32) i32;
@@ -543,6 +610,7 @@ extern "env" fn zunk_gpu_render_pass_set_bind_group(pass_h: i32, index: u32, gro
 extern "env" fn zunk_gpu_render_pass_set_vertex_buffer(pass_h: i32, slot: u32, buffer_h: i32, offset_lo: u32, offset_hi: u32, size_lo: u32, size_hi: u32) void;
 extern "env" fn zunk_gpu_render_pass_set_index_buffer(pass_h: i32, buffer_h: i32, format: u32, offset_lo: u32, offset_hi: u32, size_lo: u32, size_hi: u32) void;
 extern "env" fn zunk_gpu_render_pass_set_viewport(pass_h: i32, x: f32, y: f32, w: f32, h: f32, min_depth: f32, max_depth: f32) void;
+extern "env" fn zunk_gpu_render_pass_set_stencil_reference(pass_h: i32, reference: u32) void;
 extern "env" fn zunk_gpu_render_pass_set_scissor_rect(pass_h: i32, x: u32, y: u32, w: u32, h: u32) void;
 extern "env" fn zunk_gpu_render_pass_draw(pass_h: i32, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void;
 extern "env" fn zunk_gpu_render_pass_draw_indexed(pass_h: i32, index_count: u32, instance_count: u32, first_index: u32, base_vertex: i32, first_instance: u32) void;
@@ -676,7 +744,7 @@ pub fn createTextureMultisampled(w: u32, h: u32, fmt: TextureFormat, usage: u32,
 
 /// A depth buffer matching a colour target's size and sample count.
 pub fn createDepthTexture(w: u32, h: u32, fmt: TextureFormat, sample_count: u32) Texture {
-    std.debug.assert(fmt == .depth24plus or fmt == .depth32float);
+    std.debug.assert(fmt == .depth24plus or fmt == .depth32float or fmt == .depth24plus_stencil8);
     return createTextureMultisampled(w, h, fmt, TextureUsage.RENDER_ATTACHMENT, sample_count);
 }
 
@@ -886,6 +954,12 @@ pub fn renderPassSetViewport(pass: RenderPassEncoder, x: f32, y: f32, w: f32, h:
     zunk_gpu_render_pass_set_viewport(pass.toInt(), x, y, w, h, min_depth, max_depth);
 }
 
+/// Stencil reference value for subsequent draws (compared / written per
+/// `StencilFace`). Persists until changed.
+pub fn renderPassSetStencilReference(pass: RenderPassEncoder, reference: u32) void {
+    zunk_gpu_render_pass_set_stencil_reference(pass.toInt(), reference);
+}
+
 pub fn renderPassSetScissorRect(pass: RenderPassEncoder, x: u32, y: u32, w: u32, h: u32) void {
     zunk_gpu_render_pass_set_scissor_rect(pass.toInt(), x, y, w, h);
 }
@@ -908,6 +982,13 @@ pub fn renderPassEnd(pass: RenderPassEncoder) void {
 /// `bytes_per_row` must be a multiple of 256 (`Readback` handles this).
 pub fn copyTextureToBuffer(encoder: CommandEncoder, texture: Texture, buffer: Buffer, bytes_per_row: u32, width: u32, height: u32) void {
     zunk_gpu_copy_texture_to_buffer(encoder.toInt(), texture.toInt(), buffer.toInt(), bytes_per_row, width, height);
+}
+
+/// Like `copyTextureToBuffer` but copies the `width x height` rect whose
+/// top-left is `(x, y)` in `texture` (e.g. 1x1 for picking) instead of the
+/// whole texture. `bytes_per_row` must still be a multiple of 256.
+pub fn copyTextureRegionToBuffer(encoder: CommandEncoder, texture: Texture, buffer: Buffer, bytes_per_row: u32, x: u32, y: u32, width: u32, height: u32) void {
+    zunk_gpu_copy_texture_region_to_buffer(encoder.toInt(), texture.toInt(), buffer.toInt(), bytes_per_row, x, y, width, height);
 }
 
 /// Finish and submit the frame encoder, then release the canvas view.
@@ -980,17 +1061,32 @@ pub fn rasterizeText(
 /// Rows in `buf` are `bytes_per_row` apart (padded to 256), not `w * bpp`.
 pub const Readback = struct {
     buffer: Buffer,
+    /// Top-left of the copied rect in the source texture.
+    x: u32 = 0,
+    y: u32 = 0,
     width: u32,
     height: u32,
     bytes_per_row: u32,
+    bytes_per_pixel: u32 = 4,
 
+    /// Whole-texture readback of a `width x height` target.
     pub fn init(width: u32, height: u32, bytes_per_pixel: u32) Readback {
+        return initRegion(0, 0, width, height, bytes_per_pixel);
+    }
+
+    /// Readback of the `width x height` rect at `(x, y)` only, e.g.
+    /// `initRegion(mx, my, 1, 1, 4)` to read the pixel under the cursor.
+    /// `pixel` and `read` then index relative to the rect.
+    pub fn initRegion(x: u32, y: u32, width: u32, height: u32, bytes_per_pixel: u32) Readback {
         const bpr = alignRow(width * bytes_per_pixel);
         return .{
             .buffer = createBuffer(bpr * height, BufferUsage.MAP_READ | BufferUsage.COPY_DST),
+            .x = x,
+            .y = y,
             .width = width,
             .height = height,
             .bytes_per_row = bpr,
+            .bytes_per_pixel = bytes_per_pixel,
         };
     }
 
@@ -1003,7 +1099,7 @@ pub const Readback = struct {
     }
 
     pub fn encode(self: Readback, encoder: CommandEncoder, texture: Texture) void {
-        copyTextureToBuffer(encoder, texture, self.buffer, self.bytes_per_row, self.width, self.height);
+        copyTextureRegionToBuffer(encoder, texture, self.buffer, self.bytes_per_row, self.x, self.y, self.width, self.height);
     }
 
     pub fn request(self: Readback) void {
@@ -1020,9 +1116,9 @@ pub const Readback = struct {
         bufferUnmap(self.buffer);
     }
 
-    /// RGBA/BGRA pixel at (x, y) of a buffer filled by `read`.
+    /// RGBA/BGRA pixel at (x, y) (relative to the copied rect) of a buffer filled by `read`.
     pub fn pixel(self: Readback, data: []const u8, x: u32, y: u32) [4]u8 {
-        const o = y * self.bytes_per_row + x * 4;
+        const o = y * self.bytes_per_row + x * self.bytes_per_pixel;
         return data[o..][0..4].*;
     }
 };
@@ -1033,11 +1129,11 @@ pub fn alignRow(bytes: u32) u32 {
 }
 
 test "struct layout RawPipelineDesc" {
-    try std.testing.expectEqual(@as(usize, 19 * 4), @sizeOf(RawPipelineDesc));
+    try std.testing.expectEqual(@as(usize, 29 * 4), @sizeOf(RawPipelineDesc));
 }
 
 test "struct layout RawPassDesc" {
-    try std.testing.expectEqual(@as(usize, 12 * 4), @sizeOf(RawPassDesc));
+    try std.testing.expectEqual(@as(usize, 16 * 4), @sizeOf(RawPassDesc));
     try std.testing.expectEqual(@as(usize, 32), @offsetOf(RawPassDesc, "clear"));
 }
 
@@ -1148,4 +1244,49 @@ test "BindGroupEntry initSampler encodes entry_type=2" {
 
 test {
     std.testing.refAllDecls(@This());
+}
+
+test "stencil lowering: pipeline faces/masks and pass attachment" {
+    const raw = (RenderPipelineDescriptor{
+        .layout = bind.Handle.fromInt(2),
+        .shader = bind.Handle.fromInt(3),
+        .vertex_entry = "vs",
+        .fragment_entry = "fs",
+        .depth = .{ .format = .depth24plus_stencil8, .stencil = .{
+            .front = .{ .compare = .equal, .fail_op = .zero, .depth_fail_op = .invert, .pass_op = .replace },
+            .back = .{ .pass_op = .increment_wrap },
+            .read_mask = 0x0F,
+            .write_mask = 0xF0,
+        } },
+    }).raw();
+    try std.testing.expectEqual(@as(u32, 8), raw.depth_format);
+    try std.testing.expectEqual([4]u32{ 2, 1, 3, 2 }, raw.stencil_front);
+    try std.testing.expectEqual([4]u32{ 7, 0, 0, 6 }, raw.stencil_back);
+    try std.testing.expectEqual(@as(u32, 0x0F), raw.stencil_read_mask);
+    try std.testing.expectEqual(@as(u32, 0xF0), raw.stencil_write_mask);
+
+    // No depth => WebGPU-default (no-op) stencil words, still well-formed.
+    const plain = (RenderPipelineDescriptor{
+        .layout = bind.Handle.fromInt(2),
+        .shader = bind.Handle.fromInt(3),
+        .vertex_entry = "vs",
+        .fragment_entry = "fs",
+    }).raw();
+    try std.testing.expectEqual([4]u32{ 7, 0, 0, 0 }, plain.stencil_front);
+    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), plain.stencil_write_mask);
+
+    const p = (RenderPassDescriptor{ .depth = bind.Handle.fromInt(9), .stencil = .{ .clear = 5, .load = .load, .store = .discard } }).raw();
+    try std.testing.expectEqual(@as(u32, 1), p.stencil_enabled);
+    try std.testing.expectEqual(@as(u32, 1), p.stencil_load);
+    try std.testing.expectEqual(@as(u32, 1), p.stencil_store);
+    try std.testing.expectEqual(@as(u32, 5), p.stencil_clear);
+    try std.testing.expectEqual(@as(u32, 0), (RenderPassDescriptor{}).raw().stencil_enabled);
+}
+
+test "Readback region offsets and pixel indexing" {
+    const rb = Readback{ .buffer = bind.Handle.fromInt(4), .x = 10, .y = 20, .width = 2, .height = 2, .bytes_per_row = alignRow(8), .bytes_per_pixel = 4 };
+    try std.testing.expectEqual(@as(u32, 512), rb.paddedSize());
+    var data: [512]u8 = @splat(0);
+    data[256 + 4 ..][0..4].* = .{ 1, 2, 3, 4 };
+    try std.testing.expectEqual([4]u8{ 1, 2, 3, 4 }, rb.pixel(&data, 1, 1));
 }
