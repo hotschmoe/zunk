@@ -1,5 +1,6 @@
 const std = @import("std");
 const rich = @import("rich_zig");
+const zunk = @import("zunk");
 
 const wa = @import("gen/wasm_analyze.zig");
 const js_gen = @import("gen/js_gen.zig");
@@ -35,7 +36,9 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
         try printUsage(&console);
     } else if (std.mem.eql(u8, cmd, "version") or std.mem.eql(u8, cmd, "--version")) {
-        try console.print("[bold cyan]zunk[/] 0.1.0");
+        const line = try std.fmt.allocPrint(gpa, "[bold cyan]zunk[/] {s}", .{zunk.version});
+        defer gpa.free(line);
+        try console.print(line);
     } else {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "unknown command: {s}", .{cmd}) catch "unknown command";

@@ -1,5 +1,13 @@
 const std = @import("std");
 
+/// Single source of truth: build.zig.zon `.version` (docs/VERSIONING.md). `-Dversion-meta=<str>` appends "+<str>".
+fn versionString(b: *std.Build) []const u8 {
+    const base: []const u8 = @import("build.zig.zon").version;
+    _ = std.SemanticVersion.parse(base) catch @panic("build.zig.zon .version is not valid semver");
+    const meta = b.option([]const u8, "version-meta", "Semver build metadata appended as +<meta>") orelse return base;
+    return b.fmt("{s}+{s}", .{ base, meta });
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -7,9 +15,14 @@ pub fn build(b: *std.Build) void {
     const webzocket = b.dependency("webzocket", .{}).module("webzocket");
     const rich_zig = b.dependency("rich_zig", .{}).module("rich_zig");
 
+    const version_options = b.addOptions();
+    version_options.addOption([]const u8, "version", versionString(b));
+    version_options.addOption([]const u8, "manifest_version", @import("build.zig.zon").version);
+
     const mod = b.addModule("zunk", .{
         .root_source_file = b.path("src/root.zig"),
     });
+    mod.addOptions("build_options", version_options);
 
     const exe = b.addExecutable(.{
         .name = "zunk",
@@ -24,6 +37,8 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+
+    exe.root_module.addOptions("build_options", version_options);
 
     b.installArtifact(exe);
 
@@ -40,6 +55,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    test_mod.addOptions("build_options", version_options);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = test_mod })).step);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = exe.root_module })).step);
 }
