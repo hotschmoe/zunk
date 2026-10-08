@@ -731,9 +731,9 @@ fn genFetch(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType)
 /// Imports of the host-services bridge (`src/gen/js/fx.js`, Zig side
 /// `src/web/fx.zig`). Each `zunk_fx_<name>` forwards to `zunkFx.<name>`.
 pub const fx_methods = [_][]const u8{
-    "pump",            "http",        "download", "open_file",
-    "storage_get",     "storage_set", "clock",    "query_param",
-    "clipboard_write",
+    "pump",            "http",                  "download", "open_file",
+    "storage_get",     "storage_set",           "clock",    "query_param",
+    "clipboard_write", "clipboard_write_image",
 };
 
 fn genFx(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType) ?Resolution {
