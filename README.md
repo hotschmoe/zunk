@@ -250,6 +250,7 @@ zunk/
 │   ├── audio-demo-1-assets-bundled/  # Web Audio with bundled assets
 │   ├── audio-demo-2-assets-cached/   # Web Audio with cached asset loading
 │   ├── particle-life/            # WebGPU compute + render pipeline
+│   ├── atlas-upload/             # R8 atlas sub-rect uploads + canvas2D cluster raster, instanced quads
 │   └── mesh-3d/                  # Depth-tested lit mesh, MSAA, instanced edges, offscreen inset + readback
 ├── docs/
 │   ├── ARCHITECTURE.md           # Deep dive on design decisions
