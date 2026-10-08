@@ -333,13 +333,11 @@ const Features = struct {
 /// The host-services bridge (see the header of `js/fx.js`).
 const fx_js = @embedFile("js/fx.js");
 
-<<<<<<< HEAD
 /// The a11y DOM mirror (see the header of `js/a11y.js`).
 const a11y_js = @embedFile("js/a11y.js");
-=======
+
 /// The IME bridge (see the header of `js/ime.js`).
 const ime_js = @embedFile("js/ime.js");
->>>>>>> origin/master
 
 /// Write `s` escaped for use inside a double-quoted JS or CSS string.
 fn writeEscaped(w: *std.Io.Writer, s: []const u8) !void {
