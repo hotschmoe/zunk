@@ -275,3 +275,9 @@ Optional configuration file for projects that need to customize behavior:
 - Dev server port
 - Optimization level
 - Custom meta tags and page title
+
+## Glyph-atlas primitives (0.14.0)
+
+- [x] `gpu.writeTextureRegion(tex, x, y, w, h, bytes, bytes_per_row)`: sub-rect upload (R8 / RGBA8), any source stride
+- [x] `gpu.rasterCluster(utf8, font_css, size_px, out)`: canvas2D cluster -> R8 coverage + `ClusterMetrics {width, height, bearing_x, bearing_y, advance}` (import `zunk_text_raster_cluster`, optional; CJK/emoji fallback). `rasterizeText` unchanged.
+- [x] `examples/atlas-upload`: two sub-rect uploads + a rasterized CJK cluster into one R8 atlas, drawn as instanced quads

@@ -587,6 +587,7 @@ extern "env" fn zunk_gpu_create_shader_module(source_ptr: [*]const u8, source_le
 extern "env" fn zunk_gpu_create_texture(width: u32, height: u32, format: u32, usage: u32, sample_count: u32) i32;
 extern "env" fn zunk_gpu_create_texture_view(texture_h: i32) i32;
 extern "env" fn zunk_gpu_destroy_texture(texture_h: i32) void;
+extern "env" fn zunk_gpu_write_texture_region(texture_h: i32, data_ptr: [*]const u8, data_len: u32, bytes_per_row: u32, x: u32, y: u32, width: u32, height: u32) void;
 extern "env" fn zunk_gpu_write_texture(texture_h: i32, data_ptr: [*]const u8, data_len: u32, bytes_per_row: u32, width: u32, height: u32) void;
 extern "env" fn zunk_gpu_create_sampler(desc_ptr: [*]const u8) i32;
 extern "env" fn zunk_gpu_destroy_sampler(sampler_h: i32) void;
@@ -626,6 +627,16 @@ extern "env" fn zunk_gpu_measure_text(
     out_ptr: *TextMetrics,
     letter_spacing: f32,
 ) void;
+extern "env" fn zunk_text_raster_cluster(
+    text_ptr: [*]const u8,
+    text_len: u32,
+    font_ptr: [*]const u8,
+    font_len: u32,
+    size_px: f32,
+    out_ptr: [*]u8,
+    out_cap: u32,
+    metrics: *ClusterMetrics,
+) u32;
 extern "env" fn zunk_gpu_rasterize_text(
     text_ptr: [*]const u8,
     text_len: u32,
@@ -778,6 +789,25 @@ pub fn writeTexture(
         width,
         height,
     );
+}
+
+/// Upload CPU bytes into the `width x height` rect of `tex` whose top-left is
+/// `(x, y)`; the rest of the texture is untouched. This is the glyph-atlas
+/// primitive: pack a bitmap into a free spot of an `r8unorm` / `rgba8unorm`
+/// texture (`COPY_DST` usage). `bytes_per_row` is the source stride in bytes
+/// (no 256 alignment needed) and `bytes` must cover
+/// `bytes_per_row * (height - 1) + width * bytes_per_pixel`.
+pub fn writeTextureRegion(
+    tex: Texture,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    bytes: []const u8,
+    bytes_per_row: u32,
+) void {
+    std.debug.assert(height == 0 or bytes.len >= @as(usize, bytes_per_row) * (height - 1));
+    zunk_gpu_write_texture_region(tex.toInt(), bytes.ptr, @intCast(bytes.len), bytes_per_row, x, y, width, height);
 }
 
 pub fn createSampler(desc: SamplerDescriptor) Sampler {
@@ -1020,6 +1050,42 @@ pub fn measureText(text: []const u8, font: []const u8, letter_spacing: f32) Text
     return out;
 }
 
+/// Result of `rasterCluster`. Bitmap pixel (0,0) sits at
+/// `(pen_x + bearing_x, baseline_y - bearing_y)` (y down), so
+/// `bearing_y` is the distance from the baseline up to the bitmap's top row.
+/// `advance` is the cluster's pen advance in px.
+pub const ClusterMetrics = extern struct {
+    width: u32 = 0,
+    height: u32 = 0,
+    bearing_x: i32 = 0,
+    bearing_y: i32 = 0,
+    advance: f32 = 0,
+};
+
+pub const ClusterBitmap = struct {
+    metrics: ClusterMetrics,
+    /// Tightly packed r8 coverage, `width * height` bytes, row stride = width.
+    /// Empty when the cluster has no ink (a space) or did not fit `out`.
+    pixels: []const u8,
+    /// True when `out` was too small; `metrics` is still valid, so retry with
+    /// a buffer of `metrics.width * metrics.height` bytes.
+    truncated: bool,
+};
+
+/// Rasterize one text cluster (a grapheme: CJK character, emoji, symbol the
+/// primary font lacks) with the browser's canvas 2D text engine into an 8-bit
+/// coverage bitmap in `out`. `font_css` is a CSS font shorthand such as
+/// `"500 14px sans-serif"`; its size token is replaced by `size_px`. Intended
+/// as a fallback for glyphs the app's own fonts lack; feed the pixels to
+/// `writeTextureRegion` on an `r8unorm` atlas. Colour emoji come out as their
+/// alpha coverage. Optional import: modules that never call it do not need it.
+pub fn rasterCluster(utf8: []const u8, font_css: []const u8, size_px: f32, out: []u8) ClusterBitmap {
+    var m: ClusterMetrics = .{};
+    const written = zunk_text_raster_cluster(utf8.ptr, @intCast(utf8.len), font_css.ptr, @intCast(font_css.len), size_px, out.ptr, @intCast(out.len), &m);
+    const need = @as(usize, m.width) * m.height;
+    return .{ .metrics = m, .pixels = out[0..written], .truncated = need > out.len };
+}
+
 /// Rasterize `text` into a freshly allocated rgba8unorm `Texture` of the given
 /// size, using the browser's canvas 2D text shaper. `color` is the foreground
 /// fill (0..1 RGBA). The texture has `TEXTURE_BINDING | COPY_DST` usage and is
@@ -1126,6 +1192,10 @@ pub const Readback = struct {
 /// WebGPU requires `bytesPerRow` of texture copies to be a multiple of 256.
 pub fn alignRow(bytes: u32) u32 {
     return (bytes + 255) & ~@as(u32, 255);
+}
+
+test "ClusterMetrics layout matches the JS writer (5 words)" {
+    try std.testing.expectEqual(@as(usize, 20), @sizeOf(ClusterMetrics));
 }
 
 test "struct layout RawPipelineDesc" {

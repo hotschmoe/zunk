@@ -1,0 +1,14 @@
+.{
+    .name = .atlas_upload,
+    .version = "0.0.0",
+    .fingerprint = 0x5727fef1d5efbc23,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .zunk = .{ .path = "../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

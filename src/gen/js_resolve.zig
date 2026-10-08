@@ -238,6 +238,7 @@ pub const prefix_rules = [_]PrefixRule{
     .{ .prefix = "zunk_fetch", .category = .fetch, .generator = &genFetch },
     .{ .prefix = "zunk_fx_", .category = .fx, .generator = &genFx },
     .{ .prefix = "zunk_gpu_", .category = .webgpu, .generator = &genWebGPU },
+    .{ .prefix = "zunk_text_", .category = .webgpu, .generator = &genWebGPU },
     .{ .prefix = "zunk_ui_", .category = .ui, .generator = &genUI },
     .{ .prefix = "canvas_", .category = .canvas2d, .generator = &genCanvas },
     .{ .prefix = "ctx2d_", .category = .canvas2d, .generator = &genCanvas2D },
@@ -501,6 +502,10 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "format:zunkGPU.textureFormats[arguments[2]],usage:arguments[3],sampleCount:arguments[4]}));", false, false, true },
         .{ "create_texture_view", "return H.store(H.get(arguments[0]).createView());", false, false, true },
         .{ "destroy_texture", "H.get(arguments[0]).destroy();H.release(arguments[0]);", false, false, true },
+        .{ "write_texture_region", "const tex=H.get(arguments[0]);" ++
+            "const src=new Uint8Array(memory.buffer,arguments[1],arguments[2]);" ++
+            "H.get(1).queue.writeTexture({texture:tex,origin:[arguments[4],arguments[5]]},src," ++
+            "{bytesPerRow:arguments[3]},{width:arguments[6],height:arguments[7]});", false, true, true },
         .{ "write_texture", "const tex=H.get(arguments[0]);" ++
             "const src=new Uint8Array(memory.buffer,arguments[1],arguments[2]);" ++
             "H.get(1).queue.writeTexture({texture:tex},src," ++
@@ -608,6 +613,25 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "const dv=new DataView(memory.buffer,arguments[4],8);" ++
             "dv.setUint32(0,w,true);dv.setUint32(4,h,true);", false, true, true },
 
+        // One cluster -> r8 coverage bitmap in wasm memory (CJK / emoji
+        // fallback). Args: text ptr/len, font ptr/len, size_px, out ptr/cap,
+        // metrics ptr {u32 w,u32 h,i32 bearing_x,i32 bearing_y,f32 advance}.
+        // Returns bytes written (0 = no ink or `out` too small; metrics valid).
+        .{ "raster_cluster", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d',{willReadFrequently:true});}" ++
+            "const text=readStr(arguments[0],arguments[1]);let font=readStr(arguments[2],arguments[3]);const size=arguments[4];" ++
+            "font=/[\\d.]+px/.test(font)?font.replace(/[\\d.]+px/,size+'px'):size+'px '+font;" ++
+            "const cx=zunkTextCtx;cx.font=font;cx.letterSpacing='0px';cx.textBaseline='alphabetic';" ++
+            "const m=cx.measureText(text);" ++
+            "const mv=new DataView(memory.buffer,arguments[7],20);" ++
+            "const left=Math.ceil(m.actualBoundingBoxLeft)+1,asc=Math.ceil(m.actualBoundingBoxAscent)+1;" ++
+            "const w=left+Math.ceil(m.actualBoundingBoxRight)+1,h=asc+Math.ceil(m.actualBoundingBoxDescent)+1;" ++
+            "const ink=m.actualBoundingBoxRight+m.actualBoundingBoxLeft>0&&m.actualBoundingBoxAscent+m.actualBoundingBoxDescent>0;" ++
+            "mv.setUint32(0,ink?w:0,true);mv.setUint32(4,ink?h:0,true);mv.setInt32(8,-left,true);mv.setInt32(12,asc,true);mv.setFloat32(16,m.width,true);" ++
+            "if(!ink||w*h>arguments[6])return 0;" ++
+            "zunkTextCanvas.width=w;zunkTextCanvas.height=h;cx.clearRect(0,0,w,h);" ++
+            "cx.font=font;cx.letterSpacing='0px';cx.textBaseline='alphabetic';cx.fillStyle='#fff';cx.fillText(text,left,asc);" ++
+            "const d=cx.getImageData(0,0,w,h).data;const o=new Uint8Array(memory.buffer,arguments[5],w*h);" ++
+            "for(let i=0;i<w*h;i++)o[i]=d[i*4+3];return w*h;", true, true, true },
         .{ "rasterize_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d',{willReadFrequently:true});}" ++
             "const text=readStr(arguments[0],arguments[1]),font=readStr(arguments[2],arguments[3]);" ++
             "const r=arguments[4],g=arguments[5],b=arguments[6],a=arguments[7];" ++
@@ -1055,4 +1079,18 @@ test "every zunk_gpu_* extern in web/gpu.zig resolves exactly" {
         seen += 1;
     }
     try std.testing.expect(seen > 40);
+}
+
+test "zunk_text_raster_cluster and write_texture_region resolve exactly" {
+    const gpa = std.testing.allocator;
+    inline for (.{ "zunk_text_raster_cluster", "zunk_gpu_write_texture_region" }) |name| {
+        const res = (try prefixMatch(gpa, name, null)).?;
+        defer gpa.free(res.js_body);
+        try std.testing.expect(res.confidence == .exact);
+        try std.testing.expect(res.needs_memory_view);
+    }
+    // The old canvas rasterizer is still wired.
+    const old = (try prefixMatch(gpa, "zunk_gpu_rasterize_text", null)).?;
+    defer gpa.free(old.js_body);
+    try std.testing.expect(old.confidence == .exact);
 }
