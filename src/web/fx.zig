@@ -110,7 +110,7 @@ pub const Method = enum(u32) { get, post, put, delete };
 pub fn http(id: u32, method: Method, url: []const u8, headers: []const u8, body: []const u8, timeout_ms: u32) void {
     zunk_fx_http(
         id,
-        @intFromEnum(method),
+        @backingInt(method),
         url.ptr,
         @intCast(url.len),
         headers.ptr,
@@ -299,8 +299,8 @@ fn testDeliver(rec: []u8) void {
 
 test "completions round-trip through alloc / deliver / drain" {
     held.release();
-    testDeliver(testRecord(@intFromEnum(Kind.http), 7, .{ 404, 0, 0, 0 }, .{ "not here", "", "", "" }));
-    testDeliver(testRecord(@intFromEnum(Kind.dropped), 0, .{ 1, 1568, 900, 2 }, .{ "a.png", "image/png", "\x89PNG", "\x01\x02\x03\x04" }));
+    testDeliver(testRecord(@backingInt(Kind.http), 7, .{ 404, 0, 0, 0 }, .{ "not here", "", "", "" }));
+    testDeliver(testRecord(@backingInt(Kind.dropped), 0, .{ 1, 1568, 900, 2 }, .{ "a.png", "image/png", "\x89PNG", "\x01\x02\x03\x04" }));
 
     var out: [4]Completion = undefined;
     const n = drain(&out);
@@ -323,7 +323,7 @@ test "clock completions carry the unix time in blob 0" {
     var ms: [8]u8 = undefined;
     std.mem.writeInt(i64, &ms, 1_700_000_123_456, .little);
     held.release();
-    testDeliver(testRecord(@intFromEnum(Kind.clock), 3, .{ 60, 0, 0, 0 }, .{ &ms, "", "", "" }));
+    testDeliver(testRecord(@backingInt(Kind.clock), 3, .{ 60, 0, 0, 0 }, .{ &ms, "", "", "" }));
     var out: [1]Completion = undefined;
     try std.testing.expectEqual(@as(usize, 1), drain(&out));
     try std.testing.expectEqual(@as(i64, 1_700_000_123_456), out[0].unixMs());
@@ -338,12 +338,12 @@ test "malformed records and overflow are dropped without leaking" {
     // Unknown kind.
     testDeliver(testRecord(99, 1, .{ 0, 0, 0, 0 }, .{ "", "", "", "" }));
     // A blob length that runs past the end.
-    const bad = testRecord(@intFromEnum(Kind.http), 1, .{ 0, 0, 0, 0 }, .{ "x", "", "", "" });
+    const bad = testRecord(@backingInt(Kind.http), 1, .{ 0, 0, 0, 0 }, .{ "x", "", "", "" });
     std.mem.writeInt(u32, bad[24..28], 1000, .little);
     testDeliver(bad);
     // More than the caller has room for.
-    testDeliver(testRecord(@intFromEnum(Kind.clock), 1, .{ 0, 0, 0, 0 }, .{ "", "", "", "" }));
-    testDeliver(testRecord(@intFromEnum(Kind.clock), 2, .{ 0, 0, 0, 0 }, .{ "", "", "", "" }));
+    testDeliver(testRecord(@backingInt(Kind.clock), 1, .{ 0, 0, 0, 0 }, .{ "", "", "", "" }));
+    testDeliver(testRecord(@backingInt(Kind.clock), 2, .{ 0, 0, 0, 0 }, .{ "", "", "", "" }));
 
     var out: [1]Completion = undefined;
     try std.testing.expectEqual(@as(usize, 1), drain(&out));
@@ -353,7 +353,7 @@ test "malformed records and overflow are dropped without leaking" {
 
 test "a full inbox frees the surplus delivery" {
     held.release();
-    for (0..max_completions + 3) |i| testDeliver(testRecord(@intFromEnum(Kind.query_value), @intCast(i), .{ 0, 0, 0, 0 }, .{ "", "", "", "" }));
+    for (0..max_completions + 3) |i| testDeliver(testRecord(@backingInt(Kind.query_value), @intCast(i), .{ 0, 0, 0, 0 }, .{ "", "", "", "" }));
     try std.testing.expectEqual(@as(usize, max_completions), inbox.len);
     var out: [max_completions]Completion = undefined;
     try std.testing.expectEqual(@as(usize, max_completions), drain(&out));
@@ -377,9 +377,10 @@ test "encodeHeaders joins lines and skips headers that could smuggle another" {
 
 test "Kind numbers match the KIND table in fx.js" {
     const js = @embedFile("../gen/js/fx.js");
-    inline for (@typeInfo(Kind).@"enum".fields) |f| {
+    const info = @typeInfo(Kind).@"enum";
+    inline for (info.field_names, info.field_values) |name, value| {
         var buf: [64]u8 = undefined;
-        const needle = try std.fmt.bufPrint(&buf, "{s}: {d}", .{ f.name, f.value });
+        const needle = try std.fmt.bufPrint(&buf, "{s}: {d}", .{ name, value });
         try std.testing.expect(std.mem.find(u8, js, needle) != null);
     }
 }

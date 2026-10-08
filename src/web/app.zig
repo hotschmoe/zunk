@@ -27,7 +27,7 @@ pub const LogLevel = enum(u32) {
 };
 
 pub fn log(level: LogLevel, msg: []const u8) void {
-    zunk_app_log(@intFromEnum(level), msg.ptr, @intCast(msg.len));
+    zunk_app_log(@backingInt(level), msg.ptr, @intCast(msg.len));
 }
 
 pub fn logDebug(msg: []const u8) void {

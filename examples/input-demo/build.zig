@@ -5,8 +5,8 @@ pub fn build(b: *std.Build) void {
     const optimize = b.option(
         std.builtin.OptimizeMode,
         "optimize",
-        "Optimization mode (default: ReleaseFast)",
-    ) orelse .ReleaseFast;
+        "Optimization mode (default: fast)",
+    ) orelse .fast;
 
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,

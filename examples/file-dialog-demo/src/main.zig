@@ -117,7 +117,7 @@ fn requestDialog(mode: Mode) void {
     const pattern = "*.zig;*.zon";
     __zunk_request_file_dialog(
         1,
-        @intFromEnum(mode),
+        @backingInt(mode),
         name.ptr,
         name.len,
         pattern.ptr,

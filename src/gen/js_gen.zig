@@ -70,7 +70,7 @@ pub fn generate(
     }
 
     var needs = Features{};
-    var categories_used = Categories.initEmpty();
+    var categories_used = Categories.empty;
     var stub_count: usize = 0;
 
     for (analysis.imports, 0..) |*imp, i| {
@@ -993,9 +993,9 @@ fn generateReport(
     mode: ReportMode,
 ) !void {
     // Category counts (used by both modes)
-    var counts: [std.enums.values(resolver.Category).len]usize = .{0} ** std.enums.values(resolver.Category).len;
+    var counts: [std.enums.values(resolver.Category).len]usize = @splat(0);
     for (resolutions) |r| {
-        counts[@intFromEnum(r.category)] += 1;
+        counts[@backingInt(r.category)] += 1;
     }
 
     const lifecycle_fns = [_][]const u8{ "init", "frame", "resize", "cleanup" };
@@ -1027,7 +1027,7 @@ fn generateReport(
         try w.writeAll("\"categories\":{");
         var first_cat = true;
         for (std.enums.values(resolver.Category)) |cat| {
-            const c = counts[@intFromEnum(cat)];
+            const c = counts[@backingInt(cat)];
             if (c > 0) {
                 if (!first_cat) try w.writeAll(",");
                 try w.print("\"{s}\":{d}", .{ @tagName(cat), c });
@@ -1088,7 +1088,7 @@ fn generateReport(
     if (mode.verbose) {
         try w.writeAll("All resolutions:\n");
         for (std.enums.values(resolver.Category)) |cat| {
-            if (counts[@intFromEnum(cat)] == 0) continue;
+            if (counts[@backingInt(cat)] == 0) continue;
             try w.print("\n  [{s}] {s}:\n", .{ categoryColor(cat), @tagName(cat) });
             for (analysis.imports, 0..) |imp, i| {
                 const r = &resolutions[i];
@@ -1108,7 +1108,7 @@ fn generateReport(
 
     try w.writeAll("Resolved bindings by category:\n");
     for (std.enums.values(resolver.Category)) |cat| {
-        const c = counts[@intFromEnum(cat)];
+        const c = counts[@backingInt(cat)];
         if (c > 0) {
             try w.print("  [{s}]{s}[/]: {d}\n", .{ categoryColor(cat), @tagName(cat), c });
         }

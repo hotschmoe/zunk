@@ -177,7 +177,7 @@ fn parseTypeSection(
         var j: usize = 0;
         while (j < num_params) : (j += 1) {
             if (pos.* >= wasm.len) break;
-            params[j] = @enumFromInt(wasm[pos.*]);
+            params[j] = @fromBackingInt(@intCast(wasm[pos.*]));
             pos.* += 1;
         }
 
@@ -190,7 +190,7 @@ fn parseTypeSection(
         j = 0;
         while (j < num_returns) : (j += 1) {
             if (pos.* >= wasm.len) break;
-            returns[j] = @enumFromInt(wasm[pos.*]);
+            returns[j] = @fromBackingInt(@intCast(wasm[pos.*]));
             pos.* += 1;
         }
 
@@ -282,7 +282,7 @@ fn parseExportSection(
             allocator.free(name);
             return;
         }
-        const kind: ExportKind = @enumFromInt(wasm[pos.*]);
+        const kind: ExportKind = @fromBackingInt(@intCast(wasm[pos.*]));
         pos.* += 1;
 
         const index = readLeb128(wasm, pos) orelse {

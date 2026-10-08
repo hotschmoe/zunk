@@ -52,7 +52,6 @@ pub const SpatialPipeline = struct {
         sim_height: f32,
         max_force_radius: f32,
     ) !SpatialPipeline {
-
         const grid = calculateGridSize(sim_width, sim_height, max_force_radius);
         const bin_count = grid.bin_count;
         const prefix_sum_iterations = calculatePrefixSumIterations(bin_count);
