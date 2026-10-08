@@ -637,6 +637,16 @@ extern "env" fn zunk_text_raster_cluster(
     out_cap: u32,
     metrics: *ClusterMetrics,
 ) u32;
+extern "env" fn zunk_text_raster_cluster_rgba(
+    text_ptr: [*]const u8,
+    text_len: u32,
+    font_ptr: [*]const u8,
+    font_len: u32,
+    size_px: f32,
+    out_ptr: [*]u8,
+    out_cap: u32,
+    metrics: *ClusterMetrics,
+) u32;
 extern "env" fn zunk_gpu_rasterize_text(
     text_ptr: [*]const u8,
     text_len: u32,
@@ -1083,6 +1093,16 @@ pub fn rasterCluster(utf8: []const u8, font_css: []const u8, size_px: f32, out: 
     var m: ClusterMetrics = .{};
     const written = zunk_text_raster_cluster(utf8.ptr, @intCast(utf8.len), font_css.ptr, @intCast(font_css.len), size_px, out.ptr, @intCast(out.len), &m);
     const need = @as(usize, m.width) * m.height;
+    return .{ .metrics = m, .pixels = out[0..written], .truncated = need > out.len };
+}
+
+/// Like `rasterCluster`, but the bitmap is straight-alpha RGBA (`width * height * 4` bytes): colour
+/// emoji keep their colours. Feed it to `writeTextureRegion` on an `rgba8unorm` atlas. `truncated`
+/// when `out` was smaller than `metrics.width * metrics.height * 4`.
+pub fn rasterClusterRgba(utf8: []const u8, font_css: []const u8, size_px: f32, out: []u8) ClusterBitmap {
+    var m: ClusterMetrics = .{};
+    const written = zunk_text_raster_cluster_rgba(utf8.ptr, @intCast(utf8.len), font_css.ptr, @intCast(font_css.len), size_px, out.ptr, @intCast(out.len), &m);
+    const need = @as(usize, m.width) * m.height * 4;
     return .{ .metrics = m, .pixels = out[0..written], .truncated = need > out.len };
 }
 

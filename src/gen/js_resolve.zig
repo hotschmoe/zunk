@@ -608,6 +608,21 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
             "cx.font=font;cx.letterSpacing='0px';cx.textBaseline='alphabetic';cx.fillStyle='#fff';cx.fillText(text,left,asc);" ++
             "const d=cx.getImageData(0,0,w,h).data;const o=new Uint8Array(memory.buffer,arguments[5],w*h);" ++
             "for(let i=0;i<w*h;i++)o[i]=d[i*4+3];return w*h;", true, true, true },
+        // Same as raster_cluster, but straight-alpha RGBA (colour emoji keep their colours).
+        .{ "raster_cluster_rgba", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d',{willReadFrequently:true});}" ++
+            "const text=readStr(arguments[0],arguments[1]);let font=readStr(arguments[2],arguments[3]);const size=arguments[4];" ++
+            "font=/[\\d.]+px/.test(font)?font.replace(/[\\d.]+px/,size+'px'):size+'px '+font;" ++
+            "const cx=zunkTextCtx;cx.font=font;cx.letterSpacing='0px';cx.textBaseline='alphabetic';" ++
+            "const m=cx.measureText(text);" ++
+            "const mv=new DataView(memory.buffer,arguments[7],20);" ++
+            "const left=Math.ceil(m.actualBoundingBoxLeft)+1,asc=Math.ceil(m.actualBoundingBoxAscent)+1;" ++
+            "const w=left+Math.ceil(m.actualBoundingBoxRight)+1,h=asc+Math.ceil(m.actualBoundingBoxDescent)+1;" ++
+            "const ink=m.actualBoundingBoxRight+m.actualBoundingBoxLeft>0&&m.actualBoundingBoxAscent+m.actualBoundingBoxDescent>0;" ++
+            "mv.setUint32(0,ink?w:0,true);mv.setUint32(4,ink?h:0,true);mv.setInt32(8,-left,true);mv.setInt32(12,asc,true);mv.setFloat32(16,m.width,true);" ++
+            "if(!ink||w*h*4>arguments[6])return 0;" ++
+            "zunkTextCanvas.width=w;zunkTextCanvas.height=h;cx.clearRect(0,0,w,h);" ++
+            "cx.font=font;cx.letterSpacing='0px';cx.textBaseline='alphabetic';cx.fillStyle='#fff';cx.fillText(text,left,asc);" ++
+            "const d=cx.getImageData(0,0,w,h).data;new Uint8Array(memory.buffer,arguments[5],w*h*4).set(d);return w*h*4;", true, true, true },
         .{ "rasterize_text", "if(!zunkTextCanvas){zunkTextCanvas=document.createElement('canvas');zunkTextCtx=zunkTextCanvas.getContext('2d',{willReadFrequently:true});}" ++
             "const text=readStr(arguments[0],arguments[1]),font=readStr(arguments[2],arguments[3]);" ++
             "const r=arguments[4],g=arguments[5],b=arguments[6],a=arguments[7];" ++
@@ -1092,7 +1107,7 @@ test "every zunk_gpu_* extern in web/gpu.zig resolves exactly" {
 
 test "zunk_text_raster_cluster and write_texture_region resolve exactly" {
     const gpa = std.testing.allocator;
-    inline for (.{ "zunk_text_raster_cluster", "zunk_gpu_write_texture_region" }) |name| {
+    inline for (.{ "zunk_text_raster_cluster", "zunk_text_raster_cluster_rgba", "zunk_gpu_write_texture_region" }) |name| {
         const res = (try prefixMatch(gpa, name, null)).?;
         defer gpa.free(res.js_body);
         try std.testing.expect(res.confidence == .exact);
