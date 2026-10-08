@@ -56,6 +56,8 @@ pub const web = struct {
     pub const ui = @import("web/ui.zig");
     pub const imgui = @import("web/imgui.zig");
     pub const render_backend = @import("web/render_backend.zig");
+    /// `std.Options.logFn` that writes to the browser console (see `app.logFn`).
+    pub const logFn = app.logFn;
 };
 
 pub const Handle = bind.Handle;

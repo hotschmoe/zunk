@@ -1,3 +1,4 @@
+const std = @import("std");
 const bind = @import("../bind/bind.zig");
 
 extern "env" fn zunk_app_set_title(ptr: [*]const u8, len: u32) void;
@@ -44,6 +45,31 @@ pub fn logWarn(msg: []const u8) void {
 
 pub fn logErr(msg: []const u8) void {
     log(.err, msg);
+}
+
+/// A `std.Options.logFn` that routes `std.log` to the browser console
+/// (`console.debug/info/warn/error` by level). The default logFn pulls in
+/// `std.Io.Threaded`, which does not compile on wasm32-freestanding, so any
+/// wasm entry point that (transitively) calls `std.log` must declare:
+///
+///     pub const std_options: std.Options = .{ .logFn = zunk.web.logFn };
+///
+/// Lines longer than 512 bytes are truncated.
+pub fn logFn(
+    comptime level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    var buf: [512]u8 = undefined;
+    const prefix = if (scope == .default) "" else @tagName(scope) ++ ": ";
+    const msg = std.fmt.bufPrint(&buf, prefix ++ format, args) catch buf[0..];
+    log(switch (level) {
+        .debug => .debug,
+        .info => .info,
+        .warn => .warn,
+        .err => .err,
+    }, msg);
 }
 
 pub fn performanceNow() f64 {
