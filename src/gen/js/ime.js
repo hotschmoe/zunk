@@ -34,7 +34,7 @@ const zunkIme = (() => {
   function push(kind, text, cursor) {
     const bytes = encoder.encode(text || '');
     if (queue.length >= MAX_QUEUE) queue.shift();
-    queue.push({ kind, cursor: cursor || 0, bytes });
+    queue.push({ kind, cursor: cursor || 0, bytes, text: kind === 2 ? text : null });
   }
 
   function ensure() {
@@ -57,10 +57,8 @@ const zunkIme = (() => {
     ta.addEventListener('compositionstart', () => { composing = true; push(1, '', 0); });
     ta.addEventListener('compositionupdate', e => {
       const text = e.data || '';
-      // The caret inside the preedit (UTF-16 index of the selection end) in UTF-8 bytes.
-      let idx = ta.selectionEnd;
-      if (!(idx >= 0 && idx <= text.length)) idx = text.length;
-      push(2, text, encoder.encode(text.slice(0, idx)).length);
+      // The caret is read at `poll` time: the browser updates the field's selection after this event.
+      push(2, text, encoder.encode(text).length);
     });
     ta.addEventListener('compositionend', e => {
       composing = false;
@@ -113,6 +111,13 @@ const zunkIme = (() => {
   // Copy whole records into wasm memory at `ptr` (capacity `cap` bytes); returns bytes written.
   function poll(ptr, cap) {
     if (active) refocus();
+    // The caret inside the newest preedit: the field's selection end (UTF-16) in UTF-8 bytes.
+    const last = queue[queue.length - 1];
+    if (composing && last && last.kind === 2) {
+      let idx = ta.selectionEnd;
+      if (!(idx >= 0 && idx <= last.text.length)) idx = last.text.length;
+      last.cursor = encoder.encode(last.text.slice(0, idx)).length;
+    }
     let off = 0;
     const dv = new DataView(memory.buffer);
     while (queue.length) {
