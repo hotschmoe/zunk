@@ -4,37 +4,23 @@ const resolver = @import("js_resolve.zig");
 const source_map = @import("source_map.zig");
 
 pub const BridgeJsChunk = struct {
-    /// Human-readable label printed into the merged JS as a banner comment
-    /// (e.g. `bridge.js`, `js/bridge.js`, or a dep package directory name).
     origin: []const u8,
     source: []const u8,
 };
 
-/// A web font the page must have loaded before the app starts. The file
-/// lives at `<public_url>fonts/<file>` (copied there by `zunk build`).
 pub const FontFace = struct {
     family: []const u8,
-    /// CSS `font-weight` (400 regular, 500 medium, 700 bold, ...).
     weight: u16,
-    /// Basename of the font file inside `fonts/`.
     file: []const u8,
 };
 
 pub const GenOptions = struct {
     public_url: []const u8 = "/",
     wasm_filename: []const u8,
-    /// Concatenated in order. Convention: dep-provided chunks first, user's
-    /// own project chunk last, so the user can override symbols from deps.
     bridge_js_chunks: []const BridgeJsChunk = &.{},
     js_filename: []const u8 = "app.js",
-    /// `<link rel=preload>` for the wasm, so its download starts at HTML parse, before the script runs.
     wasm_preload: bool = true,
-    /// `@font-face` rules go into the page; the app starts only after every
-    /// face has loaded (`document.fonts.load`), so the first text measurement
-    /// already sees the real font.
     fonts: []const FontFace = &.{},
-    /// false (`--font-nowait`): the faces still load and are `preload`ed, but startup does not wait for them (apps
-    /// that rasterize text themselves, like teak's stb path, use the page fonts only as a fallback).
     fonts_blocking: bool = true,
     js_integrity: ?[]const u8 = null,
     verbose_report: bool = false,
@@ -45,9 +31,6 @@ pub const Categories = std.enums.EnumSet(resolver.Category);
 
 pub const GenResult = struct {
     js: []const u8,
-    /// Source Map v3 JSON, or empty if no mappable content was emitted
-    /// (currently: empty when there are no bridge.js chunks). When empty,
-    /// callers should skip writing a .js.map file.
     js_map: []const u8,
     html: []const u8,
     report: []const u8,
@@ -125,9 +108,7 @@ pub fn generate(
     if (needs.fx) try w.writeAll(fx_js ++ "\n\n");
     if (needs.ime) try w.writeAll(ime_js ++ "\n\n");
 
-    // Mutable WASM bindings. Held at module scope so that HMR can swap the
-    // underlying instance while env methods (which close over this scope
-    // and resolve these names at call time) transparently retarget.
+    // Mutable bindings let HMR retarget env methods to the new instance.
     try w.writeAll("let instance, exports, memory;\n\n");
 
     try w.writeAll("const env = {\n");
@@ -141,10 +122,6 @@ pub fn generate(
 
     try w.writeAll("};\n\n");
 
-    // Record byte spans of bridge.js content so the source map can point
-    // back at the original library-provided JS. Span is [start, end) and
-    // covers only the chunk body (not the banner comment or trailing
-    // padding).
     var bridge_spans: std.ArrayList(source_map.Span) = .empty;
     defer bridge_spans.deinit(allocator);
 
@@ -162,9 +139,6 @@ pub fn generate(
         });
     }
 
-    // __zunkLoad instantiates or swaps the WASM module. Called once during
-    // startup, and again by __zunkHmrSwap when the dev server signals that
-    // only the .wasm binary changed.
     try w.writeAll(
         \\// --- WASM load helper ---
         \\async function __zunkLoad(wasmUrl) {
@@ -215,7 +189,7 @@ pub fn generate(
             \\  if (!zunkFrameId_first) { zunkFrameId_first = true; performance.mark('zunk:first-frame-start'); }
             \\
         );
-        // Input flush is WASM-driven via input.poll() to avoid wiping per-frame state early.
+        // WASM drives input flush to avoid wiping per-frame state early.
         try w.writeAll(
             \\  exports.frame(Math.min(dt, 0.1));
             \\  if (!zunkFirstDone) { zunkFirstDone = true; performance.mark('zunk:first-frame-end'); }
@@ -270,8 +244,6 @@ pub fn generate(
 
     try emitHmrSwap(w, needs, has_init, has_cleanup);
 
-    // window.wasmBindings / window.wasmMemory are (re)assigned inside
-    // __zunkLoad so HMR keeps them pointed at the live module.
     try w.writeAll(
         \\// --- Startup event ---
         \\dispatchEvent(new CustomEvent('ZunkApplicationStarted', { detail: { wasm: instance, memory } }));
@@ -280,10 +252,7 @@ pub fn generate(
 
     try w.writeAll("\n})();\n");
 
-    // Build the source map BEFORE the header rewrite below so byte offsets
-    // recorded in bridge_spans remain valid. The rewrite lengthens the
-    // header but adds no newlines, so line numbers would be stable either
-    // way -- but building here keeps the byte math unambiguous.
+    // Build the map before rewriting the header to preserve recorded offsets.
     const js_map: []const u8 = if (bridge_spans.items.len == 0)
         ""
     else
@@ -295,8 +264,6 @@ pub fn generate(
     std.mem.writeInt(u64, &fingerprint, full_hash, .big);
     const hex = std.fmt.bytesToHex(fingerprint, .lower);
 
-    // Rewrite the placeholder header with the build fingerprint baked in. The
-    // placeholder is the first thing written above, so its position is fixed.
     const old_header = "// Generated by zunk -- do not edit.\n// https://github.com/hotschmoe/zunk\n\n";
     const new_header = try std.fmt.allocPrint(allocator, "// Generated by zunk [build:{s}] -- do not edit.\n// https://github.com/hotschmoe/zunk\n\n", .{hex[0..8]});
     defer allocator.free(new_header);
@@ -342,16 +309,12 @@ const Features = struct {
     ime: bool = false,
 };
 
-/// The host-services bridge (see the header of `js/fx.js`).
 const fx_js = @embedFile("js/fx.js");
 
-/// The a11y DOM mirror (see the header of `js/a11y.js`).
 const a11y_js = @embedFile("js/a11y.js");
 
-/// The IME bridge (see the header of `js/ime.js`).
 const ime_js = @embedFile("js/ime.js");
 
-/// Write `s` escaped for use inside a double-quoted JS or CSS string.
 fn writeEscaped(w: *std.Io.Writer, s: []const u8) !void {
     for (s) |c| switch (c) {
         '\\', '"' => {
@@ -363,7 +326,6 @@ fn writeEscaped(w: *std.Io.Writer, s: []const u8) !void {
     };
 }
 
-/// Block startup until every registered font face is loaded.
 fn emitFontLoad(w: *std.Io.Writer, fonts: []const FontFace, blocking: bool) !void {
     if (fonts.len == 0) return;
     try w.writeAll(if (blocking)
@@ -390,14 +352,6 @@ fn emitFontFaces(w: *std.Io.Writer, public_url: []const u8, fonts: []const FontF
     }
 }
 
-/// Generate the `__zunkHmrSwap(wasmUrl)` function and expose it on
-/// `window`. The dev server calls this via a WebSocket message when only
-/// the .wasm binary changed. On any failure, falls back to a full reload.
-///
-/// State preservation is opt-in: if the WASM exports
-/// `__zunk_hmr_serialize` / `__zunk_hmr_hydrate`, those are used to round-
-/// trip app state through the existing 64 KB exchange buffer. Without
-/// them, the new module gets a fresh `init()`.
 fn emitHmrSwap(w: *std.Io.Writer, needs: Features, has_init: bool, has_cleanup: bool) !void {
     try w.writeAll("// --- HMR swap ---\n");
     try w.writeAll("async function __zunkHmrSwap(wasmUrl) {\n");
@@ -410,8 +364,7 @@ fn emitHmrSwap(w: *std.Io.Writer, needs: Features, has_init: bool, has_cleanup: 
         try w.writeAll("    try { if (exports.cleanup) exports.cleanup(); } catch (e) { console.warn('[zunk hmr] cleanup threw:', e); }\n");
     }
 
-    // Optional state snapshot. The exchange buffer pointer is exported as a
-    // WebAssembly global by bind.zig; `.value` reads its current i32.
+    // The exchange buffer pointer is an exported WebAssembly global.
     try w.writeAll(
         \\    let __zunkHmrSnapshot = null;
         \\    if (exports.__zunk_hmr_serialize && exports.__zunk_string_buf_ptr) {
@@ -644,12 +597,7 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
 }
 
 fn emitWebGPUState(w: *std.Io.Writer) !void {
-    // Multi-line GPU logic lives here, not in one-line `js_resolve.zig`
-    // snippets. The handle/async lifecycle is documented at the top of
-    // src/web/gpu.zig; the binary layouts decoded below (`createPipeline`,
-    // `beginPass`, `vertexBuffers`) mirror `RawPipelineDesc`, `RawPassDesc`
-    // and `VertexBufferLayout` there. Enum tables are indexed by the Zig
-    // enums' integer values.
+    // GPU descriptor layouts and enum tables must match src/web/gpu.zig.
     try w.writeAll(
         \\// --- WebGPU state ---
         \\let zunkGPUContext = null;
@@ -817,15 +765,9 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
 }
 
 fn emitA11yState(w: *std.Io.Writer) !void {
-    // The DOM mirror + action queue for Teak's accessibility bridge; the
-    // `__zunk_publish_a11y_tree` / `__zunk_poll_a11y_actions` externs call into it.
     try w.writeAll(a11y_js ++ "\n\n");
 }
 
-/// Kick off the adapter + device request at the very top of the script: acquiring them (a GPU
-/// process start in a cold browser) overlaps the wasm download and compile instead of following them.
-/// What a browser without usable WebGPU gets (see docs/ARCHITECTURE.md, "No WebGPU"): a clear message in the
-/// page instead of a blank canvas, after giving the page a chance to take over through `window.zunkFallback`.
 const no_webgpu_js =
     \\// --- No WebGPU: tell the user (or let the page take over) and stop startup ---
     \\// A page may define `window.zunkFallback = async ({ reason, webgl2 }) => handled` BEFORE app.js runs (e.g. an
@@ -1090,7 +1032,6 @@ fn generateReport(
     build_fingerprint: []const u8,
     mode: ReportMode,
 ) !void {
-    // Category counts (used by both modes)
     var counts: [std.enums.values(resolver.Category).len]usize = @splat(0);
     for (resolutions) |r| {
         counts[@backingInt(r.category)] += 1;
@@ -1098,7 +1039,6 @@ fn generateReport(
 
     const lifecycle_fns = [_][]const u8{ "init", "frame", "resize", "cleanup" };
 
-    // JSON mode: structured output, return early
     if (mode.json) {
         try w.writeAll("{");
         try w.print("\"build_fingerprint\":\"{s}\",", .{build_fingerprint});
@@ -1143,7 +1083,6 @@ fn generateReport(
         return;
     }
 
-    // Rich text mode
     try w.print("=== zunk binding resolution report === [build:{s}]\n\n", .{build_fingerprint});
     try w.print("Total imports: {d}\n", .{analysis.imports.len});
     try w.print("Total exports: {d}\n", .{analysis.exports.len});
@@ -1182,7 +1121,6 @@ fn generateReport(
         try w.writeAll("  3. Use the Layer 2 web modules: @import(\"zunk\").web.*\n\n");
     }
 
-    // Verbose mode: list ALL resolutions grouped by category
     if (mode.verbose) {
         try w.writeAll("All resolutions:\n");
         for (std.enums.values(resolver.Category)) |cat| {
@@ -1268,7 +1206,6 @@ fn suggestMatch(name: []const u8) ?[]const u8 {
     var best: ?[]const u8 = null;
     var best_dist: usize = 4; // threshold: must be <= 3
 
-    // Check exact_db names
     for (resolver.exact_db) |entry| {
         const d = editDistance(name, entry.name);
         if (d < best_dist) {
@@ -1277,7 +1214,6 @@ fn suggestMatch(name: []const u8) ?[]const u8 {
         }
     }
 
-    // Check known prefix rules (suggest the prefix itself)
     for (resolver.prefix_rules) |rule| {
         if (name.len > rule.prefix.len) {
             const d = editDistance(name[0..@min(name.len, rule.prefix.len)], rule.prefix);

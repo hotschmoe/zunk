@@ -106,3 +106,17 @@ call; its wire format is in `src/gen/js/a11y.js`.
 Text cluster rasterization writes coverage bytes, or straight-alpha RGBA for
 the color variant, and reports width, height, bearings, and advance. A zero
 byte count means no ink or insufficient output capacity; metrics remain valid.
+
+## src/gen/js_gen.zig
+
+Generated bridge chunks are emitted in order, with user code last. Source-map
+spans cover chunk bodies only and are measured before the generated header is
+rewritten. WASM bindings are mutable so HMR retargets closures to the current
+instance. Input flushing is driven by wasm to avoid clearing state early.
+
+Fonts load before startup by default; `--font-nowait` still preloads them but
+does not wait. HMR state preservation requires both serialization and hydration
+exports and uses the shared exchange buffer; otherwise the new module starts
+fresh. HMR failure triggers a reload. WebGPU initialization starts early to
+overlap wasm download; a failure offers `window.zunkFallback` before showing
+the unavailable message.
