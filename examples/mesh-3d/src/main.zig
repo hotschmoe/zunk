@@ -1,13 +1,3 @@
-//! mesh-3d: a depth-tested, lit, rotating cube with feature edges and a ground
-//! grid, rendered with 4x MSAA straight into the canvas, plus a second view of
-//! the same cube rendered offscreen and composited as an inset. Exercises
-//! zunk's 3D surface: depth attachment, index buffers, instanced draws,
-//! MSAA + resolve, offscreen targets, line topology, depth bias, and
-//! texture readback, a stencil pass and region readback: the cube writes
-//! stencil 1 (`depth24plus_stencil8`), then a translucent yellow quad is drawn
-//! only where stencil == 1 (a silhouette highlight), and two 1x1 readbacks of
-//! the inset (cube centre, empty corner) are logged once after frame 3.
-
 const std = @import("std");
 const zunk = @import("zunk");
 const gpu = zunk.web.gpu;
@@ -31,11 +21,8 @@ const Globals = extern struct {
     view_proj: math.Mat4,
     model: math.Mat4,
     light_dir: [4]f32,
-    /// x, y: target size in pixels; z: edge width in pixels.
     screen: [4]f32,
 };
-
-// ---- geometry (built at comptime) ---------------------------------------
 
 const half: f32 = 0.8;
 
@@ -48,8 +35,7 @@ const face_defs = [6]struct { n: [3]f32, u: [3]f32, v: [3]f32, color: [3]f32 }{
     .{ .n = .{ 0, 0, -1 }, .u = .{ 0, 1, 0 }, .v = .{ 1, 0, 0 }, .color = .{ 0.35, 0.50, 0.90 } },
 };
 
-/// Four corners per face, wound counter-clockwise seen from outside
-/// (u x v == n for every face above).
+// Face basis vectors satisfy u x v == n to preserve winding.
 const cube_vertices: [24]MeshVertex = blk: {
     var out: [24]MeshVertex = undefined;
     const signs = [4][2]f32{ .{ -1, -1 }, .{ 1, -1 }, .{ 1, 1 }, .{ -1, 1 } };
@@ -73,7 +59,6 @@ const cube_indices: [36]u16 = blk: {
     break :blk out;
 };
 
-/// The 12 cube edges: corner pairs that differ in exactly one coordinate.
 const cube_edges: [12]Segment = blk: {
     var out: [12]Segment = undefined;
     var n: usize = 0;
@@ -114,9 +99,6 @@ const grid_vertices: [(2 * grid_half + 1) * 4]GridVertex = blk: {
     break :blk out;
 };
 
-// ---- GPU state ------------------------------------------------------------
-
-/// Everything that depends on a render target's size: MSAA colour + depth.
 const Target = struct {
     width: u32 = 0,
     height: u32 = 0,
@@ -172,7 +154,6 @@ var css_h: u32 = 0;
 var time: f32 = 0;
 var frame_count: u32 = 0;
 
-/// Two 1x1 region readbacks of the inset: [0] cube centre, [1] empty corner.
 var readbacks: [2]gpu.Readback = undefined;
 var readback_state: enum { idle, requested, done } = .idle;
 var readback_data: [2][256]u8 = undefined;
@@ -199,7 +180,6 @@ export fn init() void {
         .{ .format = .float32x3, .offset = 0, .shader_location = 0 },
         .{ .format = .float32x3, .offset = 12, .shader_location = 1 },
     };
-    // Per-instance attributes: one Segment per edge quad.
     const edge_attrs = [_]gpu.VertexAttribute{
         .{ .format = .float32x3, .offset = 0, .shader_location = 0 },
         .{ .format = .float32x3, .offset = 12, .shader_location = 1 },
@@ -217,7 +197,6 @@ export fn init() void {
         .color_format = fmt,
         .blend = .none,
         .cull_mode = .back,
-        // Mark every covered sample with stencil = reference (1).
         .depth = .{ .format = depth_format, .stencil = .{
             .front = .{ .pass_op = .replace },
             .back = .{ .pass_op = .replace },
@@ -249,7 +228,6 @@ export fn init() void {
     });
 
     const blit = gpu.createShaderModule(blit_src);
-    // Highlight: full-screen quad that only passes where the cube set stencil 1.
     tint_pipeline = gpu.createRenderPipelineDesc(.{
         .layout = gpu.createPipelineLayout(&.{}),
         .shader = blit,
@@ -275,8 +253,7 @@ export fn init() void {
         .fragment_entry = "fs_blit",
         .color_format = fmt,
         .blend = .none,
-        // The main pass has a depth buffer, so every pipeline in it needs a
-        // matching (here: disabled) depth state.
+        // Pipelines in the main pass must match its depth attachment.
         .depth = .{ .format = depth_format, .write_enabled = false, .compare = .always },
         .sample_count = sample_count,
     });
@@ -325,8 +302,7 @@ fn globals(model: math.Mat4, eye: math.Vec3, w: f32, h: f32, edge_px: f32) Globa
     };
 }
 
-/// Grid, then cube, then edges: opaque geometry first, then the quads that
-/// depend on its depth.
+// Draw opaque geometry before quads that depend on its depth.
 fn drawScene(pass: gpu.RenderPassEncoder, group: gpu.BindGroup) void {
     gpu.renderPassSetBindGroup(pass, 0, group);
     gpu.renderPassSetStencilReference(pass, 1);
@@ -342,9 +318,8 @@ fn drawScene(pass: gpu.RenderPassEncoder, group: gpu.BindGroup) void {
 
     gpu.renderPassSetPipeline(pass, edge_pipeline);
     gpu.renderPassSetVertexBuffer(pass, 0, edge_buf, 0, @sizeOf(@TypeOf(cube_edges)));
-    gpu.renderPassDraw(pass, 6, cube_edges.len, 0, 0); // 6 verts x 12 instances
+    gpu.renderPassDraw(pass, 6, cube_edges.len, 0, 0);
 
-    // Stencil-masked highlight over the cube silhouette.
     gpu.renderPassSetPipeline(pass, tint_pipeline);
     gpu.renderPassDraw(pass, 6, 1, 0, 0);
 }
@@ -367,7 +342,6 @@ export fn frame(dt: f32) void {
     const inset_g = globals(model, .{ 0, 4.0, 3.0 }, inset_size, inset_size, 2.0);
     gpu.bufferWriteTyped(Globals, inset_uniform, 0, &.{inset_g});
 
-    // 1. Inset: MSAA colour + depth, resolved into `inset_view`.
     const ipass = gpu.beginRenderPassDesc(.{
         .color = inset_target.msaa_view,
         .resolve = inset_view,
@@ -380,7 +354,6 @@ export fn frame(dt: f32) void {
     drawScene(ipass, inset_group);
     gpu.renderPassEnd(ipass);
 
-    // 2. Main scene: MSAA colour + depth, resolved into the canvas.
     const pass = gpu.beginRenderPassDesc(.{
         .color = main_target.msaa_view,
         .resolve = gpu.canvasView(),
@@ -392,7 +365,6 @@ export fn frame(dt: f32) void {
     });
     drawScene(pass, main_group);
 
-    // 3. Composite the inset in the bottom-right corner.
     const iw: f32 = 256 * dpr;
     const margin: f32 = 16 * dpr;
     gpu.renderPassSetViewport(pass, @as(f32, @floatFromInt(px_w)) - iw - margin, @as(f32, @floatFromInt(px_h)) - iw - margin, iw, iw, 0, 1);

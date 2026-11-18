@@ -1,13 +1,11 @@
-// One uniform block shared by every pipeline of the scene.
 struct Globals {
   view_proj: mat4x4f,
   model: mat4x4f,
-  light_dir: vec4f,   // xyz = direction the light travels
-  screen: vec4f,      // x,y = target size in px, z = edge width in px
+  light_dir: vec4f,
+  screen: vec4f,
 }
 @group(0) @binding(0) var<uniform> g: Globals;
 
-// ---- lit, flat-coloured triangles -------------------------------------
 struct MeshOut {
   @builtin(position) pos: vec4f,
   @location(0) normal: vec3f,
@@ -31,7 +29,6 @@ struct MeshOut {
   return vec4f(i.color * (0.25 + 0.75 * l), 1.0);
 }
 
-// ---- hardware line-list (ground grid) ----------------------------------
 struct FlatOut {
   @builtin(position) pos: vec4f,
   @location(0) color: vec3f,
@@ -48,10 +45,7 @@ struct FlatOut {
   return vec4f(i.color, 1.0);
 }
 
-// ---- instanced camera-facing edge quads ---------------------------------
-// One instance per segment (a, b in model space); six vertices per instance
-// expand the segment into a quad `g.screen.z` pixels wide. Pulled towards the
-// camera a hair so edges sit on the faces they outline.
+// Pull edge quads toward the camera so they sit on the outlined faces.
 @vertex fn vs_edge(
   @builtin(vertex_index) vi: u32,
   @location(0) a: vec3f,

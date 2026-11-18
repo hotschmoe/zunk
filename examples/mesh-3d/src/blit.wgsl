@@ -1,4 +1,3 @@
-// Draws a texture over the current viewport (two triangles from the vertex id).
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 
@@ -23,7 +22,6 @@ struct Out {
   return textureSample(tex, samp, i.uv);
 }
 
-// Solid highlight colour; the pipeline's stencil test restricts where it lands.
 @fragment fn fs_tint(i: Out) -> @location(0) vec4f {
   return vec4f(1.0, 0.85, 0.1, 0.45);
 }

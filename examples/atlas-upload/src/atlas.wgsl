@@ -1,7 +1,6 @@
-// Instanced quads sampling an r8unorm coverage atlas (glyph-atlas style).
 struct Inst {
-  @location(0) rect: vec4f,   // x, y, w, h in NDC (y up)
-  @location(1) uv: vec4f,     // u0, v0, u1, v1
+  @location(0) rect: vec4f,
+  @location(1) uv: vec4f,
   @location(2) color: vec4f,
 }
 

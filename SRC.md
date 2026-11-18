@@ -202,3 +202,20 @@ the picker was cancelled or rejected.
 
 The gradient's source rows include padding bytes; they must not leak into the
 atlas. This exercises a source stride larger than its copied width.
+
+## examples/mesh-3d/src/main.zig
+
+The cube writes stencil value 1; a translucent quad then highlights its
+silhouette only where stencil equals 1. Two 1x1 inset readbacks sample the cube
+center and an empty corner after the third frame.
+
+## examples/mesh-3d/src/scene.wgsl
+
+The screen uniform contains target width and height in pixels and edge width in
+pixels. Its light vector points in the direction the light travels. Each edge
+segment expands into a six-vertex quad, biased toward the camera.
+
+## examples/atlas-upload/src/atlas.wgsl
+
+Instance rectangles use x, y, width, and height in NDC with y up; UV rectangles
+are u0, v0, u1, v1.

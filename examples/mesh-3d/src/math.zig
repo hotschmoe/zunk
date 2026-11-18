@@ -1,5 +1,4 @@
-//! Minimal column-major 4x4 matrix helpers (element [col * 4 + row]) for a
-//! right-handed view space and WebGPU's 0..1 clip-space depth.
+// Matrices are column-major; WebGPU clip-space depth is 0..1.
 
 const std = @import("std");
 
