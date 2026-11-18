@@ -21,3 +21,27 @@ path. The update cursor is a byte offset; an empty commit after a composition
 means cancellation. Event text aliases the poll scratch buffer. Records that do
 not fit in scratch stay queued; records read into scratch beyond the output
 array's capacity are discarded.
+
+## src/web/input.zig
+
+Pointer and viewport coordinates and wheel deltas are CSS pixels; wheel deltas
+are positive down and right, and line or page modes are converted to pixels.
+Trackpad pinch arrives with Ctrl set. The canvas backing dimensions scale CSS
+dimensions by device pixel ratio. Modifiers reflect the most recent event;
+typed text consists of whole UTF-8 code points, excluding control characters and
+Ctrl/Cmd chords. The meta modifier is Cmd on macOS and the Windows key elsewhere.
+
+## src/web/audio.zig
+
+Audio decoding is asynchronous. Loading audio from bytes returns a handle before
+decoding completes; poll `isReady()` before playing it.
+
+## src/web/asset.zig
+
+Asset fetch is asynchronous; poll `isReady()` before using the result.
+
+## src/web/app.zig
+
+Wasm entry points that call `std.log` must set `std_options.logFn` to
+`zunk.web.logFn`: the default pulls in `std.Io.Threaded`, unavailable on
+wasm32-freestanding. Browser log messages longer than 512 bytes are truncated.

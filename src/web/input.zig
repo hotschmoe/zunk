@@ -9,23 +9,7 @@ extern "env" fn zunk_input_set_touch_callback(callback_id: u32) void;
 extern "env" fn zunk_input_lock_pointer(canvas_handle: i32) void;
 extern "env" fn zunk_input_unlock_pointer() void;
 
-/// Layout must match the generated JS input flush routine (`emitInputSystem`
-/// in `gen/js_gen.zig`).
-///
-/// Mouse wheel deltas are CSS pixels, positive = down / right (DOM
-/// `WheelEvent` convention; line/page-mode wheels are scaled to pixels). A
-/// trackpad pinch arrives as a wheel event with the Ctrl modifier set.
-/// `modifiers` is the shift/ctrl/alt/meta state of the most recent input
-/// event. `typed_chars` holds the UTF-8 encoding of typed text, whole code
-/// points only; Ctrl/Cmd chords are keys, not text.
-///
-/// Coordinate space: all pointer/viewport fields (`mouse_x/y`, `mouse_dx/dy`,
-/// `touch_x/y`, `viewport_width/height`) are in **CSS pixels**. This matches
-/// the `w, h` passed to the optional `resize(w, h)` export. On HiDPI displays
-/// the canvas backing store is sized to `w * device_pixel_ratio` by
-/// `h * device_pixel_ratio` for crisp rendering; consumers who need that
-/// device-pixel size (e.g. for a WebGPU viewport) should multiply by
-/// `device_pixel_ratio` themselves.
+// Layout must match the input flush routine in gen/js_gen.zig.
 pub const InputState = extern struct {
     keys_down: [32]u8 align(1),
     keys_pressed: [32]u8 align(1),
@@ -183,19 +167,15 @@ pub const Mouse = struct {
     y: f32,
     dx: f32,
     dy: f32,
-    /// Vertical wheel pixels since the last poll (positive = down).
     wheel: f32,
-    /// Horizontal wheel pixels since the last poll (positive = right).
     wheel_x: f32,
     buttons: MouseButtons,
 };
 
-/// Modifier keys held at the most recent input event.
 pub const Modifiers = struct {
     shift: bool,
     ctrl: bool,
     alt: bool,
-    /// Cmd on macOS / Win key elsewhere.
     meta: bool,
 };
 
@@ -288,8 +268,6 @@ pub fn hasFocus() bool {
     return input_state.has_focus != 0;
 }
 
-/// UTF-8 bytes typed since the last poll (whole code points; no control
-/// codes, no Ctrl/Cmd chords).
 pub fn getTypedChars() []const u8 {
     return input_state.typed_chars[0..input_state.typed_chars_len];
 }
