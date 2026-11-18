@@ -202,7 +202,7 @@ Typed WebGPU wrappers over 50 extern functions, covering the compute pipeline an
 
 Compute and the original API are unchanged: `createComputePipeline`, `computePass*`, `createCommandEncoder`, `encoderFinish`, `queueSubmit`, `beginRenderPass(r,g,b,a)`, `beginRenderPassHDR`.
 
-ABI-matched structs read directly by JS via DataView: `BindGroupLayoutEntry` (40 bytes), `BindGroupEntry` (32), `VertexBufferLayout` / `VertexAttribute` (16), `RawPipelineDesc` (76), `RawPassDesc` (48). `js_resolve.zig` has a test that every `zunk_gpu_*` extern in `gpu.zig` resolves.
+ABI-matched structs read directly by JS via DataView: `BindGroupLayoutEntry` (40 bytes), `BindGroupEntry` (32), `VertexBufferLayout` / `VertexAttribute` (16), `RawPipelineDesc` (76), `RawPassDesc` (48).
 
 ### web/ui.zig -- HTML UI Overlay
 

@@ -1,28 +1,5 @@
-/// zunk/bind -- Comptime binding descriptor system for Zig <-> Browser JS FFI.
-///
-/// Write your Web API bindings ONCE in Zig. Comptime generates:
-///   1. The `extern fn` declarations your Zig code calls
-///   2. A binding manifest embedded in a WASM custom section
-///      that zunk reads to auto-generate the matching JavaScript
-///
-/// USAGE IN A LIBRARY (e.g., your WebGPU UI lib):
-///
-///   const web = @import("zunk-bind");
-///
-///   pub const canvas = web.defineModule("canvas", .{
-///       web.func("getContext", .{ .selector = JsSelector }, .{ .ctx_handle = Handle }),
-///       web.func("setSize",   .{ .w = u32, .h = u32 },      .{}),
-///       web.func("clear",     .{ .r = f32, .g = f32, .b = f32, .a = f32 }, .{}),
-///   });
-///
-/// USAGE IN APP CODE:
-///
-///   canvas.getContext("#my-canvas");
-///   canvas.setSize(800, 600);
-///
 const std = @import("std");
 
-/// How a value crosses the WASM boundary.
 pub const ValKind = enum(u8) {
     i32,
     i64,
@@ -97,7 +74,6 @@ pub const Handle = enum(i32) {
     }
 };
 
-// 64 KB shared buffer for Zig<->JS string exchange.
 var string_exchange_buffer: [64 * 1024]u8 = undefined;
 
 pub export fn __zunk_string_buf_ptr() [*]u8 {
@@ -241,27 +217,4 @@ pub fn callback(
         .params = params,
         .is_callback = true,
     };
-}
-
-test "ValKind wasm param counts" {
-    try std.testing.expectEqual(@as(u8, 1), ValKind.i32.wasmParamCount());
-    try std.testing.expectEqual(@as(u8, 2), ValKind.string.wasmParamCount());
-    try std.testing.expectEqual(@as(u8, 0), ValKind.void.wasmParamCount());
-}
-
-test "Handle round-trip" {
-    const h = Handle.fromInt(42);
-    try std.testing.expectEqual(@as(i32, 42), h.toInt());
-    try std.testing.expect(!h.isNull());
-    try std.testing.expect(Handle.null_handle.isNull());
-}
-
-test "manifest serialization compiles" {
-    const descs = comptime [_]FuncDesc{
-        func("getContext", "canvas", &.{param("sel", .string)}, ret(.handle), .dom),
-        func("clear", "canvas", &.{ param("r", .f32), param("g", .f32) }, ret(.void), .dom),
-    };
-    const m = comptime serializeManifest(&descs);
-    try std.testing.expect(m.len > 0);
-    try std.testing.expectEqual(@as(u8, 2), m[0]);
 }

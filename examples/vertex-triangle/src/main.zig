@@ -1,7 +1,3 @@
-// Vertex-buffer acceptance demo: exercises createRenderPipeline's vertex_buffers
-// param and renderPassSetVertexBuffer by drawing a triangle from interleaved
-// {pos: vec2, color: vec3} vertices uploaded to a VERTEX|COPY_DST buffer.
-
 const zunk = @import("zunk");
 const gpu = zunk.web.gpu;
 const input = zunk.web.input;

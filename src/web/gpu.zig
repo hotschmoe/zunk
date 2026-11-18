@@ -1,42 +1,6 @@
-//! WebGPU bindings. Every `extern "env" fn zunk_gpu_*` below is resolved to a
-//! JS snippet by `gen/js_resolve.zig` (`genWebGPU`); multi-line logic lives in
-//! the `zunkGPU` helper object emitted by `gen/js_gen.zig` (`emitWebGPUState`).
-//!
-//! ## Handle lifecycle
-//!
-//! Every GPU object crosses the boundary as a `bind.Handle`: an index into a JS
-//! table. Handle 0 is "none"; handle 1 is the GPUDevice.
-//!   - Created by a `create*` call, valid until its `destroy*` / `release` call.
-//!   - Passes and command buffers are single-use: `renderPassEnd`,
-//!     `computePassEnd`, `encoderFinish` and `queueSubmit` release the handle
-//!     they consume, so per-frame use never grows the table.
-//!   - The *frame encoder* (`frameEncoder`) and the *canvas view*
-//!     (`canvasView`) are created lazily on first use in a frame and released
-//!     by `present`. Do not keep either across `present`.
-//!
-//! ## Frame model
-//!
-//! `beginRenderPass*` records into the frame encoder; `present` finishes and
-//! submits it. Compute work can use its own `createCommandEncoder` +
-//! `queueSubmit`, or share the frame encoder. Offscreen passes
-//! (`RenderPassDescriptor.color = view`) are recorded in the same encoder, so
-//! a later pass in the same frame can sample their result.
-//!
-//! ## Async operations (poll, never block)
-//!
-//! The wasm side cannot await, so each async operation is a handle plus a
-//! state that is polled from `frame`:
-//!   - `createTextureFromAsset`: `isTextureReady(tex)` flips false -> true.
-//!   - Buffer readback: `MapState` is idle -> pending (`bufferMapRead`) ->
-//!     mapped (`bufferMapState`) -> idle (`bufferUnmap`); a failed map reports
-//!     `.failed` until unmapped. `bufferMapRead` must come AFTER the `present`
-//!     (or `queueSubmit`) that submitted the copy; see `Readback`, which wraps
-//!     the whole sequence for texture readback.
-
 const std = @import("std");
 const bind = @import("../bind/bind.zig");
 
-// Type aliases -- all bind.Handle underneath, but named for documentation.
 pub const Device = bind.Handle;
 pub const Buffer = bind.Handle;
 pub const ShaderModule = bind.Handle;
@@ -53,7 +17,6 @@ pub const ComputePassEncoder = bind.Handle;
 pub const RenderPassEncoder = bind.Handle;
 pub const CommandBuffer = bind.Handle;
 
-// Usage flag constants (matching WebGPU GPUBufferUsage / GPUTextureUsage).
 pub const BufferUsage = struct {
     pub const MAP_READ: u32 = 0x0001;
     pub const MAP_WRITE: u32 = 0x0002;
@@ -75,10 +38,7 @@ pub const TextureUsage = struct {
     pub const RENDER_ATTACHMENT: u32 = 0x10;
 };
 
-/// Index order is shared with the `textureFormats` table in js_gen.zig.
-/// `depth24plus_stencil8` carries a stencil aspect: passes that attach it must
-/// also set `RenderPassDescriptor.stencil`, and pipelines drawing into it
-/// should set `DepthState.stencil` (the default is a no-op).
+// Index order must match textureFormats in js_gen.zig.
 pub const TextureFormat = enum(u32) {
     rgba16float = 0,
     rgba32float = 1,
@@ -193,11 +153,7 @@ pub const VertexBufferLayout = extern struct {
     }
 };
 
-// 40 bytes, ABI-matched with JS DataView reader in js_resolve.zig.
-// Meaning of `type_variant` depends on `entry_type`:
-//   entry_type == 0 (buffer)  -> BufferBindingType
-//   entry_type == 1 (texture) -> TextureSampleType
-//   entry_type == 2 (sampler) -> SamplerBindingType
+// ABI must match the JS DataView reader in js_resolve.zig.
 pub const BindGroupLayoutEntry = extern struct {
     binding: u32,
     visibility: u32,
@@ -308,13 +264,9 @@ pub const IndexFormat = enum(u32) {
 };
 
 pub const BlendMode = enum(u32) {
-    /// Overwrite the target (opaque geometry).
     none = 0,
-    /// Straight alpha: src*a + dst*(1-a).
     alpha = 1,
-    /// Premultiplied alpha: src + dst*(1-a).
     premultiplied = 2,
-    /// src*a + dst. Particles, glows.
     additive = 3,
 };
 
@@ -358,18 +310,14 @@ pub const StoreOp = enum(u32) {
     discard = 1,
 };
 
-/// `Handle` 0 is "none" everywhere in this file.
 const none_handle: u32 = 0;
-/// Sentinel for "no format" in `RawPipelineDesc` (depth disabled / canvas colour).
 const no_format: u32 = 0xFFFF_FFFF;
 
 fn rawHandle(h: ?bind.Handle) u32 {
     return if (h) |x| @bitCast(x.toInt()) else none_handle;
 }
 
-/// A wasm32 linear-memory address as the u32 JS reads. Truncation is the
-/// identity on wasm32; it only matters so host-side tests can lower
-/// descriptors without a 64-bit pointer panicking.
+// JS reads wasm32 addresses as u32.
 fn ptr32(p: anytype) u32 {
     return @truncate(@intFromPtr(p));
 }
@@ -385,21 +333,13 @@ pub const StencilOp = enum(u32) {
     decrement_wrap = 7,
 };
 
-/// Per-face stencil test + update. Default = always pass, never modify.
 pub const StencilFace = struct {
     compare: CompareFunction = .always,
-    /// Stencil test failed.
     fail_op: StencilOp = .keep,
-    /// Stencil passed, depth test failed.
     depth_fail_op: StencilOp = .keep,
-    /// Both passed.
     pass_op: StencilOp = .keep,
 };
 
-/// Stencil state of a pipeline. Only meaningful when `DepthState.format` has a
-/// stencil aspect (`depth24plus_stencil8`); the default is the WebGPU default
-/// (a no-op), valid for every format. The reference value is per draw:
-/// `renderPassSetStencilReference`.
 pub const StencilState = struct {
     front: StencilFace = .{},
     back: StencilFace = .{},
@@ -412,30 +352,22 @@ pub const DepthState = struct {
     stencil: StencilState = .{},
     write_enabled: bool = true,
     compare: CompareFunction = .less,
-    /// Constant + slope-scaled depth bias; lets coplanar lines win against
-    /// the faces they outline without touching the shader.
     bias: i32 = 0,
     bias_slope_scale: f32 = 0,
 };
 
-/// Everything a render pipeline needs. Defaults are "draw alpha-blended
-/// triangles into the canvas, no depth, no MSAA", which is what the plain
-/// `createRenderPipeline` does.
 pub const RenderPipelineDescriptor = struct {
     layout: PipelineLayout,
     shader: ShaderModule,
     vertex_entry: []const u8,
     fragment_entry: []const u8,
     vertex_buffers: []const VertexBufferLayout = &.{},
-    /// Colour target format; null = the canvas's preferred format (`canvasFormat`).
     color_format: ?TextureFormat = null,
     blend: BlendMode = .alpha,
     topology: PrimitiveTopology = .triangle_list,
     cull_mode: CullMode = .none,
     front_face: FrontFace = .ccw,
-    /// null = no depth attachment is allowed in passes using this pipeline.
     depth: ?DepthState = null,
-    /// Must equal the sample count of every attachment it renders into.
     sample_count: u32 = 1,
 
     pub fn raw(self: RenderPipelineDescriptor) RawPipelineDesc {
@@ -472,8 +404,7 @@ fn rawFace(f: StencilFace) [4]u32 {
     return .{ @backingInt(f.compare), @backingInt(f.fail_op), @backingInt(f.depth_fail_op), @backingInt(f.pass_op) };
 }
 
-/// 29 little-endian words, field order == `zunkGPU.createPipeline` in
-/// js_gen.zig. Keep the two in lock-step.
+// Field order must match zunkGPU.createPipeline in js_gen.zig.
 pub const RawPipelineDesc = extern struct {
     layout: u32,
     shader: u32,
@@ -494,26 +425,20 @@ pub const RawPipelineDesc = extern struct {
     depth_bias: i32,
     depth_bias_slope: f32,
     sample_count: u32,
-    /// `{compare, fail_op, depth_fail_op, pass_op}` per face.
     stencil_front: [4]u32,
     stencil_back: [4]u32,
     stencil_read_mask: u32,
     stencil_write_mask: u32,
 };
 
-/// Stencil aspect of the depth attachment; required (and only valid) when the
-/// depth view's format has stencil (`depth24plus_stencil8`).
 pub const StencilAttachment = struct {
     clear: u32 = 0,
     load: LoadOp = .clear,
     store: StoreOp = .store,
 };
 
-/// One colour attachment (+ optional MSAA resolve, + optional depth/stencil).
 pub const RenderPassDescriptor = struct {
-    /// Colour target; null = the canvas's current texture (`canvasView`).
     color: ?TextureView = null,
-    /// Single-sample view the MSAA `color` resolves into at pass end.
     resolve: ?TextureView = null,
     clear: [4]f32 = .{ 0, 0, 0, 1 },
     color_load: LoadOp = .clear,
@@ -543,7 +468,7 @@ pub const RenderPassDescriptor = struct {
     }
 };
 
-/// 16 little-endian words, field order == `zunkGPU.beginPass` in js_gen.zig.
+// Field order must match zunkGPU.beginPass in js_gen.zig.
 pub const RawPassDesc = extern struct {
     color: u32,
     resolve: u32,
@@ -560,7 +485,6 @@ pub const RawPassDesc = extern struct {
     stencil_clear: u32,
 };
 
-/// State of the (single) pending map on a buffer; see the module doc.
 pub const MapState = enum(u32) {
     idle = 0,
     pending = 1,
@@ -665,37 +589,24 @@ pub fn getDevice() Device {
     return bind.Handle.fromInt(1);
 }
 
-/// Drop the JS-side reference to any handle. Only needed for objects without
-/// a dedicated `destroy*` (views, bind groups, pipelines, layouts).
 pub fn release(handle: bind.Handle) void {
     zunk_gpu_release(handle.toInt());
 }
 
-/// The swap-chain format the canvas was configured with. MSAA colour targets
-/// that resolve into the canvas must use this format.
 pub fn canvasFormat() TextureFormat {
     return @fromBackingInt(@intCast(zunk_gpu_canvas_format()));
 }
 
-/// Pixel size of the canvas's swap-chain texture (CSS size x devicePixelRatio).
-/// Multisampled / depth targets that resolve into or accompany the canvas
-/// must match it exactly.
 pub fn canvasSize() struct { w: u32, h: u32 } {
     var wh: [2]u32 = .{ 0, 0 };
     zunk_gpu_canvas_size(&wh);
     return .{ .w = wh[0], .h = wh[1] };
 }
 
-/// View of the canvas's current texture. Created on first call in a frame and
-/// released by `present`; do not keep it across frames.
 pub fn canvasView() TextureView {
     return bind.Handle.fromInt(zunk_gpu_canvas_view());
 }
 
-/// The encoder `beginRenderPass*` records into, created on first use in a
-/// frame and submitted by `present`. Use it for `copyTextureToBuffer`,
-/// `copyBufferInEncoder` or `beginComputePass` work that must be ordered
-/// with the frame's render passes.
 pub fn frameEncoder() CommandEncoder {
     return bind.Handle.fromInt(zunk_gpu_frame_encoder());
 }
@@ -724,8 +635,6 @@ pub fn bufferDestroy(buf: Buffer) void {
     zunk_gpu_buffer_destroy(buf.toInt());
 }
 
-/// Start mapping `buf` (MAP_READ usage) for reading. Poll `bufferMapState`;
-/// call only after the work that fills the buffer has been submitted.
 pub fn bufferMapRead(buf: Buffer) void {
     zunk_gpu_buffer_map_read(buf.toInt());
 }
@@ -734,12 +643,10 @@ pub fn bufferMapState(buf: Buffer) MapState {
     return @fromBackingInt(@intCast(zunk_gpu_buffer_map_state(buf.toInt())));
 }
 
-/// Copy `dst.len` bytes of a `.mapped` buffer into wasm memory.
 pub fn bufferReadMapped(buf: Buffer, dst: []u8) void {
     zunk_gpu_buffer_read_mapped(buf.toInt(), dst.ptr, @intCast(dst.len));
 }
 
-/// End a map (successful or failed) and return the buffer to `.idle`.
 pub fn bufferUnmap(buf: Buffer) void {
     zunk_gpu_buffer_unmap(buf.toInt());
 }
@@ -756,20 +663,15 @@ pub fn createTexture(w: u32, h: u32, fmt: TextureFormat, usage: u32) Texture {
     return createTextureMultisampled(w, h, fmt, usage, 1);
 }
 
-/// `sample_count` 1 or 4. A multisampled texture can only be a render
-/// attachment (`RENDER_ATTACHMENT`); resolve it into a single-sample texture
-/// to sample or read it.
 pub fn createTextureMultisampled(w: u32, h: u32, fmt: TextureFormat, usage: u32, sample_count: u32) Texture {
     return bind.Handle.fromInt(zunk_gpu_create_texture(w, h, @backingInt(fmt), usage, sample_count));
 }
 
-/// A depth buffer matching a colour target's size and sample count.
 pub fn createDepthTexture(w: u32, h: u32, fmt: TextureFormat, sample_count: u32) Texture {
     std.debug.assert(fmt == .depth24plus or fmt == .depth32float or fmt == .depth24plus_stencil8);
     return createTextureMultisampled(w, h, fmt, TextureUsage.RENDER_ATTACHMENT, sample_count);
 }
 
-/// A colour texture that can be rendered into and then sampled / copied out.
 pub fn createRenderTarget(w: u32, h: u32, fmt: TextureFormat) Texture {
     return createTexture(w, h, fmt, TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_SRC);
 }
@@ -782,8 +684,6 @@ pub fn destroyTexture(tex: Texture) void {
     zunk_gpu_destroy_texture(tex.toInt());
 }
 
-/// Upload CPU bytes into `tex` at origin (0,0). `bytes_per_row` is the
-/// stride of the source data in bytes (for tightly packed rgba8: width*4).
 pub fn writeTexture(
     tex: Texture,
     bytes: []const u8,
@@ -801,12 +701,6 @@ pub fn writeTexture(
     );
 }
 
-/// Upload CPU bytes into the `width x height` rect of `tex` whose top-left is
-/// `(x, y)`; the rest of the texture is untouched. This is the glyph-atlas
-/// primitive: pack a bitmap into a free spot of an `r8unorm` / `rgba8unorm`
-/// texture (`COPY_DST` usage). `bytes_per_row` is the source stride in bytes
-/// (no 256 alignment needed) and `bytes` must cover
-/// `bytes_per_row * (height - 1) + width * bytes_per_pixel`.
 pub fn writeTextureRegion(
     tex: Texture,
     x: u32,
@@ -868,7 +762,6 @@ pub fn createRenderPipelineDesc(desc: RenderPipelineDescriptor) RenderPipeline {
     return bind.Handle.fromInt(zunk_gpu_create_render_pipeline(&raw));
 }
 
-/// Alpha-blended triangle list into the canvas, no depth.
 pub fn createRenderPipeline(
     layout: PipelineLayout,
     shader: ShaderModule,
@@ -885,7 +778,6 @@ pub fn createRenderPipeline(
     });
 }
 
-/// Triangle list into an offscreen `format` target; additive or no blending.
 pub fn createRenderPipelineHDR(
     layout: PipelineLayout,
     shader: ShaderModule,
@@ -947,12 +839,10 @@ pub fn beginRenderPassDesc(desc: RenderPassDescriptor) RenderPassEncoder {
     return bind.Handle.fromInt(zunk_gpu_begin_render_pass(&raw));
 }
 
-/// Clear the canvas to a colour and begin drawing into it.
 pub fn beginRenderPass(r: f32, g: f32, b: f32, a: f32) RenderPassEncoder {
     return beginRenderPassDesc(.{ .clear = .{ r, g, b, a } });
 }
 
-/// Clear an offscreen view to a colour and begin drawing into it.
 pub fn beginRenderPassHDR(view: TextureView, r: f32, g: f32, b: f32, a: f32) RenderPassEncoder {
     return beginRenderPassDesc(.{ .color = view, .clear = .{ r, g, b, a } });
 }
@@ -989,13 +879,10 @@ pub fn renderPassSetIndexBuffer(pass: RenderPassEncoder, buffer: Buffer, format:
     );
 }
 
-/// Viewport in target pixels; depth range is normally 0..1.
 pub fn renderPassSetViewport(pass: RenderPassEncoder, x: f32, y: f32, w: f32, h: f32, min_depth: f32, max_depth: f32) void {
     zunk_gpu_render_pass_set_viewport(pass.toInt(), x, y, w, h, min_depth, max_depth);
 }
 
-/// Stencil reference value for subsequent draws (compared / written per
-/// `StencilFace`). Persists until changed.
 pub fn renderPassSetStencilReference(pass: RenderPassEncoder, reference: u32) void {
     zunk_gpu_render_pass_set_stencil_reference(pass.toInt(), reference);
 }
@@ -1004,8 +891,6 @@ pub fn renderPassSetScissorRect(pass: RenderPassEncoder, x: u32, y: u32, w: u32,
     zunk_gpu_render_pass_set_scissor_rect(pass.toInt(), x, y, w, h);
 }
 
-/// `instance_count > 1` repeats the draw; vertex buffers whose layout has
-/// `step_mode = .instance` advance once per instance instead of per vertex.
 pub fn renderPassDraw(pass: RenderPassEncoder, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void {
     zunk_gpu_render_pass_draw(pass.toInt(), vertex_count, instance_count, first_vertex, first_instance);
 }
@@ -1018,20 +903,14 @@ pub fn renderPassEnd(pass: RenderPassEncoder) void {
     zunk_gpu_render_pass_end(pass.toInt());
 }
 
-/// Record a copy of `texture` (COPY_SRC) into `buffer` (COPY_DST).
-/// `bytes_per_row` must be a multiple of 256 (`Readback` handles this).
 pub fn copyTextureToBuffer(encoder: CommandEncoder, texture: Texture, buffer: Buffer, bytes_per_row: u32, width: u32, height: u32) void {
     zunk_gpu_copy_texture_to_buffer(encoder.toInt(), texture.toInt(), buffer.toInt(), bytes_per_row, width, height);
 }
 
-/// Like `copyTextureToBuffer` but copies the `width x height` rect whose
-/// top-left is `(x, y)` in `texture` (e.g. 1x1 for picking) instead of the
-/// whole texture. `bytes_per_row` must still be a multiple of 256.
 pub fn copyTextureRegionToBuffer(encoder: CommandEncoder, texture: Texture, buffer: Buffer, bytes_per_row: u32, x: u32, y: u32, width: u32, height: u32) void {
     zunk_gpu_copy_texture_region_to_buffer(encoder.toInt(), texture.toInt(), buffer.toInt(), bytes_per_row, x, y, width, height);
 }
 
-/// Finish and submit the frame encoder, then release the canvas view.
 pub fn present() void {
     zunk_gpu_present();
 }
@@ -1044,9 +923,6 @@ pub fn isTextureReady(handle: Texture) bool {
     return zunk_gpu_is_texture_ready(handle.toInt()) != 0;
 }
 
-/// Measure a text run in pixels using the browser's canvas 2D text shaper.
-/// `font` is a CSS font string, e.g. "500 14px monospace"; `letter_spacing` is
-/// the extra advance after every glyph in px (canvas `letterSpacing`).
 pub fn measureText(text: []const u8, font: []const u8, letter_spacing: f32) TextMetrics {
     var out: TextMetrics = .{ .width = 0, .height = 0 };
     zunk_gpu_measure_text(
@@ -1060,10 +936,6 @@ pub fn measureText(text: []const u8, font: []const u8, letter_spacing: f32) Text
     return out;
 }
 
-/// Result of `rasterCluster`. Bitmap pixel (0,0) sits at
-/// `(pen_x + bearing_x, baseline_y - bearing_y)` (y down), so
-/// `bearing_y` is the distance from the baseline up to the bitmap's top row.
-/// `advance` is the cluster's pen advance in px.
 pub const ClusterMetrics = extern struct {
     width: u32 = 0,
     height: u32 = 0,
@@ -1074,21 +946,10 @@ pub const ClusterMetrics = extern struct {
 
 pub const ClusterBitmap = struct {
     metrics: ClusterMetrics,
-    /// Tightly packed r8 coverage, `width * height` bytes, row stride = width.
-    /// Empty when the cluster has no ink (a space) or did not fit `out`.
     pixels: []const u8,
-    /// True when `out` was too small; `metrics` is still valid, so retry with
-    /// a buffer of `metrics.width * metrics.height` bytes.
     truncated: bool,
 };
 
-/// Rasterize one text cluster (a grapheme: CJK character, emoji, symbol the
-/// primary font lacks) with the browser's canvas 2D text engine into an 8-bit
-/// coverage bitmap in `out`. `font_css` is a CSS font shorthand such as
-/// `"500 14px sans-serif"`; its size token is replaced by `size_px`. Intended
-/// as a fallback for glyphs the app's own fonts lack; feed the pixels to
-/// `writeTextureRegion` on an `r8unorm` atlas. Colour emoji come out as their
-/// alpha coverage. Optional import: modules that never call it do not need it.
 pub fn rasterCluster(utf8: []const u8, font_css: []const u8, size_px: f32, out: []u8) ClusterBitmap {
     var m: ClusterMetrics = .{};
     const written = zunk_text_raster_cluster(utf8.ptr, @intCast(utf8.len), font_css.ptr, @intCast(font_css.len), size_px, out.ptr, @intCast(out.len), &m);
@@ -1096,9 +957,6 @@ pub fn rasterCluster(utf8: []const u8, font_css: []const u8, size_px: f32, out: 
     return .{ .metrics = m, .pixels = out[0..written], .truncated = need > out.len };
 }
 
-/// Like `rasterCluster`, but the bitmap is straight-alpha RGBA (`width * height * 4` bytes): colour
-/// emoji keep their colours. Feed it to `writeTextureRegion` on an `rgba8unorm` atlas. `truncated`
-/// when `out` was smaller than `metrics.width * metrics.height * 4`.
 pub fn rasterClusterRgba(utf8: []const u8, font_css: []const u8, size_px: f32, out: []u8) ClusterBitmap {
     var m: ClusterMetrics = .{};
     const written = zunk_text_raster_cluster_rgba(utf8.ptr, @intCast(utf8.len), font_css.ptr, @intCast(font_css.len), size_px, out.ptr, @intCast(out.len), &m);
@@ -1106,11 +964,6 @@ pub fn rasterClusterRgba(utf8: []const u8, font_css: []const u8, size_px: f32, o
     return .{ .metrics = m, .pixels = out[0..written], .truncated = need > out.len };
 }
 
-/// Rasterize `text` into a freshly allocated rgba8unorm `Texture` of the given
-/// size, using the browser's canvas 2D text shaper. `color` is the foreground
-/// fill (0..1 RGBA). The texture has `TEXTURE_BINDING | COPY_DST` usage and is
-/// ready to bind in the same frame. `font` and `letter_spacing` as in
-/// `measureText`.
 pub fn rasterizeText(
     text: []const u8,
     font: []const u8,
@@ -1134,20 +987,8 @@ pub fn rasterizeText(
     ));
 }
 
-/// Texture -> CPU readback, for headless pixel tests and screenshots of
-/// offscreen targets. Usage, in order, across frames:
-///
-///     var rb = Readback.init(w, h, 4);
-///     rb.encode(gpu.frameEncoder(), target);   // while recording the frame
-///     gpu.present();
-///     rb.request();                            // after the submit
-///     ...                                      // later frames: poll()
-///     if (rb.poll() == .mapped) rb.read(buf);  // buf.len >= rb.paddedSize()
-///
-/// Rows in `buf` are `bytes_per_row` apart (padded to 256), not `w * bpp`.
 pub const Readback = struct {
     buffer: Buffer,
-    /// Top-left of the copied rect in the source texture.
     x: u32 = 0,
     y: u32 = 0,
     width: u32,
@@ -1155,14 +996,10 @@ pub const Readback = struct {
     bytes_per_row: u32,
     bytes_per_pixel: u32 = 4,
 
-    /// Whole-texture readback of a `width x height` target.
     pub fn init(width: u32, height: u32, bytes_per_pixel: u32) Readback {
         return initRegion(0, 0, width, height, bytes_per_pixel);
     }
 
-    /// Readback of the `width x height` rect at `(x, y)` only, e.g.
-    /// `initRegion(mx, my, 1, 1, 4)` to read the pixel under the cursor.
-    /// `pixel` and `read` then index relative to the rect.
     pub fn initRegion(x: u32, y: u32, width: u32, height: u32, bytes_per_pixel: u32) Readback {
         const bpr = alignRow(width * bytes_per_pixel);
         return .{
@@ -1196,187 +1033,18 @@ pub const Readback = struct {
         return bufferMapState(self.buffer);
     }
 
-    /// Copy out and unmap; the Readback can be reused for another capture.
     pub fn read(self: Readback, dst: []u8) void {
         bufferReadMapped(self.buffer, dst[0..self.paddedSize()]);
         bufferUnmap(self.buffer);
     }
 
-    /// RGBA/BGRA pixel at (x, y) (relative to the copied rect) of a buffer filled by `read`.
     pub fn pixel(self: Readback, data: []const u8, x: u32, y: u32) [4]u8 {
         const o = y * self.bytes_per_row + x * self.bytes_per_pixel;
         return data[o..][0..4].*;
     }
 };
 
-/// WebGPU requires `bytesPerRow` of texture copies to be a multiple of 256.
+// WebGPU texture-copy rows must be aligned to 256 bytes.
 pub fn alignRow(bytes: u32) u32 {
     return (bytes + 255) & ~@as(u32, 255);
-}
-
-test "ClusterMetrics layout matches the JS writer (5 words)" {
-    try std.testing.expectEqual(@as(usize, 20), @sizeOf(ClusterMetrics));
-}
-
-test "struct layout RawPipelineDesc" {
-    try std.testing.expectEqual(@as(usize, 29 * 4), @sizeOf(RawPipelineDesc));
-}
-
-test "struct layout RawPassDesc" {
-    try std.testing.expectEqual(@as(usize, 16 * 4), @sizeOf(RawPassDesc));
-    try std.testing.expectEqual(@as(usize, 32), @offsetOf(RawPassDesc, "clear"));
-}
-
-test "alignRow pads to 256" {
-    try std.testing.expectEqual(@as(u32, 256), alignRow(4));
-    try std.testing.expectEqual(@as(u32, 256), alignRow(256));
-    try std.testing.expectEqual(@as(u32, 512), alignRow(257));
-    try std.testing.expectEqual(@as(u32, 1024), alignRow(1000));
-}
-
-test "RenderPassDescriptor lowers null views to handle 0" {
-    const r = (RenderPassDescriptor{}).raw();
-    try std.testing.expectEqual(@as(u32, 0), r.color);
-    try std.testing.expectEqual(@as(u32, 0), r.depth);
-    try std.testing.expectEqual(@as(f32, 1.0), r.depth_clear);
-
-    const d = (RenderPassDescriptor{
-        .color = bind.Handle.fromInt(7),
-        .resolve = bind.Handle.fromInt(8),
-        .depth = bind.Handle.fromInt(9),
-        .color_store = .discard,
-        .depth_load = .load,
-    }).raw();
-    try std.testing.expectEqual(@as(u32, 7), d.color);
-    try std.testing.expectEqual(@as(u32, 8), d.resolve);
-    try std.testing.expectEqual(@as(u32, 9), d.depth);
-    try std.testing.expectEqual(@as(u32, 1), d.color_store);
-    try std.testing.expectEqual(@as(u32, 1), d.depth_load);
-}
-
-test "RenderPipelineDescriptor lowering: instanced vertex layout, depth, msaa" {
-    const attrs = [_]VertexAttribute{.{ .format = .float32x3, .offset = 0, .shader_location = 0 }};
-    const layouts = [_]VertexBufferLayout{
-        VertexBufferLayout.fromSlice(12, .vertex, &attrs),
-        VertexBufferLayout.fromSlice(12, .instance, &attrs),
-    };
-    try std.testing.expectEqual(VertexStepMode.instance, layouts[1].step_mode);
-
-    const raw = (RenderPipelineDescriptor{
-        .layout = bind.Handle.fromInt(2),
-        .shader = bind.Handle.fromInt(3),
-        .vertex_entry = "vs",
-        .fragment_entry = "fs",
-        .vertex_buffers = &layouts,
-        .color_format = .rgba8unorm,
-        .blend = .none,
-        .topology = .line_list,
-        .cull_mode = .back,
-        .depth = .{ .format = .depth24plus, .compare = .less_equal, .write_enabled = false, .bias = -2 },
-        .sample_count = 4,
-    }).raw();
-    try std.testing.expectEqual(@as(u32, 2), raw.vertex_buffers_len);
-    try std.testing.expectEqual(@as(u32, @backingInt(TextureFormat.rgba8unorm)), raw.color_format);
-    try std.testing.expectEqual(@as(u32, @backingInt(PrimitiveTopology.line_list)), raw.topology);
-    try std.testing.expectEqual(@as(u32, @backingInt(TextureFormat.depth24plus)), raw.depth_format);
-    try std.testing.expectEqual(@as(u32, 0), raw.depth_write);
-    try std.testing.expectEqual(@as(i32, -2), raw.depth_bias);
-    try std.testing.expectEqual(@as(u32, 4), raw.sample_count);
-
-    // Defaults: canvas format, no depth, single sample.
-    const plain = (RenderPipelineDescriptor{
-        .layout = bind.Handle.fromInt(2),
-        .shader = bind.Handle.fromInt(3),
-        .vertex_entry = "vs",
-        .fragment_entry = "fs",
-    }).raw();
-    try std.testing.expectEqual(no_format, plain.color_format);
-    try std.testing.expectEqual(no_format, plain.depth_format);
-    try std.testing.expectEqual(@as(u32, 1), plain.sample_count);
-}
-
-test "struct layout BindGroupLayoutEntry" {
-    try std.testing.expectEqual(@as(usize, 40), @sizeOf(BindGroupLayoutEntry));
-}
-
-test "struct layout BindGroupEntry" {
-    try std.testing.expectEqual(@as(usize, 32), @sizeOf(BindGroupEntry));
-}
-
-test "struct layout VertexAttribute" {
-    try std.testing.expectEqual(@as(usize, 16), @sizeOf(VertexAttribute));
-}
-
-test "struct layout VertexBufferLayout" {
-    try std.testing.expectEqual(@as(usize, 16), @sizeOf(VertexBufferLayout));
-}
-
-test "struct layout SamplerDescriptor" {
-    try std.testing.expectEqual(@as(usize, 24), @sizeOf(SamplerDescriptor));
-}
-
-test "struct layout TextMetrics" {
-    try std.testing.expectEqual(@as(usize, 8), @sizeOf(TextMetrics));
-}
-
-test "BindGroupLayoutEntry initSampler encodes type_variant" {
-    const e = BindGroupLayoutEntry.initSampler(3, ShaderVisibility.FRAGMENT, .filtering);
-    try std.testing.expectEqual(@as(u32, 2), e.entry_type);
-    try std.testing.expectEqual(@as(u32, 0), e.type_variant);
-}
-
-test "BindGroupEntry initSampler encodes entry_type=2" {
-    const h = bind.Handle.fromInt(42);
-    const e = BindGroupEntry.initSampler(1, h);
-    try std.testing.expectEqual(@as(u32, 2), e.entry_type);
-    try std.testing.expectEqual(@as(u32, 42), e.resource_handle);
-}
-
-test {
-    std.testing.refAllDecls(@This());
-}
-
-test "stencil lowering: pipeline faces/masks and pass attachment" {
-    const raw = (RenderPipelineDescriptor{
-        .layout = bind.Handle.fromInt(2),
-        .shader = bind.Handle.fromInt(3),
-        .vertex_entry = "vs",
-        .fragment_entry = "fs",
-        .depth = .{ .format = .depth24plus_stencil8, .stencil = .{
-            .front = .{ .compare = .equal, .fail_op = .zero, .depth_fail_op = .invert, .pass_op = .replace },
-            .back = .{ .pass_op = .increment_wrap },
-            .read_mask = 0x0F,
-            .write_mask = 0xF0,
-        } },
-    }).raw();
-    try std.testing.expectEqual(@as(u32, 8), raw.depth_format);
-    try std.testing.expectEqual([4]u32{ 2, 1, 3, 2 }, raw.stencil_front);
-    try std.testing.expectEqual([4]u32{ 7, 0, 0, 6 }, raw.stencil_back);
-    try std.testing.expectEqual(@as(u32, 0x0F), raw.stencil_read_mask);
-    try std.testing.expectEqual(@as(u32, 0xF0), raw.stencil_write_mask);
-
-    // No depth => WebGPU-default (no-op) stencil words, still well-formed.
-    const plain = (RenderPipelineDescriptor{
-        .layout = bind.Handle.fromInt(2),
-        .shader = bind.Handle.fromInt(3),
-        .vertex_entry = "vs",
-        .fragment_entry = "fs",
-    }).raw();
-    try std.testing.expectEqual([4]u32{ 7, 0, 0, 0 }, plain.stencil_front);
-    try std.testing.expectEqual(@as(u32, 0xFFFF_FFFF), plain.stencil_write_mask);
-
-    const p = (RenderPassDescriptor{ .depth = bind.Handle.fromInt(9), .stencil = .{ .clear = 5, .load = .load, .store = .discard } }).raw();
-    try std.testing.expectEqual(@as(u32, 1), p.stencil_enabled);
-    try std.testing.expectEqual(@as(u32, 1), p.stencil_load);
-    try std.testing.expectEqual(@as(u32, 1), p.stencil_store);
-    try std.testing.expectEqual(@as(u32, 5), p.stencil_clear);
-    try std.testing.expectEqual(@as(u32, 0), (RenderPassDescriptor{}).raw().stencil_enabled);
-}
-
-test "Readback region offsets and pixel indexing" {
-    const rb = Readback{ .buffer = bind.Handle.fromInt(4), .x = 10, .y = 20, .width = 2, .height = 2, .bytes_per_row = alignRow(8), .bytes_per_pixel = 4 };
-    try std.testing.expectEqual(@as(u32, 512), rb.paddedSize());
-    var data: [512]u8 = @splat(0);
-    data[256 + 4 ..][0..4].* = .{ 1, 2, 3, 4 };
-    try std.testing.expectEqual([4]u8{ 1, 2, 3, 4 }, rb.pixel(&data, 1, 1));
 }

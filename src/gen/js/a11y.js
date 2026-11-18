@@ -1,32 +1,7 @@
-// --- A11y DOM mirror (teak accessibility bridge, wire format v2) ---
-// The browser half of Teak's `Host.publishA11yTree` / `pollA11yActions`
-// (teak docs/features/a11y.md, src/platform/wasm.zig "A11y DOM-mirror wire
-// format"). A canvas-rendered UI is opaque to assistive technology; this
-// mirrors Teak's semantic tree into a real, NESTED DOM subtree of ARIA
-// elements, positioned over the canvas so AT focus rings and touch
-// exploration land where the pixels are:
-//
-//   wasm -> JS   __zunk_publish_a11y_tree(records, len, strings, slen): 64-byte
-//                records (parents before children), diffed against the DOM.
-//   JS -> wasm   __zunk_poll_a11y_actions(recs, cap, strs, scap) -> count:
-//                what AT did (activate / focus / set value), queued here as DOM
-//                events fire and drained once per frame. Teak turns them into
-//                ordinary input; there is no second mutation path (the DOM is
-//                derived state, never an authority).
-//
-// Record (little endian, 64 bytes):
-//    0 cmd_index u32   4 role u32 (wire code, ROLES below)   8 label off,len u32 x2
-//   16 bounds x,y,w,h i32 x4   32 state f32   36 flags u32 (FLAG)
-//   40 value off,len u32 x2   48 sel_start,sel_end u32 x2 (bytes in value)
-//   56 parent u32 (record index, 0xFFFFFFFF = root)   60 level u32
-// Action record (16 bytes): kind u32 (0 activate, 1 focus, 2 set_value,
-//   3 increment, 4 decrement), cmd_index u32, str_off u32, str_len u32.
 const zunkA11y = (() => {
   const NONE = 0xFFFFFFFF;
   const FLAG = { focused: 1, disabled: 2, selected: 4, expandable: 8, expanded: 16, modal: 32, polite: 64, assertive: 128 };
-  // wire code -> [tag, aria role | null, kind]. kind: 't' text leaf (label as textContent),
-  // 'b' native button, 'i' input, 'a' textarea, 'c' container (aria-label), 's' slider,
-  // 'k' toggle (checkbox/radio), 'l' labelled leaf button-like (textContent + tabindex).
+  // Array indices are wire role codes; see Teak's src/platform/wasm.zig.
   const ROLES = [
     ['div', null, 'c'],          // 0 generic
     ['div', 'region', 'c'],      // 1 region (scroll)
@@ -67,8 +42,8 @@ const zunkA11y = (() => {
   const KIND = { activate: 0, focus: 1, set_value: 2, increment: 3, decrement: 4 };
 
   let root = null;
-  const els = new Map();   // cmd_index -> element
-  const queue = [];        // pending actions {kind, idx, text}
+  const els = new Map();
+  const queue = [];
   let programmatic = false;
   let focusedKey = -1;
   let lastKeyMs = 0;
@@ -79,8 +54,6 @@ const zunkA11y = (() => {
     if (root) return;
     root = document.createElement('div');
     root.id = 'zunk-a11y-root';
-    // Overlaid on the canvas (children are absolutely positioned at their
-    // bounds), invisible, never intercepting the pointer.
     root.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;overflow:visible;pointer-events:none;opacity:0;';
     document.body.appendChild(root);
     document.addEventListener('keydown', () => { lastKeyMs = performance.now(); }, true);
@@ -118,22 +91,15 @@ const zunkA11y = (() => {
       el.addEventListener('focus', () => { if (!programmatic) enqueue(KIND.focus, key); });
     }
     if (kind === 'b' || kind === 'k' || kind === 'l') {
-      // AT activation (and Enter/Space on a focused element) arrives as a click.
       el.addEventListener('click', e => { e.preventDefault(); enqueue(KIND.activate, key); });
-      // Keys that activate a DOM control must not ALSO reach Teak's keyboard
-      // path (one action, one path).
+      // Do not duplicate DOM activation through Teak's keyboard path.
       el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); });
     }
     if (kind === 'i' || kind === 'a') {
-      // Typing arrives through zunk's keydown handler (Teak's normal input
-      // path). An `input` event with no recent key press is AT setting the
-      // value programmatically: report it as set_value.
+      // Input without a recent key press is an assistive-technology value change.
       el.addEventListener('input', () => {
         if (performance.now() - lastKeyMs > 80) enqueue(KIND.set_value, key, el.value);
       });
-    }
-    if (kind === 'k') {
-      // Space toggles a checkbox; it arrives as a click above, not as a Teak key.
     }
     return el;
   }
@@ -188,7 +154,7 @@ const zunkA11y = (() => {
       if (el.value !== val) el.value = val;
       if (document.activeElement === el && !programmatic) {
         const vb = strs.subarray(vofs, vofs + vlen);
-        try { el.setSelectionRange(utf16Len(vb, ss), utf16Len(vb, se)); } catch (e) { /* not selectable */ }
+        try { el.setSelectionRange(utf16Len(vb, ss), utf16Len(vb, se)); } catch (e) {}
       }
     }
     return flags;
@@ -202,7 +168,7 @@ const zunkA11y = (() => {
     const strs = new Uint8Array(memory.buffer, sptr, slen);
     const seen = new Set();
     const order = new Array(count);
-    const lastPlaced = new Map(); // parent element -> last child placed in order
+    const lastPlaced = new Map();
     let wantFocus = -1;
     for (let i = 0; i < count; i++) {
       const off = i * 64;
@@ -227,7 +193,6 @@ const zunkA11y = (() => {
       lastPlaced.set(parentEl, el);
     }
     els.forEach((el, key) => { if (!seen.has(key)) { el.remove(); els.delete(key); } });
-    // Focus sync (Teak -> DOM): move DOM focus when Teak's focus moved.
     if (wantFocus !== focusedKey) {
       focusedKey = wantFocus;
       const el = wantFocus >= 0 ? els.get(wantFocus) : null;
@@ -249,7 +214,7 @@ const zunkA11y = (() => {
       if (a.text) {
         const b = enc.encode(a.text);
         if (b.length <= strCap - used) { bytes.set(b, used); off = used; len = b.length; used += len; }
-        else continue; // too large to deliver: drop (the value stays authoritative in Teak)
+        else continue; // Teak remains authoritative if the value does not fit.
       }
       const o = n * 16;
       dv.setUint32(o, a.kind, true);

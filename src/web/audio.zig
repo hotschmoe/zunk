@@ -29,15 +29,10 @@ pub fn load(url: []const u8) AudioBuffer {
     return bind.Handle.fromInt(zunk_audio_load(url.ptr, @intCast(url.len)));
 }
 
-/// Load audio from raw bytes (e.g. from @embedFile). Returns a handle
-/// immediately; the browser decodes asynchronously. Use isReady() to
-/// check when the buffer can be played.
 pub fn loadFromMemory(data: []const u8) AudioBuffer {
     return bind.Handle.fromInt(zunk_audio_load_memory(data.ptr, @intCast(data.len)));
 }
 
-/// Returns true once an async load/decode has completed and the buffer
-/// is ready to play.
 pub fn isReady(buffer: AudioBuffer) bool {
     return zunk_audio_is_ready(buffer.toInt()) != 0;
 }
@@ -46,7 +41,6 @@ pub fn play(buffer: AudioBuffer) void {
     zunk_audio_play(buffer.toInt());
 }
 
-/// Decode a fetched asset (from zunk.web.asset) as audio. Poll isReady().
 pub fn decodeAsset(asset_handle: bind.Handle) AudioBuffer {
     return bind.Handle.fromInt(zunk_audio_decode_asset(asset_handle.toInt()));
 }

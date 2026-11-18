@@ -1,9 +1,3 @@
-// Text-to-texture acceptance demo (workstream 2, see
-// docs/from_teak_team/zunk-roadmap.md). Measures "Hello, world!" with the
-// browser's text shaper, rasterizes it into a GPU texture, then samples the
-// texture over a pixel-sized quad centered on the canvas. Resizing the window
-// updates the uniform buffer so the text stays pixel-accurate.
-
 const zunk = @import("zunk");
 const gpu = zunk.web.gpu;
 const input = zunk.web.input;
@@ -14,7 +8,6 @@ const label_font = "32px sans-serif";
 
 const shader_src =
     \\struct Uniforms {
-    \\  // Clip-space rectangle: (x0, y0, x1, y1).
     \\  rect: vec4f,
     \\};
     \\@group(0) @binding(0) var<uniform> u: Uniforms;
@@ -27,7 +20,6 @@ const shader_src =
     \\};
     \\
     \\@vertex fn vertexMain(@builtin(vertex_index) vid: u32) -> VSOut {
-    \\  // Two-triangle quad in (rect.xy)..(rect.zw) with top-left UV origin.
     \\  let corners = array<vec2f, 6>(
     \\    vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0),
     \\    vec2f(1.0, 0.0), vec2f(1.0, 1.0), vec2f(0.0, 1.0),
@@ -35,7 +27,7 @@ const shader_src =
     \\  let c = corners[vid];
     \\  var o: VSOut;
     \\  let x = mix(u.rect.x, u.rect.z, c.x);
-    \\  let y = mix(u.rect.w, u.rect.y, c.y); // flip so c.y=0 is top
+    \\  let y = mix(u.rect.w, u.rect.y, c.y);
     \\  o.pos = vec4f(x, y, 0.0, 1.0);
     \\  o.uv = c;
     \\  return o;
@@ -69,7 +61,6 @@ export fn init() void {
     });
 
     uniform_buffer = gpu.createUniformBuffer(16);
-    // Default rect covers the full clip space until resize() fires.
     const default_rect = [4]f32{ -1.0, -1.0, 1.0, 1.0 };
     gpu.bufferWriteTyped(f32, uniform_buffer, 0, &default_rect);
 
@@ -103,7 +94,6 @@ export fn frame(_: f32) void {
 export fn resize(w: u32, h: u32) void {
     if (w == 0 or h == 0 or text_w == 0 or text_h == 0) return;
 
-    // Place the text at pixel-accurate size, centered on the canvas.
     const canvas_w: f32 = @floatFromInt(w);
     const canvas_h: f32 = @floatFromInt(h);
     const tw: f32 = @floatFromInt(text_w);

@@ -1,19 +1,4 @@
-/// File-dialog bridge smoke test for zunk GitHub issue #14.
-///
-/// Demonstrates the request/poll ABI a host integration (e.g. teak's
-/// `Host.requestFileDialog`) drives against the zunk runtime:
-///
-///   1. On a user click we call `__zunk_request_file_dialog(id, mode,
-///      name*, name_len, pattern*, pattern_len)` -- the JS bridge zunk
-///      auto-generates opens `showOpenFilePicker` / `showSaveFilePicker`.
-///   2. Each frame we check our local slot table for a result. When the
-///      browser resolves (or the user cancels) zunk's bridge calls our
-///      exported `__zunk_file_dialog_result(id, path*, path_len)`, which
-///      copies the path into the slot. `path_len == 0` signals cancel.
-///
-/// This file deliberately mirrors teak's `wasm.zig` shape (single slot
-/// table, 1024-byte path buffer, status enum) so the example doubles as
-/// the integration contract.
+// File-dialog bridge: https://github.com/hotschmoe/zunk/issues/14
 const std = @import("std");
 const zunk = @import("zunk");
 const canvas = zunk.web.canvas;
@@ -90,10 +75,6 @@ export fn resize(w: u32, h: u32) void {
     canvas.setSize(ctx, w, h);
 }
 
-/// zunk's JS bridge writes the chosen path here and flips the slot
-/// state. `path_len == 0` means the user cancelled (or the browser
-/// rejected the picker). Triggered from the file-picker promise inside
-/// the auto-generated JS resolver entry for `__zunk_request_file_dialog`.
 export fn __zunk_file_dialog_result(id: u32, path_ptr: [*]const u8, path_len: u32) void {
     if (id != 1 or slot.state != .pending) return;
     if (path_len == 0) {

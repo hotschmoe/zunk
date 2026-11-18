@@ -7,7 +7,6 @@ extern "env" fn zunk_asset_get_ptr(handle: i32, dest_ptr: [*]u8) i32;
 
 pub const Handle = bind.Handle;
 
-/// Starts an async fetch. Poll with isReady().
 pub fn fetch(url: []const u8) Handle {
     return bind.Handle.fromInt(zunk_asset_fetch(url.ptr, @intCast(url.len)));
 }
@@ -20,13 +19,7 @@ pub fn getLen(handle: Handle) usize {
     return @intCast(zunk_asset_get_len(handle.toInt()));
 }
 
-/// Copies fetched bytes into dest, returns the filled slice.
 pub fn getBytes(handle: Handle, dest: []u8) []u8 {
     const len: usize = @intCast(zunk_asset_get_ptr(handle.toInt(), dest.ptr));
     return dest[0..len];
 }
-
-// TODO: fetchAll(urls) -> []Handle -- batch loading
-// TODO: getProgress(handle) -> f32 -- download progress (0.0 to 1.0)
-// TODO: fetchStreaming(url) -> StreamHandle -- progressive/streaming loading
-// TODO: fetchWithOptions(url, .{ .cache = .reload }) -- cache control

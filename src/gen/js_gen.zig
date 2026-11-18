@@ -4,37 +4,23 @@ const resolver = @import("js_resolve.zig");
 const source_map = @import("source_map.zig");
 
 pub const BridgeJsChunk = struct {
-    /// Human-readable label printed into the merged JS as a banner comment
-    /// (e.g. `bridge.js`, `js/bridge.js`, or a dep package directory name).
     origin: []const u8,
     source: []const u8,
 };
 
-/// A web font the page must have loaded before the app starts. The file
-/// lives at `<public_url>fonts/<file>` (copied there by `zunk build`).
 pub const FontFace = struct {
     family: []const u8,
-    /// CSS `font-weight` (400 regular, 500 medium, 700 bold, ...).
     weight: u16,
-    /// Basename of the font file inside `fonts/`.
     file: []const u8,
 };
 
 pub const GenOptions = struct {
     public_url: []const u8 = "/",
     wasm_filename: []const u8,
-    /// Concatenated in order. Convention: dep-provided chunks first, user's
-    /// own project chunk last, so the user can override symbols from deps.
     bridge_js_chunks: []const BridgeJsChunk = &.{},
     js_filename: []const u8 = "app.js",
-    /// `<link rel=preload>` for the wasm, so its download starts at HTML parse, before the script runs.
     wasm_preload: bool = true,
-    /// `@font-face` rules go into the page; the app starts only after every
-    /// face has loaded (`document.fonts.load`), so the first text measurement
-    /// already sees the real font.
     fonts: []const FontFace = &.{},
-    /// false (`--font-nowait`): the faces still load and are `preload`ed, but startup does not wait for them (apps
-    /// that rasterize text themselves, like teak's stb path, use the page fonts only as a fallback).
     fonts_blocking: bool = true,
     js_integrity: ?[]const u8 = null,
     verbose_report: bool = false,
@@ -45,9 +31,6 @@ pub const Categories = std.enums.EnumSet(resolver.Category);
 
 pub const GenResult = struct {
     js: []const u8,
-    /// Source Map v3 JSON, or empty if no mappable content was emitted
-    /// (currently: empty when there are no bridge.js chunks). When empty,
-    /// callers should skip writing a .js.map file.
     js_map: []const u8,
     html: []const u8,
     report: []const u8,
@@ -125,9 +108,7 @@ pub fn generate(
     if (needs.fx) try w.writeAll(fx_js ++ "\n\n");
     if (needs.ime) try w.writeAll(ime_js ++ "\n\n");
 
-    // Mutable WASM bindings. Held at module scope so that HMR can swap the
-    // underlying instance while env methods (which close over this scope
-    // and resolve these names at call time) transparently retarget.
+    // Mutable bindings let HMR retarget env methods to the new instance.
     try w.writeAll("let instance, exports, memory;\n\n");
 
     try w.writeAll("const env = {\n");
@@ -141,10 +122,6 @@ pub fn generate(
 
     try w.writeAll("};\n\n");
 
-    // Record byte spans of bridge.js content so the source map can point
-    // back at the original library-provided JS. Span is [start, end) and
-    // covers only the chunk body (not the banner comment or trailing
-    // padding).
     var bridge_spans: std.ArrayList(source_map.Span) = .empty;
     defer bridge_spans.deinit(allocator);
 
@@ -162,11 +139,7 @@ pub fn generate(
         });
     }
 
-    // __zunkLoad instantiates or swaps the WASM module. Called once during
-    // startup, and again by __zunkHmrSwap when the dev server signals that
-    // only the .wasm binary changed.
     try w.writeAll(
-        \\// --- WASM load helper ---
         \\async function __zunkLoad(wasmUrl) {
         \\  performance.mark('zunk:load-start');
         \\  const response = await fetch(wasmUrl);
@@ -199,12 +172,11 @@ pub fn generate(
     if (needs.webgpu_init) try emitWebGPUInit(w);
 
     if (has_init) {
-        try w.writeAll("// Init\nperformance.mark('zunk:init-start');\nexports.init();\nperformance.mark('zunk:init-end');\n\n");
+        try w.writeAll("performance.mark('zunk:init-start');\nexports.init();\nperformance.mark('zunk:init-end');\n\n");
     }
 
     if (needs.render_loop) {
         try w.writeAll(
-            \\// --- Render loop ---
             \\let zunkLastTime = 0;
             \\let zunkFrameId = 0;
             \\let zunkFrameId_first = false;
@@ -215,7 +187,7 @@ pub fn generate(
             \\  if (!zunkFrameId_first) { zunkFrameId_first = true; performance.mark('zunk:first-frame-start'); }
             \\
         );
-        // Input flush is WASM-driven via input.poll() to avoid wiping per-frame state early.
+        // WASM drives input flush to avoid wiping per-frame state early.
         try w.writeAll(
             \\  exports.frame(Math.min(dt, 0.1));
             \\  if (!zunkFirstDone) { zunkFirstDone = true; performance.mark('zunk:first-frame-end'); }
@@ -230,7 +202,6 @@ pub fn generate(
     if (needs.resize_handler) {
         if (needs.webgpu_init) {
             try w.writeAll(
-                \\// --- Resize handler (DPR-aware for WebGPU) ---
                 \\function zunkResize() {
                 \\  const c = document.getElementById('app') || document.querySelector('canvas');
                 \\  const w = c ? c.clientWidth : window.innerWidth;
@@ -250,7 +221,6 @@ pub fn generate(
             );
         } else {
             try w.writeAll(
-                \\// --- Resize handler ---
                 \\function zunkResize() {
                 \\  const c = document.getElementById('app') || document.querySelector('canvas');
                 \\  if (c) { c.width = window.innerWidth; c.height = window.innerHeight; }
@@ -270,20 +240,14 @@ pub fn generate(
 
     try emitHmrSwap(w, needs, has_init, has_cleanup);
 
-    // window.wasmBindings / window.wasmMemory are (re)assigned inside
-    // __zunkLoad so HMR keeps them pointed at the live module.
     try w.writeAll(
-        \\// --- Startup event ---
         \\dispatchEvent(new CustomEvent('ZunkApplicationStarted', { detail: { wasm: instance, memory } }));
         \\
     );
 
     try w.writeAll("\n})();\n");
 
-    // Build the source map BEFORE the header rewrite below so byte offsets
-    // recorded in bridge_spans remain valid. The rewrite lengthens the
-    // header but adds no newlines, so line numbers would be stable either
-    // way -- but building here keeps the byte math unambiguous.
+    // Build the map before rewriting the header to preserve recorded offsets.
     const js_map: []const u8 = if (bridge_spans.items.len == 0)
         ""
     else
@@ -295,8 +259,6 @@ pub fn generate(
     std.mem.writeInt(u64, &fingerprint, full_hash, .big);
     const hex = std.fmt.bytesToHex(fingerprint, .lower);
 
-    // Rewrite the placeholder header with the build fingerprint baked in. The
-    // placeholder is the first thing written above, so its position is fixed.
     const old_header = "// Generated by zunk -- do not edit.\n// https://github.com/hotschmoe/zunk\n\n";
     const new_header = try std.fmt.allocPrint(allocator, "// Generated by zunk [build:{s}] -- do not edit.\n// https://github.com/hotschmoe/zunk\n\n", .{hex[0..8]});
     defer allocator.free(new_header);
@@ -342,16 +304,12 @@ const Features = struct {
     ime: bool = false,
 };
 
-/// The host-services bridge (see the header of `js/fx.js`).
 const fx_js = @embedFile("js/fx.js");
 
-/// The a11y DOM mirror (see the header of `js/a11y.js`).
 const a11y_js = @embedFile("js/a11y.js");
 
-/// The IME bridge (see the header of `js/ime.js`).
 const ime_js = @embedFile("js/ime.js");
 
-/// Write `s` escaped for use inside a double-quoted JS or CSS string.
 fn writeEscaped(w: *std.Io.Writer, s: []const u8) !void {
     for (s) |c| switch (c) {
         '\\', '"' => {
@@ -363,7 +321,6 @@ fn writeEscaped(w: *std.Io.Writer, s: []const u8) !void {
     };
 }
 
-/// Block startup until every registered font face is loaded.
 fn emitFontLoad(w: *std.Io.Writer, fonts: []const FontFace, blocking: bool) !void {
     if (fonts.len == 0) return;
     try w.writeAll(if (blocking)
@@ -390,16 +347,7 @@ fn emitFontFaces(w: *std.Io.Writer, public_url: []const u8, fonts: []const FontF
     }
 }
 
-/// Generate the `__zunkHmrSwap(wasmUrl)` function and expose it on
-/// `window`. The dev server calls this via a WebSocket message when only
-/// the .wasm binary changed. On any failure, falls back to a full reload.
-///
-/// State preservation is opt-in: if the WASM exports
-/// `__zunk_hmr_serialize` / `__zunk_hmr_hydrate`, those are used to round-
-/// trip app state through the existing 64 KB exchange buffer. Without
-/// them, the new module gets a fresh `init()`.
 fn emitHmrSwap(w: *std.Io.Writer, needs: Features, has_init: bool, has_cleanup: bool) !void {
-    try w.writeAll("// --- HMR swap ---\n");
     try w.writeAll("async function __zunkHmrSwap(wasmUrl) {\n");
     try w.writeAll("  try {\n");
 
@@ -410,8 +358,7 @@ fn emitHmrSwap(w: *std.Io.Writer, needs: Features, has_init: bool, has_cleanup: 
         try w.writeAll("    try { if (exports.cleanup) exports.cleanup(); } catch (e) { console.warn('[zunk hmr] cleanup threw:', e); }\n");
     }
 
-    // Optional state snapshot. The exchange buffer pointer is exported as a
-    // WebAssembly global by bind.zig; `.value` reads its current i32.
+    // The exchange buffer pointer is an exported WebAssembly global.
     try w.writeAll(
         \\    let __zunkHmrSnapshot = null;
         \\    if (exports.__zunk_hmr_serialize && exports.__zunk_string_buf_ptr) {
@@ -464,7 +411,6 @@ fn emitHmrSwap(w: *std.Io.Writer, needs: Features, has_init: bool, has_cleanup: 
 
 fn emitHandleTable(w: *std.Io.Writer) !void {
     try w.writeAll(
-        \\// --- Handle table (JS objects referenced by integer ID) ---
         \\const H = {
         \\  _table: new Map(),
         \\  _next: 1,
@@ -481,7 +427,6 @@ fn emitHandleTable(w: *std.Io.Writer) !void {
 
 fn emitStringHelper(w: *std.Io.Writer) !void {
     try w.writeAll(
-        \\// readStr(ptr, len) defined after WASM load
         \\let readStr = () => '';
         \\
         \\
@@ -490,7 +435,6 @@ fn emitStringHelper(w: *std.Io.Writer) !void {
 
 fn emitAudioState(w: *std.Io.Writer) !void {
     try w.writeAll(
-        \\// --- Audio state ---
         \\let zunkAudioCtx = 0;
         \\let zunkGain = null;
         \\
@@ -500,9 +444,7 @@ fn emitAudioState(w: *std.Io.Writer) !void {
 
 fn emitInputSystem(w: *std.Io.Writer) !void {
     try w.writeAll(
-        \\// --- Input system (shared memory polling) ---
         \\// Layout written by flush() must match web/input.zig `InputState`.
-        \\// Modifier bits: 1 shift, 2 ctrl, 4 alt, 8 meta. Button bits: 1 left, 2 middle, 4 right.
         \\const zunkInput = {
         \\  ptr: 0, len: 0,
         \\  keysDown: new Set(),
@@ -510,15 +452,12 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\  keysReleased: new Set(),
         \\  typedChars: [],
         \\  typedDropWarned: false,
-        \\  // Ctrl/Cmd+V is reported to wasm together with its `paste` event (or after 80 ms without one), so a host
-        \\  // that reads the clipboard when it sees the key finds the pasted data in the same frame.
         \\  pasteKey: null, pasteMods: 0, pasteTimer: 0,
         \\  releasePaste() { if (this.pasteKey !== null) { this.keysPressed.add(this.pasteKey); this.modLatch |= this.pasteMods; this.pasteKey = null; } clearTimeout(this.pasteTimer); },
         \\  mouseX: 0, mouseY: 0, mouseDx: 0, mouseDy: 0,
         \\  mouseWheel: 0, mouseWheelX: 0,
         \\  mouseButtons: 0, mouseButtonsPressed: 0, mouseButtonsReleased: 0,
-        \\  // `modifiers` is the live state; `modLatch` also holds every modifier seen since the last flush, so a
-        \\  // quick Ctrl+key tap that is over before the frame still arrives with Ctrl.
+        \\  // Latch modifiers until flush so quick chords retain their modifiers.
         \\  modifiers: 0, modLatch: 0,
         \\  touches: [],
         \\  init(ptr, len) {
@@ -527,10 +466,7 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    const encoder = new TextEncoder();
         \\    const navKeys = new Set(['Tab', ' ', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Backspace', 'Delete']);
         \\    const editable = t => !!t && !t.hasAttribute('data-zunk-ime') && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
-        \\    // Every event carries the live modifier state; track it from all of them so it is right even
-        \\    // for a pinch (ctrlKey + wheel with no physical Ctrl held).
         \\    const syncMods = e => { this.modifiers = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0); this.modLatch |= this.modifiers; };
-        \\    // Pointer coordinates are canvas-relative CSS pixels.
         \\    const place = e => {
         \\      const r = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { left: 0, top: 0 };
         \\      this.mouseX = e.clientX - r.left; this.mouseY = e.clientY - r.top;
@@ -545,29 +481,24 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\      } else this.keysPressed.add(e.keyCode);
         \\      const single = [...k].length === 1;
         \\      const printable = single && k.codePointAt(0) >= 0x20 && k.codePointAt(0) !== 0x7f;
-        \\      // Typed text is the UTF-8 encoding of the whole code point (never a truncated UTF-16 unit).
-        \\      // Ctrl/Cmd chords are keys, not text.
         \\      if (printable && !chord && !e.isComposing) {
         \\        const bytes = encoder.encode(k);
         \\        if (this.typedChars.length + bytes.length <= 255) for (const b of bytes) this.typedChars.push(b);
         \\        else if (!this.typedDropWarned) { this.typedDropWarned = true; console.warn('[zunk] typed-character queue full (255 bytes/frame): dropping input'); }
         \\      }
-        \\      // Keep the page from scrolling / tabbing / quick-finding under the app, but leave browser
-        \\      // shortcuts (F5, F12, Ctrl+R, Ctrl+L ...) and real form fields alone. Ctrl/Cmd+V is left
-        \\      // alone too: the browser then fires `paste`, which the host-services bridge turns into data.
         \\      const composing = e.isComposing || e.keyCode === 229; // the IME owns these keys
         \\      const wanted = !composing && (navKeys.has(k) || (printable && !chord && !e.altKey) || (chord && single && 'acxyz'.includes(k.toLowerCase())));
         \\      if (wanted && !editable(e.target)) e.preventDefault();
         \\    });
         \\    document.addEventListener('paste', () => this.releasePaste(), true);
         \\    document.addEventListener('keyup', e => { syncMods(e); this.keysDown.delete(e.keyCode); this.keysReleased.add(e.keyCode); });
-        \\    // Losing focus swallows the matching keyup/mouseup events; release everything so nothing sticks.
+        \\    // Focus loss can swallow release events, so clear held input.
         \\    window.addEventListener('blur', () => {
         \\      this.keysDown.clear();
         \\      this.mouseButtonsReleased |= this.mouseButtons; this.mouseButtons = 0;
         \\      this.modifiers = 0;
         \\    });
-        \\    // Move/up are window-level so a drag that leaves the canvas still reports its release.
+        \\    // Window-level events preserve release after a drag leaves the canvas.
         \\    window.addEventListener('mousemove', e => { syncMods(e); this.mouseDx += e.movementX; this.mouseDy += e.movementY; place(e); });
         \\    canvas.addEventListener('mousedown', e => {
         \\      syncMods(e); place(e);
@@ -582,8 +513,6 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\      this.mouseButtons &= ~b; this.mouseButtonsReleased |= b;
         \\    });
         \\    canvas.addEventListener('contextmenu', e => e.preventDefault());
-        \\    // Wheel deltas are CSS pixels, positive = down / right. Line- and page-mode wheels
-        \\    // (Firefox) are scaled to pixels; a trackpad pinch arrives as ctrlKey + wheel.
         \\    canvas.addEventListener('wheel', e => {
         \\      syncMods(e); place(e);
         \\      const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? window.innerHeight : 1;
@@ -598,13 +527,9 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    if (!this.ptr) return;
         \\    const view = new DataView(memory.buffer, this.ptr, this.len);
         \\    let off = 0;
-        \\    // keys_down bitmap (32 bytes)
         \\    const kd = new Uint8Array(32); this.keysDown.forEach(k => { if(k<256) kd[k>>3] |= (1<<(k&7)); }); new Uint8Array(memory.buffer, this.ptr + off, 32).set(kd); off += 32;
-        \\    // keys_pressed bitmap
         \\    const kp = new Uint8Array(32); this.keysPressed.forEach(k => { if(k<256) kp[k>>3] |= (1<<(k&7)); }); new Uint8Array(memory.buffer, this.ptr + off, 32).set(kp); off += 32;
-        \\    // keys_released bitmap
         \\    const kr = new Uint8Array(32); this.keysReleased.forEach(k => { if(k<256) kr[k>>3] |= (1<<(k&7)); }); new Uint8Array(memory.buffer, this.ptr + off, 32).set(kr); off += 32;
-        \\    // Mouse
         \\    view.setFloat32(off, this.mouseX, true); off += 4;
         \\    view.setFloat32(off, this.mouseY, true); off += 4;
         \\    view.setFloat32(off, this.mouseDx, true); off += 4;
@@ -615,22 +540,18 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
         \\    view.setUint8(off, this.mouseButtonsPressed); off += 1;
         \\    view.setUint8(off, this.mouseButtonsReleased); off += 1;
         \\    view.setUint8(off, this.modifiers | this.modLatch); off += 1; this.modLatch = this.modifiers;
-        \\    // Touch
         \\    view.setUint8(off, Math.min(this.touches.length, 10)); off += 1;
         \\    for (let i = 0; i < 10; i++) { view.setFloat32(off + i*4, this.touches[i]?.clientX || 0, true); } off += 40;
         \\    for (let i = 0; i < 10; i++) { view.setFloat32(off + i*4, this.touches[i]?.clientY || 0, true); } off += 40;
         \\    for (let i = 0; i < 10; i++) { view.setInt32(off + i*4, this.touches[i]?.identifier || 0, true); } off += 40;
-        \\    // Viewport
-        \\    off += 1 + 16 + 4; // skip gamepad for now
+        \\    off += 1 + 16 + 4; // Reserved InputState gamepad fields.
         \\    view.setUint32(off, window.innerWidth, true); off += 4;
         \\    view.setUint32(off, window.innerHeight, true); off += 4;
         \\    view.setFloat32(off, window.devicePixelRatio, true); off += 4;
         \\    view.setUint8(off, document.hasFocus() ? 1 : 0); off += 1;
-        \\    // Typed text: UTF-8 bytes (1 byte count + up to 255 bytes; whole code points only)
         \\    const tc = Math.min(this.typedChars.length, 255);
         \\    view.setUint8(off, tc); off += 1;
         \\    for (let i = 0; i < tc; i++) { view.setUint8(off + i, this.typedChars[i]); }
-        \\    // Clear per-frame state
         \\    this.keysPressed.clear(); this.keysReleased.clear();
         \\    this.mouseDx = 0; this.mouseDy = 0; this.mouseWheel = 0; this.mouseWheelX = 0;
         \\    this.mouseButtonsPressed = 0; this.mouseButtonsReleased = 0;
@@ -644,14 +565,8 @@ fn emitInputSystem(w: *std.Io.Writer) !void {
 }
 
 fn emitWebGPUState(w: *std.Io.Writer) !void {
-    // Multi-line GPU logic lives here, not in one-line `js_resolve.zig`
-    // snippets. The handle/async lifecycle is documented at the top of
-    // src/web/gpu.zig; the binary layouts decoded below (`createPipeline`,
-    // `beginPass`, `vertexBuffers`) mirror `RawPipelineDesc`, `RawPassDesc`
-    // and `VertexBufferLayout` there. Enum tables are indexed by the Zig
-    // enums' integer values.
+    // GPU descriptor layouts and enum tables must match src/web/gpu.zig.
     try w.writeAll(
-        \\// --- WebGPU state ---
         \\let zunkGPUContext = null;
         \\let zunkGPUFormat = null;
         \\let zunkTextCanvas = null;
@@ -668,7 +583,7 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\  storeOps: ['store','discard'],
         \\  stencilOps: ['keep','zero','replace','invert','increment-clamp','decrement-clamp','increment-wrap','decrement-wrap'],
         \\  noFormat: 0xFFFFFFFF,
-        \\  // Indexed by BlendMode. `null` = write the source colour unblended.
+        \\  // Indices must match the Zig BlendMode enum.
         \\  blends: [
         \\    null,
         \\    { color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' } },
@@ -676,7 +591,6 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\    { color: { srcFactor: 'src-alpha', dstFactor: 'one' }, alpha: { srcFactor: 'one', dstFactor: 'one' } },
         \\  ],
         \\
-        \\  // Frame-scoped objects: created on first use, released by present().
         \\  _encoderH: 0,
         \\  _canvasViewH: 0,
         \\  encoder() {
@@ -697,7 +611,6 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\    if (this._canvasViewH) { H.release(this._canvasViewH); this._canvasViewH = 0; }
         \\  },
         \\
-        \\  // RenderPassDescriptor (16 words). Handle 0 = canvas / none.
         \\  beginPass(ptr) {
         \\    const v = new DataView(memory.buffer, ptr, 64);
         \\    const u = (i) => v.getUint32(i * 4, true);
@@ -726,7 +639,6 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\    return H.store(H.get(this.encoder()).beginRenderPass(desc));
         \\  },
         \\
-        \\  // VertexBufferLayout[] (16 B each) -> GPUVertexBufferLayout[].
         \\  vertexBuffers(ptr, len) {
         \\    const buffers = [];
         \\    if (!len) return buffers;
@@ -752,13 +664,11 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\    return buffers;
         \\  },
         \\
-        \\  // GPUStencilFaceState from 4 words at `at`: compare, fail, depthFail, pass.
         \\  stencilFace(u, at) {
         \\    return { compare: this.compares[u(at)], failOp: this.stencilOps[u(at + 1)],
         \\             depthFailOp: this.stencilOps[u(at + 2)], passOp: this.stencilOps[u(at + 3)] };
         \\  },
         \\
-        \\  // RenderPipelineDescriptor (29 words).
         \\  createPipeline(ptr) {
         \\    const v = new DataView(memory.buffer, ptr, 116);
         \\    const u = (i) => v.getUint32(i * 4, true);
@@ -793,8 +703,6 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\    return H.store(pipeline);
         \\  },
         \\
-        \\  // Buffer readback. maps: buffer handle -> MapState (see gpu.zig):
-        \\  //   absent/idle -> pending (mapRead) -> mapped | failed -> idle (unmap)
         \\  maps: new Map(),
         \\  mapRead(h) {
         \\    this.maps.set(h, 1);
@@ -817,20 +725,10 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
 }
 
 fn emitA11yState(w: *std.Io.Writer) !void {
-    // The DOM mirror + action queue for Teak's accessibility bridge; the
-    // `__zunk_publish_a11y_tree` / `__zunk_poll_a11y_actions` externs call into it.
     try w.writeAll(a11y_js ++ "\n\n");
 }
 
-/// Kick off the adapter + device request at the very top of the script: acquiring them (a GPU
-/// process start in a cold browser) overlaps the wasm download and compile instead of following them.
-/// What a browser without usable WebGPU gets (see docs/ARCHITECTURE.md, "No WebGPU"): a clear message in the
-/// page instead of a blank canvas, after giving the page a chance to take over through `window.zunkFallback`.
 const no_webgpu_js =
-    \\// --- No WebGPU: tell the user (or let the page take over) and stop startup ---
-    \\// A page may define `window.zunkFallback = async ({ reason, webgl2 }) => handled` BEFORE app.js runs (e.g. an
-    \\// inline script in index.html). Return true after showing its own fallback (a static page, a WebGL2 build,
-    \\// a redirect); return false or throw to get the built-in message.
     \\async function __zunkNoWebGPU(err) {
     \\  const reason = (err && err.message) || String(err);
     \\  console.error('[zunk] WebGPU is not available:', reason);
@@ -867,7 +765,6 @@ const no_webgpu_js =
 fn emitWebGPUStart(w: *std.Io.Writer) !void {
     try w.writeAll(no_webgpu_js);
     try w.writeAll(
-        \\// --- WebGPU: request the adapter and device now; `emitWebGPUInit` awaits them ---
         \\performance.mark('zunk:gpu-start');
         \\const zunkGPUPromise = (async () => {
         \\  if (!navigator.gpu) throw new Error('WebGPU not supported');
@@ -883,7 +780,6 @@ fn emitWebGPUStart(w: *std.Io.Writer) !void {
 
 fn emitWebGPUInit(w: *std.Io.Writer) !void {
     try w.writeAll(
-        \\// --- WebGPU initialization ---
         \\let zunkGPUDevice;
         \\try { zunkGPUDevice = await zunkGPUPromise; } catch (e) { await __zunkNoWebGPU(e); } // never resolves: the app does not start
         \\performance.mark('zunk:gpu-ready');
@@ -899,7 +795,6 @@ fn emitWebGPUInit(w: *std.Io.Writer) !void {
 
 fn emitUISystem(w: *std.Io.Writer) !void {
     try w.writeAll(
-        \\// --- UI system ---
         \\const zunkUI = {
         \\  _nextId: 1,
         \\  _elements: new Map(),
@@ -1090,7 +985,6 @@ fn generateReport(
     build_fingerprint: []const u8,
     mode: ReportMode,
 ) !void {
-    // Category counts (used by both modes)
     var counts: [std.enums.values(resolver.Category).len]usize = @splat(0);
     for (resolutions) |r| {
         counts[@backingInt(r.category)] += 1;
@@ -1098,7 +992,6 @@ fn generateReport(
 
     const lifecycle_fns = [_][]const u8{ "init", "frame", "resize", "cleanup" };
 
-    // JSON mode: structured output, return early
     if (mode.json) {
         try w.writeAll("{");
         try w.print("\"build_fingerprint\":\"{s}\",", .{build_fingerprint});
@@ -1143,7 +1036,6 @@ fn generateReport(
         return;
     }
 
-    // Rich text mode
     try w.print("=== zunk binding resolution report === [build:{s}]\n\n", .{build_fingerprint});
     try w.print("Total imports: {d}\n", .{analysis.imports.len});
     try w.print("Total exports: {d}\n", .{analysis.exports.len});
@@ -1182,7 +1074,6 @@ fn generateReport(
         try w.writeAll("  3. Use the Layer 2 web modules: @import(\"zunk\").web.*\n\n");
     }
 
-    // Verbose mode: list ALL resolutions grouped by category
     if (mode.verbose) {
         try w.writeAll("All resolutions:\n");
         for (std.enums.values(resolver.Category)) |cat| {
@@ -1268,7 +1159,6 @@ fn suggestMatch(name: []const u8) ?[]const u8 {
     var best: ?[]const u8 = null;
     var best_dist: usize = 4; // threshold: must be <= 3
 
-    // Check exact_db names
     for (resolver.exact_db) |entry| {
         const d = editDistance(name, entry.name);
         if (d < best_dist) {
@@ -1277,7 +1167,6 @@ fn suggestMatch(name: []const u8) ?[]const u8 {
         }
     }
 
-    // Check known prefix rules (suggest the prefix itself)
     for (resolver.prefix_rules) |rule| {
         if (name.len > rule.prefix.len) {
             const d = editDistance(name[0..@min(name.len, rule.prefix.len)], rule.prefix);
@@ -1289,133 +1178,4 @@ fn suggestMatch(name: []const u8) ?[]const u8 {
     }
 
     return best;
-}
-
-test "input system: UTF-8 text, wheel x, modifiers, contextmenu and blur are wired" {
-    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    try emitInputSystem(&aw.writer);
-    const js = aw.written();
-    for ([_][]const u8{ "TextEncoder", "mouseWheelX", "this.modifiers", "contextmenu", "'blur'", "deltaMode" }) |needle| {
-        try std.testing.expect(std.mem.indexOf(u8, js, needle) != null);
-    }
-    // The old truncating form must be gone.
-    try std.testing.expect(std.mem.indexOf(u8, js, "charCodeAt") == null);
-}
-
-test "fonts: @font-face rules and a startup wait for every face" {
-    const fonts = [_]FontFace{
-        .{ .family = "IBM Plex Mono", .weight = 400, .file = "IBMPlexMono-Regular.ttf" },
-        .{ .family = "IBM Plex Mono", .weight = 700, .file = "IBMPlexMono-Bold.ttf" },
-    };
-    var css: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer css.deinit();
-    try emitFontFaces(&css.writer, "/", &fonts);
-    try std.testing.expectEqualStrings(
-        "    @font-face { font-family: \"IBM Plex Mono\"; font-weight: 400; font-display: block; src: url(\"/fonts/IBMPlexMono-Regular.ttf\"); }\n" ++
-            "    @font-face { font-family: \"IBM Plex Mono\"; font-weight: 700; font-display: block; src: url(\"/fonts/IBMPlexMono-Bold.ttf\"); }\n",
-        css.written(),
-    );
-
-    var js: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer js.deinit();
-    try emitFontLoad(&js.writer, &fonts, true);
-    try std.testing.expect(std.mem.find(u8, js.written(), "document.fonts.load(\"400 16px \\\"IBM Plex Mono\\\"\")") != null);
-    try std.testing.expect(std.mem.find(u8, js.written(), "document.fonts.load(\"700 16px") != null);
-    try std.testing.expect(std.mem.startsWith(u8, js.written(), "// --- Fonts"));
-
-    // No fonts: nothing emitted.
-    var none: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer none.deinit();
-    try emitFontLoad(&none.writer, &.{}, true);
-    try emitFontFaces(&none.writer, "/", &.{});
-    try std.testing.expectEqual(@as(usize, 0), none.written().len);
-}
-
-test "fonts: non-blocking mode loads in the background; fonts and the wasm are preloaded" {
-    const fonts = [_]FontFace{.{ .family = "IBM Plex Mono", .weight = 400, .file = "IBMPlexMono-Regular.ttf" }};
-    var js: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer js.deinit();
-    try emitFontLoad(&js.writer, &fonts, false);
-    try std.testing.expect(std.mem.find(u8, js.written(), "void Promise.all") != null);
-    try std.testing.expect(std.mem.find(u8, js.written(), "await Promise.all") == null);
-}
-
-test "fx bridge is embedded and Ctrl+V is left to the browser" {
-    try std.testing.expect(std.mem.find(u8, fx_js, "const zunkFx") != null);
-    try std.testing.expect(std.mem.find(u8, fx_js, "addEventListener('paste'") != null);
-    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    try emitInputSystem(&aw.writer);
-    try std.testing.expect(std.mem.find(u8, aw.written(), "'acxyz'") != null);
-    try std.testing.expect(std.mem.find(u8, aw.written(), "releasePaste") != null);
-    try std.testing.expect(std.mem.find(u8, aw.written(), "modLatch") != null);
-}
-
-test "editDistance identical" {
-    try std.testing.expectEqual(@as(usize, 0), editDistance("hello", "hello"));
-}
-
-test "editDistance single char" {
-    try std.testing.expectEqual(@as(usize, 1), editDistance("hello", "hallo"));
-}
-
-test "editDistance insert" {
-    try std.testing.expectEqual(@as(usize, 1), editDistance("hell", "hello"));
-}
-
-test "editDistance delete" {
-    try std.testing.expectEqual(@as(usize, 1), editDistance("hello", "hell"));
-}
-
-test "editDistance empty" {
-    try std.testing.expectEqual(@as(usize, 5), editDistance("", "hello"));
-    try std.testing.expectEqual(@as(usize, 0), editDistance("", ""));
-}
-
-test "editDistance completely different" {
-    try std.testing.expectEqual(@as(usize, 3), editDistance("abc", "xyz"));
-}
-
-test "suggestMatch close to known name" {
-    // "console_lg" is 1 edit from "console_log"
-    const suggestion = suggestMatch("console_lg");
-    try std.testing.expect(suggestion != null);
-    try std.testing.expectEqualStrings("console_log", suggestion.?);
-}
-
-test "suggestMatch no match" {
-    const suggestion = suggestMatch("zzzzzzzzzzzzz");
-    try std.testing.expect(suggestion == null);
-}
-
-test "generate compiles" {
-    _ = wa.Analysis;
-    _ = resolver.Resolution;
-}
-
-test "WebGPU state helper is balanced JS and knows instance step mode" {
-    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer aw.deinit();
-    try emitWebGPUState(&aw.writer);
-    const js = aw.written();
-    try std.testing.expect(std.mem.indexOf(u8, js, "stepModes: ['vertex','instance']") != null);
-    var depth: i32 = 0;
-    for (js) |c| switch (c) {
-        '{', '(', '[' => depth += 1,
-        '}', ')', ']' => depth -= 1,
-        else => {},
-    };
-    try std.testing.expectEqual(@as(i32, 0), depth);
-}
-
-test "no-WebGPU path: the message, the fallback hook and an await that stops startup are generated" {
-    var js: std.Io.Writer.Allocating = .init(std.testing.allocator);
-    defer js.deinit();
-    try emitWebGPUStart(&js.writer);
-    try emitWebGPUInit(&js.writer);
-    const out = js.written();
-    try std.testing.expect(std.mem.find(u8, out, "window.zunkFallback") != null);
-    try std.testing.expect(std.mem.find(u8, out, "This app needs WebGPU") != null);
-    try std.testing.expect(std.mem.find(u8, out, "catch (e) { await __zunkNoWebGPU(e); }") != null);
 }

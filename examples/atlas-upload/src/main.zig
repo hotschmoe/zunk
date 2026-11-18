@@ -1,9 +1,3 @@
-//! atlas-upload: glyph-atlas primitives. Packs three bitmaps into one
-//! `r8unorm` texture with `gpu.writeTextureRegion` (a procedural ring, a
-//! gradient uploaded from a padded source stride, and a CJK glyph rasterized
-//! by `gpu.rasterCluster`), then draws instanced quads that sample sub-rects
-//! of it, as a text renderer would.
-
 const std = @import("std");
 const zunk = @import("zunk");
 const gpu = zunk.web.gpu;
@@ -26,7 +20,6 @@ var css_w: u32 = 0;
 var css_h: u32 = 0;
 var logged = false;
 
-/// Atlas sub-rect -> uv rect.
 fn uvOf(x: u32, y: u32, w: u32, h: u32) [4]f32 {
     const aw: f32 = @floatFromInt(atlas_w);
     const ah: f32 = @floatFromInt(atlas_h);
@@ -39,11 +32,9 @@ export fn init() void {
 
     const atlas = gpu.createTexture(atlas_w, atlas_h, .r8unorm, gpu.TextureUsage.TEXTURE_BINDING | gpu.TextureUsage.COPY_DST);
 
-    // Zero the whole atlas first (R8 rows must be uploaded with any stride).
     var zeros: [atlas_w * atlas_h]u8 = @splat(0);
     gpu.writeTexture(atlas, &zeros, atlas_w, atlas_w, atlas_h);
 
-    // Sub-rect 1 (0,0 48x48): a ring, tightly packed.
     var ring: [48 * 48]u8 = undefined;
     for (0..48) |yy| for (0..48) |xx| {
         const dx = @as(f32, @floatFromInt(xx)) - 23.5;
@@ -54,15 +45,12 @@ export fn init() void {
     };
     gpu.writeTextureRegion(atlas, 0, 0, 48, 48, &ring, 48);
 
-    // Sub-rect 2 (56,0 40x24): horizontal gradient from a source whose rows
-    // are padded to 64 bytes, proving `bytes_per_row` != width works.
     var grad: [64 * 24]u8 = @splat(0xEE); // padding bytes must not leak into the atlas
     for (0..24) |yy| for (0..40) |xx| {
         grad[yy * 64 + xx] = @intCast(xx * 255 / 39);
     };
     gpu.writeTextureRegion(atlas, 56, 0, 40, 24, &grad, 64);
 
-    // Sub-rect 3 (0,52+ ...): a CJK cluster from canvas2D, placed at (56, 28).
     var cluster_pixels: [64 * 64]u8 = undefined;
     const bmp = gpu.rasterCluster("漢", "500 40px sans-serif", 40, &cluster_pixels);
     const cw = bmp.metrics.width;
@@ -100,7 +88,6 @@ export fn init() void {
         gpu.BindGroupEntry.initSampler(1, gpu.createSampler(.{ .mag_filter = .linear, .min_filter = .linear })),
     });
 
-    // Instances: the same sub-rects drawn several times, different tints/sizes.
     const ring_uv = uvOf(0, 0, 48, 48);
     const grad_uv = uvOf(56, 0, 40, 24);
     const han_uv = uvOf(56, 28, cw, ch);

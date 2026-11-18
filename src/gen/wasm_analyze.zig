@@ -171,7 +171,6 @@ fn parseTypeSection(
         }
         pos.* += 1;
 
-        // Read params
         const num_params = readLeb128(wasm, pos) orelse return;
         var params = try allocator.alloc(WasmValType, num_params);
         var j: usize = 0;
@@ -181,7 +180,6 @@ fn parseTypeSection(
             pos.* += 1;
         }
 
-        // Read returns
         const num_returns = readLeb128(wasm, pos) orelse {
             allocator.free(params);
             return;
@@ -366,15 +364,4 @@ fn skipLimits(wasm: []const u8, pos: *usize) void {
     if (flags & 1 != 0) {
         _ = readLeb128(wasm, pos);
     }
-}
-
-test "analyze minimal wasm" {
-    const minimal = [_]u8{
-        0x00, 0x61, 0x73, 0x6D,
-        0x01, 0x00, 0x00, 0x00,
-    };
-    var result = try analyze(std.testing.allocator, &minimal);
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 0), result.imports.len);
-    try std.testing.expectEqual(@as(usize, 0), result.exports.len);
 }

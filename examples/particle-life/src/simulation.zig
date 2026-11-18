@@ -273,7 +273,6 @@ pub const Simulation = struct {
         const canvas_w: f32 = @floatFromInt(self.canvas_width);
         const canvas_h: f32 = @floatFromInt(self.canvas_height);
 
-        // Zoom
         if (mouse.wheel != 0) {
             const zoom_speed: f32 = 0.001;
             const zoom_factor = 1.0 + mouse.wheel * zoom_speed;
@@ -294,7 +293,6 @@ pub const Simulation = struct {
             self.camera_buffer.writeTyped(particle.CameraParams, 0, &[_]particle.CameraParams{self.camera});
         }
 
-        // Pan (middle button)
         if (mouse.buttons.middle and (mouse.dx != 0 or mouse.dy != 0)) {
             const pan_speed = 1.0 / self.camera.pixels_per_unit;
             self.camera.center_x -= mouse.dx * pan_speed;
@@ -302,7 +300,6 @@ pub const Simulation = struct {
             self.camera_buffer.writeTyped(particle.CameraParams, 0, &[_]particle.CameraParams{self.camera});
         }
 
-        // Attract/repel
         if (mouse.buttons.left or mouse.buttons.right) {
             const mouse_x_ndc = if (canvas_w > 0) (mouse.x / canvas_w) * 2.0 - 1.0 else 0.0;
             const mouse_y_ndc = if (canvas_h > 0) 1.0 - (mouse.y / canvas_h) * 2.0 else 0.0;
@@ -377,7 +374,6 @@ pub const Simulation = struct {
     pub fn render(self: *Simulation) void {
         const vertex_count = self.particle_count * 6;
 
-        // HDR pass
         const hdr_pass = gpu.beginRenderPassHDR(self.hdr_texture_view, 0.001, 0.001, 0.001, 0.0);
 
         gpu.renderPassSetBindGroup(hdr_pass, 0, self.particle_bind_group);
@@ -395,7 +391,6 @@ pub const Simulation = struct {
 
         gpu.renderPassEnd(hdr_pass);
 
-        // Screen pass (HDR -> tonemap)
         const screen_pass = gpu.beginRenderPass(0.1, 0.0, 0.1, 1.0);
         gpu.renderPassSetPipeline(screen_pass, self.compose_pipeline);
         gpu.renderPassSetBindGroup(screen_pass, 0, self.compose_bind_group);

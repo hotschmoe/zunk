@@ -17,10 +17,8 @@ var asset_decoded: bool = false;
 var audio_started: bool = false;
 var volume: f32 = 0.8;
 
-// Click state (detect edges, not held)
 var prev_mouse_left: bool = false;
 
-// Visual feedback for each click-to-play
 const max_rings = 8;
 var rings: [max_rings]Ring = @splat(.{});
 var next_ring: usize = 0;
@@ -67,19 +65,17 @@ export fn frame(dt: f32) void {
     const just_clicked = mouse.buttons.left and !prev_mouse_left;
     prev_mouse_left = mouse.buttons.left;
 
-    // First interaction resumes the AudioContext (browser autoplay policy).
+    // Browser autoplay policy requires interaction before resuming audio.
     if (just_clicked and !audio_started) {
         audio.@"resume"();
         audio_started = true;
     }
 
-    // Play sound on click (if decoded) or on spacebar.
     if ((just_clicked or input.isKeyPressed(.space)) and audio_started and sfx_ready) {
         audio.play(sfx_buffer);
         spawnRing(mouse.x, mouse.y);
     }
 
-    // Volume control with up/down arrows.
     if (input.isKeyPressed(.arrow_up)) {
         volume = @min(1.0, volume + 0.1);
         audio.setMasterVolume(volume);
@@ -89,7 +85,6 @@ export fn frame(dt: f32) void {
         audio.setMasterVolume(volume);
     }
 
-    // -- Draw --
     const vp = input.getViewportSize();
     const w: f32 = @floatFromInt(vp.w);
     const h: f32 = @floatFromInt(vp.h);
@@ -97,7 +92,6 @@ export fn frame(dt: f32) void {
     canvas.setFillColor(ctx, bg);
     canvas.fillRect(ctx, 0, 0, w, h);
 
-    // Title
     canvas.setFillColor(ctx, white);
     canvas.setFont(ctx, "20px monospace");
     canvas.fillText(ctx, "zunk audio demo (cached)", 20, 40);
@@ -105,14 +99,12 @@ export fn frame(dt: f32) void {
     canvas.setFillColor(ctx, dim);
     canvas.fillText(ctx, "fetch() + Web Audio. no js. no html.", 20, 62);
 
-    // Status indicators
     canvas.setFillColor(ctx, white);
     canvas.fillText(ctx, "STATUS", 20, 100);
 
     drawIndicator(20, 120, "context started", audio_started);
     drawIndicator(20, 142, "sfx decoded", sfx_ready);
 
-    // Volume bar
     canvas.setFillColor(ctx, white);
     canvas.fillText(ctx, "VOLUME", 20, 185);
     canvas.setFillColor(ctx, dim);
@@ -122,14 +114,12 @@ export fn frame(dt: f32) void {
     canvas.setFillColor(ctx, dim);
     canvas.fillText(ctx, "arrow up/down to adjust", 20, 225);
 
-    // Instructions
     canvas.setFillColor(ctx, white);
     canvas.fillText(ctx, "HOW TO USE", 20, 265);
     canvas.setFillColor(ctx, dim);
     canvas.fillText(ctx, "click or press space to play sound", 20, 285);
     canvas.fillText(ctx, "asset: explode.ogg (41KB, fetched from URL)", 20, 305);
 
-    // Expanding rings
     for (&rings) |*ring| {
         if (!ring.active) continue;
         ring.radius += dt * 200;

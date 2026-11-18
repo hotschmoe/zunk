@@ -5,7 +5,7 @@ description: Run zig build test
 
 # /test - Run Tests
 
-Run `zig build test` to execute all tests in the project.
+Run `zig build test -j4` for the blocking end-to-end gate. Run `zig build test-heavy -j4` separately for the background gate. Follow [ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md).
 
 ## Usage
 
@@ -41,8 +41,8 @@ Run `zig build test` to execute all tests in the project.
 
 ```bash
 # Default (Debug)
-zig build test
+zig build test -j4
 
 # With optimization
-zig build test -Doptimize=ReleaseSafe
+zig build test -j4 -Doptimize=ReleaseSafe
 ```
