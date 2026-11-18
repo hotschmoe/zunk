@@ -5,6 +5,7 @@ on:
     branches: [master]
   schedule:
     - cron: '17 19 * * *'
+  workflow_dispatch:
 
 env:
   ZIG_VERSION: "0.17.1"
@@ -57,7 +58,7 @@ jobs:
         run: zig fmt --check src/
 
   heavy:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
