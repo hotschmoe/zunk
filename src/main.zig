@@ -937,7 +937,6 @@ fn buildZigZonTemplate() []const u8 {
     \\    .version = "0.0.0",
     \\    .minimum_zig_version = "0.17.0",
     \\    .dependencies = .{
-    \\        // TODO: replace with git URL once zunk is published
     \\        .zunk = .{ .path = "../.." },
     \\    },
     \\    .paths = .{

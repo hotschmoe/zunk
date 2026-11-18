@@ -172,7 +172,7 @@ pub fn generate(
     if (needs.webgpu_init) try emitWebGPUInit(w);
 
     if (has_init) {
-        try w.writeAll("// Init\nperformance.mark('zunk:init-start');\nexports.init();\nperformance.mark('zunk:init-end');\n\n");
+        try w.writeAll("performance.mark('zunk:init-start');\nexports.init();\nperformance.mark('zunk:init-end');\n\n");
     }
 
     if (needs.render_loop) {
@@ -348,7 +348,6 @@ fn emitFontFaces(w: *std.Io.Writer, public_url: []const u8, fonts: []const FontF
 }
 
 fn emitHmrSwap(w: *std.Io.Writer, needs: Features, has_init: bool, has_cleanup: bool) !void {
-    try w.writeAll("// --- HMR swap ---\n");
     try w.writeAll("async function __zunkHmrSwap(wasmUrl) {\n");
     try w.writeAll("  try {\n");
 
