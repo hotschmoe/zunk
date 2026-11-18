@@ -1,42 +1,6 @@
-//! WebGPU bindings. Every `extern "env" fn zunk_gpu_*` below is resolved to a
-//! JS snippet by `gen/js_resolve.zig` (`genWebGPU`); multi-line logic lives in
-//! the `zunkGPU` helper object emitted by `gen/js_gen.zig` (`emitWebGPUState`).
-//!
-//! ## Handle lifecycle
-//!
-//! Every GPU object crosses the boundary as a `bind.Handle`: an index into a JS
-//! table. Handle 0 is "none"; handle 1 is the GPUDevice.
-//!   - Created by a `create*` call, valid until its `destroy*` / `release` call.
-//!   - Passes and command buffers are single-use: `renderPassEnd`,
-//!     `computePassEnd`, `encoderFinish` and `queueSubmit` release the handle
-//!     they consume, so per-frame use never grows the table.
-//!   - The *frame encoder* (`frameEncoder`) and the *canvas view*
-//!     (`canvasView`) are created lazily on first use in a frame and released
-//!     by `present`. Do not keep either across `present`.
-//!
-//! ## Frame model
-//!
-//! `beginRenderPass*` records into the frame encoder; `present` finishes and
-//! submits it. Compute work can use its own `createCommandEncoder` +
-//! `queueSubmit`, or share the frame encoder. Offscreen passes
-//! (`RenderPassDescriptor.color = view`) are recorded in the same encoder, so
-//! a later pass in the same frame can sample their result.
-//!
-//! ## Async operations (poll, never block)
-//!
-//! The wasm side cannot await, so each async operation is a handle plus a
-//! state that is polled from `frame`:
-//!   - `createTextureFromAsset`: `isTextureReady(tex)` flips false -> true.
-//!   - Buffer readback: `MapState` is idle -> pending (`bufferMapRead`) ->
-//!     mapped (`bufferMapState`) -> idle (`bufferUnmap`); a failed map reports
-//!     `.failed` until unmapped. `bufferMapRead` must come AFTER the `present`
-//!     (or `queueSubmit`) that submitted the copy; see `Readback`, which wraps
-//!     the whole sequence for texture readback.
-
 const std = @import("std");
 const bind = @import("../bind/bind.zig");
 
-// Type aliases -- all bind.Handle underneath, but named for documentation.
 pub const Device = bind.Handle;
 pub const Buffer = bind.Handle;
 pub const ShaderModule = bind.Handle;
@@ -53,7 +17,6 @@ pub const ComputePassEncoder = bind.Handle;
 pub const RenderPassEncoder = bind.Handle;
 pub const CommandBuffer = bind.Handle;
 
-// Usage flag constants (matching WebGPU GPUBufferUsage / GPUTextureUsage).
 pub const BufferUsage = struct {
     pub const MAP_READ: u32 = 0x0001;
     pub const MAP_WRITE: u32 = 0x0002;
@@ -75,10 +38,7 @@ pub const TextureUsage = struct {
     pub const RENDER_ATTACHMENT: u32 = 0x10;
 };
 
-/// Index order is shared with the `textureFormats` table in js_gen.zig.
-/// `depth24plus_stencil8` carries a stencil aspect: passes that attach it must
-/// also set `RenderPassDescriptor.stencil`, and pipelines drawing into it
-/// should set `DepthState.stencil` (the default is a no-op).
+// Index order must match textureFormats in js_gen.zig.
 pub const TextureFormat = enum(u32) {
     rgba16float = 0,
     rgba32float = 1,
@@ -193,11 +153,7 @@ pub const VertexBufferLayout = extern struct {
     }
 };
 
-// 40 bytes, ABI-matched with JS DataView reader in js_resolve.zig.
-// Meaning of `type_variant` depends on `entry_type`:
-//   entry_type == 0 (buffer)  -> BufferBindingType
-//   entry_type == 1 (texture) -> TextureSampleType
-//   entry_type == 2 (sampler) -> SamplerBindingType
+// ABI must match the JS DataView reader in js_resolve.zig.
 pub const BindGroupLayoutEntry = extern struct {
     binding: u32,
     visibility: u32,
@@ -308,13 +264,9 @@ pub const IndexFormat = enum(u32) {
 };
 
 pub const BlendMode = enum(u32) {
-    /// Overwrite the target (opaque geometry).
     none = 0,
-    /// Straight alpha: src*a + dst*(1-a).
     alpha = 1,
-    /// Premultiplied alpha: src + dst*(1-a).
     premultiplied = 2,
-    /// src*a + dst. Particles, glows.
     additive = 3,
 };
 
@@ -358,18 +310,14 @@ pub const StoreOp = enum(u32) {
     discard = 1,
 };
 
-/// `Handle` 0 is "none" everywhere in this file.
 const none_handle: u32 = 0;
-/// Sentinel for "no format" in `RawPipelineDesc` (depth disabled / canvas colour).
 const no_format: u32 = 0xFFFF_FFFF;
 
 fn rawHandle(h: ?bind.Handle) u32 {
     return if (h) |x| @bitCast(x.toInt()) else none_handle;
 }
 
-/// A wasm32 linear-memory address as the u32 JS reads. Truncation is the
-/// identity on wasm32; it only matters so host-side tests can lower
-/// descriptors without a 64-bit pointer panicking.
+// JS reads wasm32 addresses as u32.
 fn ptr32(p: anytype) u32 {
     return @truncate(@intFromPtr(p));
 }
@@ -385,21 +333,13 @@ pub const StencilOp = enum(u32) {
     decrement_wrap = 7,
 };
 
-/// Per-face stencil test + update. Default = always pass, never modify.
 pub const StencilFace = struct {
     compare: CompareFunction = .always,
-    /// Stencil test failed.
     fail_op: StencilOp = .keep,
-    /// Stencil passed, depth test failed.
     depth_fail_op: StencilOp = .keep,
-    /// Both passed.
     pass_op: StencilOp = .keep,
 };
 
-/// Stencil state of a pipeline. Only meaningful when `DepthState.format` has a
-/// stencil aspect (`depth24plus_stencil8`); the default is the WebGPU default
-/// (a no-op), valid for every format. The reference value is per draw:
-/// `renderPassSetStencilReference`.
 pub const StencilState = struct {
     front: StencilFace = .{},
     back: StencilFace = .{},
@@ -412,30 +352,22 @@ pub const DepthState = struct {
     stencil: StencilState = .{},
     write_enabled: bool = true,
     compare: CompareFunction = .less,
-    /// Constant + slope-scaled depth bias; lets coplanar lines win against
-    /// the faces they outline without touching the shader.
     bias: i32 = 0,
     bias_slope_scale: f32 = 0,
 };
 
-/// Everything a render pipeline needs. Defaults are "draw alpha-blended
-/// triangles into the canvas, no depth, no MSAA", which is what the plain
-/// `createRenderPipeline` does.
 pub const RenderPipelineDescriptor = struct {
     layout: PipelineLayout,
     shader: ShaderModule,
     vertex_entry: []const u8,
     fragment_entry: []const u8,
     vertex_buffers: []const VertexBufferLayout = &.{},
-    /// Colour target format; null = the canvas's preferred format (`canvasFormat`).
     color_format: ?TextureFormat = null,
     blend: BlendMode = .alpha,
     topology: PrimitiveTopology = .triangle_list,
     cull_mode: CullMode = .none,
     front_face: FrontFace = .ccw,
-    /// null = no depth attachment is allowed in passes using this pipeline.
     depth: ?DepthState = null,
-    /// Must equal the sample count of every attachment it renders into.
     sample_count: u32 = 1,
 
     pub fn raw(self: RenderPipelineDescriptor) RawPipelineDesc {
@@ -472,8 +404,7 @@ fn rawFace(f: StencilFace) [4]u32 {
     return .{ @backingInt(f.compare), @backingInt(f.fail_op), @backingInt(f.depth_fail_op), @backingInt(f.pass_op) };
 }
 
-/// 29 little-endian words, field order == `zunkGPU.createPipeline` in
-/// js_gen.zig. Keep the two in lock-step.
+// Field order must match zunkGPU.createPipeline in js_gen.zig.
 pub const RawPipelineDesc = extern struct {
     layout: u32,
     shader: u32,
@@ -494,26 +425,20 @@ pub const RawPipelineDesc = extern struct {
     depth_bias: i32,
     depth_bias_slope: f32,
     sample_count: u32,
-    /// `{compare, fail_op, depth_fail_op, pass_op}` per face.
     stencil_front: [4]u32,
     stencil_back: [4]u32,
     stencil_read_mask: u32,
     stencil_write_mask: u32,
 };
 
-/// Stencil aspect of the depth attachment; required (and only valid) when the
-/// depth view's format has stencil (`depth24plus_stencil8`).
 pub const StencilAttachment = struct {
     clear: u32 = 0,
     load: LoadOp = .clear,
     store: StoreOp = .store,
 };
 
-/// One colour attachment (+ optional MSAA resolve, + optional depth/stencil).
 pub const RenderPassDescriptor = struct {
-    /// Colour target; null = the canvas's current texture (`canvasView`).
     color: ?TextureView = null,
-    /// Single-sample view the MSAA `color` resolves into at pass end.
     resolve: ?TextureView = null,
     clear: [4]f32 = .{ 0, 0, 0, 1 },
     color_load: LoadOp = .clear,
@@ -543,7 +468,7 @@ pub const RenderPassDescriptor = struct {
     }
 };
 
-/// 16 little-endian words, field order == `zunkGPU.beginPass` in js_gen.zig.
+// Field order must match zunkGPU.beginPass in js_gen.zig.
 pub const RawPassDesc = extern struct {
     color: u32,
     resolve: u32,
@@ -560,7 +485,6 @@ pub const RawPassDesc = extern struct {
     stencil_clear: u32,
 };
 
-/// State of the (single) pending map on a buffer; see the module doc.
 pub const MapState = enum(u32) {
     idle = 0,
     pending = 1,

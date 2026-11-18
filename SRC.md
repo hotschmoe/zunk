@@ -152,3 +152,24 @@ index (0xffffffff for a root), and level. Parents precede children. Returned
 16-byte actions contain kind, command index, string offset and string length;
 kinds 0 through 4 mean activate, focus, set value, increment, and decrement.
 Oversized values that do not fit the action string buffer are dropped.
+
+## src/web/gpu.zig
+
+GPU handles index the JavaScript table: zero means none and one is the device.
+Passes and command buffers are consumed when ended, finished, or submitted.
+The frame encoder and canvas view are created lazily and released by `present`;
+do not retain them across frames. Render passes, including offscreen passes,
+use the frame encoder, so later passes can sample earlier output. Compute can
+share it or use a separate encoder and submission.
+
+Texture creation from assets and buffer mapping are asynchronous. Mapping moves
+from idle to pending to mapped, or failed until unmapped. Submit the copy with
+`present` or `queueSubmit` before requesting the map. `Readback` manages this
+sequence. The raw descriptor layouts and enum ordering must match the JavaScript
+readers; bind group layout `type_variant` is interpreted according to its entry
+type as a buffer binding, texture sample, or sampler binding type.
+
+Stencil attachments require the stencil aspect and a matching stencil-capable
+format; pipeline stencil defaults to a no-op and the reference is per draw.
+Attachment sample counts must match the pipeline. Null color selects the canvas
+format or view as appropriate, and null depth forbids a depth attachment.
