@@ -355,7 +355,7 @@ const DistChange = struct {
 };
 
 fn pollDistChanged(io: Io, root_dir_path: []const u8, prev: *DistFingerprint) bool {
-    var dir = std.Io.Dir.cwd().openDir(io, root_dir_path, .{}) catch return false;
+    var dir = std.Io.Dir.cwd().openDir(io, root_dir_path, .{ .iterate = true }) catch return false;
     defer dir.close(io);
 
     var wasm_fp: i128 = 0;

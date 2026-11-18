@@ -89,7 +89,7 @@ We optimize for clean architecture, not backwards compatibility. **When we refac
 
 Follow [ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md): no unit tests, at most ten blocking end-to-end tests, and a separate background gate. Do not add snapshots or tests of implementation structure.
 
-Run `zig build test -j4` for the blocking gate and `zig build test-heavy -j4` for the background gate. Both require Node.js. The background gate runs on a schedule and does not block pull requests; investigate failures by finding the regressing commit and fixing head.
+Run `zig build test -j4` for the blocking gate and `zig build test-heavy -j4` for the background gate. Both require Node.js; the background gate also requires Chromium or Google Chrome (set `CHROME_BIN` to override detection). The background gate runs on a schedule and does not block pull requests; investigate failures by finding the regressing commit and fixing head.
 <!-- END:testing-philosophy -->
 
 <!-- BEGIN:footer -->
