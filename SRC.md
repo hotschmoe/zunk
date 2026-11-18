@@ -121,6 +121,12 @@ fresh. HMR failure triggers a reload. WebGPU initialization starts early to
 overlap wasm download; a failure offers `window.zunkFallback` before showing
 the unavailable message.
 
+Input modifiers are latched until flush, so quick chords retain their modifier
+state. Ctrl/Cmd+V is delayed until its paste event or an 80 ms timeout, keeping
+paste data and the key in the same frame. Browser shortcuts and real form
+fields remain available. Focus loss clears held input, and pointer move and
+release listeners live on the window to handle drags outside the canvas.
+
 ## src/gen/js/ime.js
 
 The hidden textarea handles IME and virtual-keyboard text. The normal input
