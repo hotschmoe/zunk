@@ -140,3 +140,15 @@ Picker requests wait for user activation when needed; a new request cancels the
 armed or open one. Image ingestion downscales to `MAX_IMAGE_SIDE` and creates
 an RGBA thumbnail; an unscaled JPEG retains its original bytes, otherwise the
 image is encoded as PNG.
+
+## src/gen/js/a11y.js
+
+The accessibility DOM is derived from Teak's semantic tree, never an authority;
+actions are returned to Teak through its normal input path. The little-endian
+wire format is also described in Teak's `src/platform/wasm.zig`. Published
+64-byte records contain command index, role, label offset and length, bounds,
+state, flags, value offset and length, selection byte offsets, parent record
+index (0xffffffff for a root), and level. Parents precede children. Returned
+16-byte actions contain kind, command index, string offset and string length;
+kinds 0 through 4 mean activate, focus, set value, increment, and decrement.
+Oversized values that do not fit the action string buffer are dropped.
