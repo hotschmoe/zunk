@@ -187,3 +187,8 @@ baseline_y - bearing_y)`. Coverage results use one byte per pixel and RGBA
 results use four; a truncated result retains valid metrics for retry. Readback
 requires encode, submit, request, then polling across frames before reading.
 Its rows have the padded stride and region readback indices are region-relative.
+
+## examples/text-demo/src/main.zig
+
+The shader flips the vertical clip-space coordinate so texture coordinate y=0
+is at the top of the text quad.

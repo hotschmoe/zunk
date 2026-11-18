@@ -73,7 +73,6 @@ pub const SpatialPipeline = struct {
         const sort_shader = gpu.createShaderModule(shaders.particle_sort);
         const forces_shader = gpu.createShaderModule(shaders.force_computation);
 
-        // Bind group layouts
         const particle_readonly_layout = gpu.createBindGroupLayout(&[_]gpu.BindGroupLayoutEntry{
             gpu.BindGroupLayoutEntry.initBuffer(0, gpu.ShaderVisibility.COMPUTE, .read_only_storage),
         });
@@ -106,7 +105,6 @@ pub const SpatialPipeline = struct {
             gpu.BindGroupLayoutEntry.initBuffer(3, gpu.ShaderVisibility.COMPUTE, .read_only_storage),
         });
 
-        // Bind groups
         const particle_readonly_group = gpu.createBindGroup(particle_readonly_layout, &[_]gpu.BindGroupEntry{
             gpu.BindGroupEntry.initBufferFull(0, particle_buffer.handle, particle_buffer.size),
         });
@@ -145,7 +143,6 @@ pub const SpatialPipeline = struct {
             gpu.BindGroupEntry.initBufferFull(3, force_buffer.handle, force_buffer.size),
         });
 
-        // Pipelines
         const binning_pl = gpu.createPipelineLayout(&[_]gpu.BindGroupLayout{ particle_readonly_layout, options_layout, bin_size_layout });
         const prefix_pl = gpu.createPipelineLayout(&[_]gpu.BindGroupLayout{prefix_sum_layout});
         const sort_pl = gpu.createPipelineLayout(&[_]gpu.BindGroupLayout{ sort_layout, options_layout });

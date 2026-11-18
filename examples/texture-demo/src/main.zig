@@ -1,19 +1,13 @@
-// Sampler + texture acceptance demo (workstream 1, see
-// docs/from_teak_team/zunk-roadmap.md). Uploads a 2x2 rgba8 texture with four
-// colored pixels, binds it with a linear sampler, and renders a fullscreen
-// quad sampling the texture. A linear filter should interpolate the four
-// pixels across the canvas.
-
 const zunk = @import("zunk");
 const gpu = zunk.web.gpu;
 const input = zunk.web.input;
 const app = zunk.web.app;
 
 const texels = [_]u8{
-    0xff, 0x00, 0x00, 0xff, // (0,0) red
-    0x00, 0xff, 0x00, 0xff, // (1,0) green
-    0x00, 0x00, 0xff, 0xff, // (0,1) blue
-    0xff, 0xff, 0x00, 0xff, // (1,1) yellow
+    0xff, 0x00, 0x00, 0xff,
+    0x00, 0xff, 0x00, 0xff,
+    0x00, 0x00, 0xff, 0xff,
+    0xff, 0xff, 0x00, 0xff,
 };
 
 const shader_src =
@@ -23,7 +17,6 @@ const shader_src =
     \\};
     \\
     \\@vertex fn vertexMain(@builtin(vertex_index) vid: u32) -> VSOut {
-    \\  // Two-triangle fullscreen quad, generated from vertex_index.
     \\  var p = array<vec2f, 6>(
     \\    vec2f(-1.0, -1.0), vec2f( 1.0, -1.0), vec2f(-1.0,  1.0),
     \\    vec2f( 1.0, -1.0), vec2f( 1.0,  1.0), vec2f(-1.0,  1.0),

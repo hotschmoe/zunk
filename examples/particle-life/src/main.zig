@@ -48,7 +48,6 @@ export fn init() void {
 
     noise_asset = asset.fetch("assets/blue-noise.png");
 
-    // Build UI panel
     panel = ui.createPanel("Settings");
 
     sl_particle_pow = ui.addSlider(panel, "Particles (2^n)", 10, 20, 16, 1);
@@ -121,7 +120,6 @@ export fn frame(dt: f32) void {
         initSim();
     }
 
-    // Load blue noise texture
     if (!noise_ready) {
         if (!noise_fetched and asset.isReady(noise_asset)) {
             noise_texture = gpu.createTextureFromAsset(noise_asset);
@@ -136,7 +134,6 @@ export fn frame(dt: f32) void {
         }
     }
 
-    // Read heavy sliders -- reinit on change
     const new_pp = ui.getFloat(sl_particle_pow);
     const new_sp = ui.getFloat(sl_species);
     const new_sw = ui.getFloat(sl_sim_width);
@@ -150,7 +147,6 @@ export fn frame(dt: f32) void {
         reinitSim();
     }
 
-    // Read lightweight controls
     if (sim) |*s| {
         s.friction_coefficient = ui.getFloat(sl_friction);
         s.options.central_force = ui.getFloat(sl_central_force) / 10.0;
@@ -167,11 +163,9 @@ export fn frame(dt: f32) void {
         if (ui.isClicked(btn_randomize)) s.randomize();
     }
 
-    // Keyboard shortcuts
     if (input.isKeyPressed(.space)) paused = !paused;
     if (input.isKeyPressed(.s)) ui.togglePanel(panel);
 
-    // Simulation tick
     if (sim) |*s| {
         s.handleInput();
         s.update(if (paused) 0.0 else dt);
