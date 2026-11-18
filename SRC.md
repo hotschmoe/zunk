@@ -173,3 +173,17 @@ Stencil attachments require the stencil aspect and a matching stencil-capable
 format; pipeline stencil defaults to a no-op and the reference is per draw.
 Attachment sample counts must match the pipeline. Null color selects the canvas
 format or view as appropriate, and null depth forbids a depth attachment.
+
+Canvas-sized depth and multisample targets must match the canvas pixel size;
+MSAA targets resolving into the canvas also use its format. Multisampled
+textures are render attachments only and must resolve to a single-sample texture
+before sampling or reading. `writeTextureRegion` needs COPY_DST usage and a
+source of at least `bytes_per_row * (height - 1) + width * bytes_per_pixel`
+bytes; its source stride need not be 256-byte aligned. Texture-to-buffer copy
+rows do require 256-byte alignment.
+
+Text cluster metrics position bitmap pixel (0,0) at `(pen_x + bearing_x,
+baseline_y - bearing_y)`. Coverage results use one byte per pixel and RGBA
+results use four; a truncated result retains valid metrics for retry. Readback
+requires encode, submit, request, then polling across frames before reading.
+Its rows have the padded stride and region readback indices are region-relative.

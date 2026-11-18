@@ -589,37 +589,24 @@ pub fn getDevice() Device {
     return bind.Handle.fromInt(1);
 }
 
-/// Drop the JS-side reference to any handle. Only needed for objects without
-/// a dedicated `destroy*` (views, bind groups, pipelines, layouts).
 pub fn release(handle: bind.Handle) void {
     zunk_gpu_release(handle.toInt());
 }
 
-/// The swap-chain format the canvas was configured with. MSAA colour targets
-/// that resolve into the canvas must use this format.
 pub fn canvasFormat() TextureFormat {
     return @fromBackingInt(@intCast(zunk_gpu_canvas_format()));
 }
 
-/// Pixel size of the canvas's swap-chain texture (CSS size x devicePixelRatio).
-/// Multisampled / depth targets that resolve into or accompany the canvas
-/// must match it exactly.
 pub fn canvasSize() struct { w: u32, h: u32 } {
     var wh: [2]u32 = .{ 0, 0 };
     zunk_gpu_canvas_size(&wh);
     return .{ .w = wh[0], .h = wh[1] };
 }
 
-/// View of the canvas's current texture. Created on first call in a frame and
-/// released by `present`; do not keep it across frames.
 pub fn canvasView() TextureView {
     return bind.Handle.fromInt(zunk_gpu_canvas_view());
 }
 
-/// The encoder `beginRenderPass*` records into, created on first use in a
-/// frame and submitted by `present`. Use it for `copyTextureToBuffer`,
-/// `copyBufferInEncoder` or `beginComputePass` work that must be ordered
-/// with the frame's render passes.
 pub fn frameEncoder() CommandEncoder {
     return bind.Handle.fromInt(zunk_gpu_frame_encoder());
 }
@@ -648,8 +635,6 @@ pub fn bufferDestroy(buf: Buffer) void {
     zunk_gpu_buffer_destroy(buf.toInt());
 }
 
-/// Start mapping `buf` (MAP_READ usage) for reading. Poll `bufferMapState`;
-/// call only after the work that fills the buffer has been submitted.
 pub fn bufferMapRead(buf: Buffer) void {
     zunk_gpu_buffer_map_read(buf.toInt());
 }
@@ -658,12 +643,10 @@ pub fn bufferMapState(buf: Buffer) MapState {
     return @fromBackingInt(@intCast(zunk_gpu_buffer_map_state(buf.toInt())));
 }
 
-/// Copy `dst.len` bytes of a `.mapped` buffer into wasm memory.
 pub fn bufferReadMapped(buf: Buffer, dst: []u8) void {
     zunk_gpu_buffer_read_mapped(buf.toInt(), dst.ptr, @intCast(dst.len));
 }
 
-/// End a map (successful or failed) and return the buffer to `.idle`.
 pub fn bufferUnmap(buf: Buffer) void {
     zunk_gpu_buffer_unmap(buf.toInt());
 }
@@ -680,20 +663,15 @@ pub fn createTexture(w: u32, h: u32, fmt: TextureFormat, usage: u32) Texture {
     return createTextureMultisampled(w, h, fmt, usage, 1);
 }
 
-/// `sample_count` 1 or 4. A multisampled texture can only be a render
-/// attachment (`RENDER_ATTACHMENT`); resolve it into a single-sample texture
-/// to sample or read it.
 pub fn createTextureMultisampled(w: u32, h: u32, fmt: TextureFormat, usage: u32, sample_count: u32) Texture {
     return bind.Handle.fromInt(zunk_gpu_create_texture(w, h, @backingInt(fmt), usage, sample_count));
 }
 
-/// A depth buffer matching a colour target's size and sample count.
 pub fn createDepthTexture(w: u32, h: u32, fmt: TextureFormat, sample_count: u32) Texture {
     std.debug.assert(fmt == .depth24plus or fmt == .depth32float or fmt == .depth24plus_stencil8);
     return createTextureMultisampled(w, h, fmt, TextureUsage.RENDER_ATTACHMENT, sample_count);
 }
 
-/// A colour texture that can be rendered into and then sampled / copied out.
 pub fn createRenderTarget(w: u32, h: u32, fmt: TextureFormat) Texture {
     return createTexture(w, h, fmt, TextureUsage.RENDER_ATTACHMENT | TextureUsage.TEXTURE_BINDING | TextureUsage.COPY_SRC);
 }
@@ -706,8 +684,6 @@ pub fn destroyTexture(tex: Texture) void {
     zunk_gpu_destroy_texture(tex.toInt());
 }
 
-/// Upload CPU bytes into `tex` at origin (0,0). `bytes_per_row` is the
-/// stride of the source data in bytes (for tightly packed rgba8: width*4).
 pub fn writeTexture(
     tex: Texture,
     bytes: []const u8,
@@ -725,12 +701,6 @@ pub fn writeTexture(
     );
 }
 
-/// Upload CPU bytes into the `width x height` rect of `tex` whose top-left is
-/// `(x, y)`; the rest of the texture is untouched. This is the glyph-atlas
-/// primitive: pack a bitmap into a free spot of an `r8unorm` / `rgba8unorm`
-/// texture (`COPY_DST` usage). `bytes_per_row` is the source stride in bytes
-/// (no 256 alignment needed) and `bytes` must cover
-/// `bytes_per_row * (height - 1) + width * bytes_per_pixel`.
 pub fn writeTextureRegion(
     tex: Texture,
     x: u32,
@@ -792,7 +762,6 @@ pub fn createRenderPipelineDesc(desc: RenderPipelineDescriptor) RenderPipeline {
     return bind.Handle.fromInt(zunk_gpu_create_render_pipeline(&raw));
 }
 
-/// Alpha-blended triangle list into the canvas, no depth.
 pub fn createRenderPipeline(
     layout: PipelineLayout,
     shader: ShaderModule,
@@ -809,7 +778,6 @@ pub fn createRenderPipeline(
     });
 }
 
-/// Triangle list into an offscreen `format` target; additive or no blending.
 pub fn createRenderPipelineHDR(
     layout: PipelineLayout,
     shader: ShaderModule,
@@ -871,12 +839,10 @@ pub fn beginRenderPassDesc(desc: RenderPassDescriptor) RenderPassEncoder {
     return bind.Handle.fromInt(zunk_gpu_begin_render_pass(&raw));
 }
 
-/// Clear the canvas to a colour and begin drawing into it.
 pub fn beginRenderPass(r: f32, g: f32, b: f32, a: f32) RenderPassEncoder {
     return beginRenderPassDesc(.{ .clear = .{ r, g, b, a } });
 }
 
-/// Clear an offscreen view to a colour and begin drawing into it.
 pub fn beginRenderPassHDR(view: TextureView, r: f32, g: f32, b: f32, a: f32) RenderPassEncoder {
     return beginRenderPassDesc(.{ .color = view, .clear = .{ r, g, b, a } });
 }
@@ -913,13 +879,10 @@ pub fn renderPassSetIndexBuffer(pass: RenderPassEncoder, buffer: Buffer, format:
     );
 }
 
-/// Viewport in target pixels; depth range is normally 0..1.
 pub fn renderPassSetViewport(pass: RenderPassEncoder, x: f32, y: f32, w: f32, h: f32, min_depth: f32, max_depth: f32) void {
     zunk_gpu_render_pass_set_viewport(pass.toInt(), x, y, w, h, min_depth, max_depth);
 }
 
-/// Stencil reference value for subsequent draws (compared / written per
-/// `StencilFace`). Persists until changed.
 pub fn renderPassSetStencilReference(pass: RenderPassEncoder, reference: u32) void {
     zunk_gpu_render_pass_set_stencil_reference(pass.toInt(), reference);
 }
@@ -928,8 +891,6 @@ pub fn renderPassSetScissorRect(pass: RenderPassEncoder, x: u32, y: u32, w: u32,
     zunk_gpu_render_pass_set_scissor_rect(pass.toInt(), x, y, w, h);
 }
 
-/// `instance_count > 1` repeats the draw; vertex buffers whose layout has
-/// `step_mode = .instance` advance once per instance instead of per vertex.
 pub fn renderPassDraw(pass: RenderPassEncoder, vertex_count: u32, instance_count: u32, first_vertex: u32, first_instance: u32) void {
     zunk_gpu_render_pass_draw(pass.toInt(), vertex_count, instance_count, first_vertex, first_instance);
 }
@@ -942,20 +903,14 @@ pub fn renderPassEnd(pass: RenderPassEncoder) void {
     zunk_gpu_render_pass_end(pass.toInt());
 }
 
-/// Record a copy of `texture` (COPY_SRC) into `buffer` (COPY_DST).
-/// `bytes_per_row` must be a multiple of 256 (`Readback` handles this).
 pub fn copyTextureToBuffer(encoder: CommandEncoder, texture: Texture, buffer: Buffer, bytes_per_row: u32, width: u32, height: u32) void {
     zunk_gpu_copy_texture_to_buffer(encoder.toInt(), texture.toInt(), buffer.toInt(), bytes_per_row, width, height);
 }
 
-/// Like `copyTextureToBuffer` but copies the `width x height` rect whose
-/// top-left is `(x, y)` in `texture` (e.g. 1x1 for picking) instead of the
-/// whole texture. `bytes_per_row` must still be a multiple of 256.
 pub fn copyTextureRegionToBuffer(encoder: CommandEncoder, texture: Texture, buffer: Buffer, bytes_per_row: u32, x: u32, y: u32, width: u32, height: u32) void {
     zunk_gpu_copy_texture_region_to_buffer(encoder.toInt(), texture.toInt(), buffer.toInt(), bytes_per_row, x, y, width, height);
 }
 
-/// Finish and submit the frame encoder, then release the canvas view.
 pub fn present() void {
     zunk_gpu_present();
 }
@@ -968,9 +923,6 @@ pub fn isTextureReady(handle: Texture) bool {
     return zunk_gpu_is_texture_ready(handle.toInt()) != 0;
 }
 
-/// Measure a text run in pixels using the browser's canvas 2D text shaper.
-/// `font` is a CSS font string, e.g. "500 14px monospace"; `letter_spacing` is
-/// the extra advance after every glyph in px (canvas `letterSpacing`).
 pub fn measureText(text: []const u8, font: []const u8, letter_spacing: f32) TextMetrics {
     var out: TextMetrics = .{ .width = 0, .height = 0 };
     zunk_gpu_measure_text(
@@ -984,10 +936,6 @@ pub fn measureText(text: []const u8, font: []const u8, letter_spacing: f32) Text
     return out;
 }
 
-/// Result of `rasterCluster`. Bitmap pixel (0,0) sits at
-/// `(pen_x + bearing_x, baseline_y - bearing_y)` (y down), so
-/// `bearing_y` is the distance from the baseline up to the bitmap's top row.
-/// `advance` is the cluster's pen advance in px.
 pub const ClusterMetrics = extern struct {
     width: u32 = 0,
     height: u32 = 0,
@@ -998,21 +946,10 @@ pub const ClusterMetrics = extern struct {
 
 pub const ClusterBitmap = struct {
     metrics: ClusterMetrics,
-    /// Tightly packed r8 coverage, `width * height` bytes, row stride = width.
-    /// Empty when the cluster has no ink (a space) or did not fit `out`.
     pixels: []const u8,
-    /// True when `out` was too small; `metrics` is still valid, so retry with
-    /// a buffer of `metrics.width * metrics.height` bytes.
     truncated: bool,
 };
 
-/// Rasterize one text cluster (a grapheme: CJK character, emoji, symbol the
-/// primary font lacks) with the browser's canvas 2D text engine into an 8-bit
-/// coverage bitmap in `out`. `font_css` is a CSS font shorthand such as
-/// `"500 14px sans-serif"`; its size token is replaced by `size_px`. Intended
-/// as a fallback for glyphs the app's own fonts lack; feed the pixels to
-/// `writeTextureRegion` on an `r8unorm` atlas. Colour emoji come out as their
-/// alpha coverage. Optional import: modules that never call it do not need it.
 pub fn rasterCluster(utf8: []const u8, font_css: []const u8, size_px: f32, out: []u8) ClusterBitmap {
     var m: ClusterMetrics = .{};
     const written = zunk_text_raster_cluster(utf8.ptr, @intCast(utf8.len), font_css.ptr, @intCast(font_css.len), size_px, out.ptr, @intCast(out.len), &m);
@@ -1020,9 +957,6 @@ pub fn rasterCluster(utf8: []const u8, font_css: []const u8, size_px: f32, out: 
     return .{ .metrics = m, .pixels = out[0..written], .truncated = need > out.len };
 }
 
-/// Like `rasterCluster`, but the bitmap is straight-alpha RGBA (`width * height * 4` bytes): colour
-/// emoji keep their colours. Feed it to `writeTextureRegion` on an `rgba8unorm` atlas. `truncated`
-/// when `out` was smaller than `metrics.width * metrics.height * 4`.
 pub fn rasterClusterRgba(utf8: []const u8, font_css: []const u8, size_px: f32, out: []u8) ClusterBitmap {
     var m: ClusterMetrics = .{};
     const written = zunk_text_raster_cluster_rgba(utf8.ptr, @intCast(utf8.len), font_css.ptr, @intCast(font_css.len), size_px, out.ptr, @intCast(out.len), &m);
@@ -1030,11 +964,6 @@ pub fn rasterClusterRgba(utf8: []const u8, font_css: []const u8, size_px: f32, o
     return .{ .metrics = m, .pixels = out[0..written], .truncated = need > out.len };
 }
 
-/// Rasterize `text` into a freshly allocated rgba8unorm `Texture` of the given
-/// size, using the browser's canvas 2D text shaper. `color` is the foreground
-/// fill (0..1 RGBA). The texture has `TEXTURE_BINDING | COPY_DST` usage and is
-/// ready to bind in the same frame. `font` and `letter_spacing` as in
-/// `measureText`.
 pub fn rasterizeText(
     text: []const u8,
     font: []const u8,
@@ -1058,20 +987,8 @@ pub fn rasterizeText(
     ));
 }
 
-/// Texture -> CPU readback, for headless pixel tests and screenshots of
-/// offscreen targets. Usage, in order, across frames:
-///
-///     var rb = Readback.init(w, h, 4);
-///     rb.encode(gpu.frameEncoder(), target);   // while recording the frame
-///     gpu.present();
-///     rb.request();                            // after the submit
-///     ...                                      // later frames: poll()
-///     if (rb.poll() == .mapped) rb.read(buf);  // buf.len >= rb.paddedSize()
-///
-/// Rows in `buf` are `bytes_per_row` apart (padded to 256), not `w * bpp`.
 pub const Readback = struct {
     buffer: Buffer,
-    /// Top-left of the copied rect in the source texture.
     x: u32 = 0,
     y: u32 = 0,
     width: u32,
@@ -1079,14 +996,10 @@ pub const Readback = struct {
     bytes_per_row: u32,
     bytes_per_pixel: u32 = 4,
 
-    /// Whole-texture readback of a `width x height` target.
     pub fn init(width: u32, height: u32, bytes_per_pixel: u32) Readback {
         return initRegion(0, 0, width, height, bytes_per_pixel);
     }
 
-    /// Readback of the `width x height` rect at `(x, y)` only, e.g.
-    /// `initRegion(mx, my, 1, 1, 4)` to read the pixel under the cursor.
-    /// `pixel` and `read` then index relative to the rect.
     pub fn initRegion(x: u32, y: u32, width: u32, height: u32, bytes_per_pixel: u32) Readback {
         const bpr = alignRow(width * bytes_per_pixel);
         return .{
@@ -1120,20 +1033,18 @@ pub const Readback = struct {
         return bufferMapState(self.buffer);
     }
 
-    /// Copy out and unmap; the Readback can be reused for another capture.
     pub fn read(self: Readback, dst: []u8) void {
         bufferReadMapped(self.buffer, dst[0..self.paddedSize()]);
         bufferUnmap(self.buffer);
     }
 
-    /// RGBA/BGRA pixel at (x, y) (relative to the copied rect) of a buffer filled by `read`.
     pub fn pixel(self: Readback, data: []const u8, x: u32, y: u32) [4]u8 {
         const o = y * self.bytes_per_row + x * self.bytes_per_pixel;
         return data[o..][0..4].*;
     }
 };
 
-/// WebGPU requires `bytesPerRow` of texture copies to be a multiple of 256.
+// WebGPU texture-copy rows must be aligned to 256 bytes.
 pub fn alignRow(bytes: u32) u32 {
     return (bytes + 255) & ~@as(u32, 255);
 }
