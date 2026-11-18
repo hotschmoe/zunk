@@ -1,27 +1,3 @@
-//! Host services: async browser work behind a poll-style API.
-//!
-//! `fetch`, file downloads, the file picker, `localStorage`, the clock, URL
-//! query parameters, the clipboard, and paste / drag-and-drop of images and
-//! files. The JS half is `src/gen/js/fx.js`; the protocol is in
-//! docs/ARCHITECTURE.md ("Host services").
-//!
-//! The model in one paragraph: every request is a synchronous call that
-//! returns at once (wasm copies nothing; JS copies what it needs from wasm
-//! memory before returning). Every result — including unsolicited ones such
-//! as a pasted image — is a *completion record* that JS queues. Wasm
-//! collects them by calling `poll` once per frame; `poll` asks JS to hand
-//! over at most `out.len` records, each allocated in wasm memory by the
-//! exported `zunk_fx_alloc` and passed to the exported `zunk_fx_deliver`.
-//! JS never calls into wasm at any other time.
-//!
-//! Lifetime: the slices inside a `Completion` stay valid until the next
-//! `poll`, which frees the previous batch. Nothing else is retained, so a
-//! frame loop that polls every frame never leaks.
-//!
-//! Ids: every request that expects a result takes a caller-chosen `id` that
-//! comes back unchanged in the completion; unsolicited completions carry id 0.
-//! Use ids >= 1.
-
 const std = @import("std");
 
 extern "env" fn zunk_fx_pump(max: u32) void;
@@ -53,13 +29,11 @@ extern "env" fn zunk_fx_query_param(id: u32, name_ptr: [*]const u8, name_len: u3
 extern "env" fn zunk_fx_clipboard_write(ptr: [*]const u8, len: u32) void;
 extern "env" fn zunk_fx_clipboard_write_image(ptr: [*]const u8, len: u32) void;
 
-/// Allocator for completion records (shared with the app on wasm).
 const gpa = std.heap.page_allocator;
 
-/// Completions `poll` can hand over per call.
 pub const max_completions = 32;
 
-/// Record kinds; the numbers are the `KIND` table in `js/fx.js`.
+// Record kind numbers must match the KIND table in js/fx.js.
 pub const Kind = enum(u32) {
     http = 1,
     file_opened = 2,
@@ -72,18 +46,6 @@ pub const Kind = enum(u32) {
     query_value = 9,
 };
 
-/// One result. `a`..`d` and `blobs` are per-kind (table in `js/fx.js`):
-///
-///   http          a = status (0: transport failure)        blobs: body, err
-///   file_opened                                            blobs: name, mime, bytes
-///   file_cancelled
-///   downloaded    a = ok (0 / 1)
-///   storage_value a = found (0 / 1)                        blobs: value
-///   clock         a = UTC offset in minutes                blobs: unix ms (i64 LE, 8 bytes)
-///   dropped       a = 0 file / 1 image / 2 text,           blobs: name, mime, bytes, thumb RGBA
-///                 b, c = image width, height; d = thumb width
-///   pasted_text                                            blobs: text
-///   query_value   a = found (0 / 1)                        blobs: value
 pub const Completion = struct {
     kind: Kind,
     id: u32,
@@ -93,7 +55,6 @@ pub const Completion = struct {
     d: i32,
     blobs: [4][]const u8,
 
-    /// The unix time of a `clock` completion in milliseconds.
     pub fn unixMs(self: Completion) i64 {
         const raw = self.blobs[0];
         if (raw.len < 8) return 0;
@@ -101,13 +62,8 @@ pub const Completion = struct {
     }
 };
 
-// ── Requests ────────────────────────────────────────────────────────
-
 pub const Method = enum(u32) { get, post, put, delete };
 
-/// Start an HTTP request. `headers` is "Name: value" lines separated by
-/// '\n' (see `encodeHeaders`). The result is a `http` completion; the body
-/// is read from `body` at once, so it may be freed when this returns.
 pub fn http(id: u32, method: Method, url: []const u8, headers: []const u8, body: []const u8, timeout_ms: u32) void {
     zunk_fx_http(
         id,
@@ -122,57 +78,38 @@ pub fn http(id: u32, method: Method, url: []const u8, headers: []const u8, body:
     );
 }
 
-/// Offer `bytes` to the user as a file download. Result: `downloaded`.
 pub fn download(id: u32, name: []const u8, mime: []const u8, bytes: []const u8) void {
     zunk_fx_download(id, name.ptr, @intCast(name.len), mime.ptr, @intCast(mime.len), bytes.ptr, @intCast(bytes.len));
 }
 
-/// Ask for a file (`accept` is the HTML `accept` list, e.g. ".json,image/*").
-/// Result: `file_opened` or `file_cancelled`. Browsers open a picker only
-/// from a user activation: if one is live the picker opens now, otherwise
-/// it opens on the next pointer press or key press.
 pub fn openFile(id: u32, accept: []const u8) void {
     zunk_fx_open_file(id, accept.ptr, @intCast(accept.len));
 }
 
-/// Read a `localStorage` key. Result: `storage_value`.
 pub fn storageGet(id: u32, key: []const u8) void {
     zunk_fx_storage_get(id, key.ptr, @intCast(key.len));
 }
 
-/// Write a `localStorage` key; an empty value deletes it. No result.
 pub fn storageSet(key: []const u8, value: []const u8) void {
     zunk_fx_storage_set(key.ptr, @intCast(key.len), value.ptr, @intCast(value.len));
 }
 
-/// Ask for the wall clock. Result: `clock`.
 pub fn clock(id: u32) void {
     zunk_fx_clock(id);
 }
 
-/// Read a URL query parameter (`?name=value`). Result: `query_value`.
 pub fn queryParam(id: u32, name: []const u8) void {
     zunk_fx_query_param(id, name.ptr, @intCast(name.len));
 }
 
-/// Write text to the clipboard (`navigator.clipboard.writeText`, with an
-/// `execCommand('copy')` fallback). No result.
 pub fn clipboardWrite(text: []const u8) void {
     zunk_fx_clipboard_write(text.ptr, @intCast(text.len));
 }
 
-/// Write a PNG image to the clipboard (`navigator.clipboard.write` with an
-/// `image/png` `ClipboardItem`). Browsers require a user activation and a
-/// secure context; a refusal is logged. No result.
 pub fn clipboardWriteImage(png: []const u8) void {
     zunk_fx_clipboard_write_image(png.ptr, @intCast(png.len));
 }
 
-/// Encode headers as "Name: value\n" lines for `http`. `headers` is any
-/// slice of structs with `name` and `value` string fields. A header whose
-/// name or value contains a line break, or whose name contains ':' or is
-/// empty, is skipped (it could not be told apart from another header).
-/// Caller frees the result.
 pub fn encodeHeaders(allocator: std.mem.Allocator, headers: anytype) std.mem.Allocator.Error![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
@@ -192,8 +129,6 @@ fn validHeader(name: []const u8, value: []const u8) bool {
     return std.mem.findAny(u8, value, "\r\n") == null;
 }
 
-// ── Completions ─────────────────────────────────────────────────────
-
 const Batch = struct {
     raw: [max_completions][]u8 = undefined,
     len: usize = 0,
@@ -204,16 +139,9 @@ const Batch = struct {
     }
 };
 
-/// Records JS delivered since the last drain, and the previous batch (still
-/// referenced by the completions the caller holds). JS calls into wasm
-/// through `zunk_fx_deliver`, which has no context pointer, so this is
-/// module state.
 var inbox: Batch = .{};
 var held: Batch = .{};
 
-/// Collect the completions that arrived since the last call into `out` and
-/// return how many. Frees the previous batch first: slices of earlier
-/// completions are invalid after this call.
 pub fn poll(out: []Completion) usize {
     held.release();
     const cap = @min(out.len, max_completions);
@@ -222,8 +150,6 @@ pub fn poll(out: []Completion) usize {
     return drain(out[0..cap]);
 }
 
-/// Move delivered records into `out`. Split from `poll` so tests can feed
-/// `zunk_fx_deliver` directly.
 fn drain(out: []Completion) usize {
     var n: usize = 0;
     for (inbox.raw[0..inbox.len]) |raw| {
@@ -242,8 +168,7 @@ fn drain(out: []Completion) usize {
 
 const header_len = 40;
 
-/// Parse one completion record (layout in `js/fx.js`). Null if it is
-/// malformed. The blobs alias `raw`.
+// Record layout: js/fx.js.
 fn decode(raw: []const u8) ?Completion {
     if (raw.len < header_len) return null;
     const kind = std.enums.fromInt(Kind, std.mem.readInt(u32, raw[0..4], .little)) orelse return null;
@@ -266,16 +191,11 @@ fn decode(raw: []const u8) ?Completion {
     return c;
 }
 
-/// JS: allocate `len` bytes in wasm memory for one completion record.
-/// Returns 0 when memory is exhausted. JS must re-read `memory.buffer`
-/// afterwards (the allocation may have grown memory).
 pub export fn zunk_fx_alloc(len: u32) ?[*]u8 {
     const raw = gpa.alloc(u8, len) catch return null;
     return raw.ptr;
 }
 
-/// JS: a record written at `ptr` (from `zunk_fx_alloc`) is complete. Ownership
-/// passes to the inbox; `poll` frees it.
 pub export fn zunk_fx_deliver(ptr: [*]u8, len: u32) void {
     if (inbox.len == inbox.raw.len) return gpa.free(ptr[0..len]);
     inbox.raw[inbox.len] = ptr[0..len];

@@ -45,3 +45,26 @@ Asset fetch is asynchronous; poll `isReady()` before using the result.
 Wasm entry points that call `std.log` must set `std_options.logFn` to
 `zunk.web.logFn`: the default pulls in `std.Io.Threaded`, unavailable on
 wasm32-freestanding. Browser log messages longer than 512 bytes are truncated.
+
+## src/web/fx.zig
+
+The host-services protocol is described in `docs/ARCHITECTURE.md` and
+`src/gen/js/fx.js`. JavaScript copies request data before returning and queues
+results until `poll`; it calls into wasm only during that poll. Caller-chosen
+request IDs should be nonzero; unsolicited completions use zero. Completion
+slices remain valid only until the next poll, which frees the previous batch.
+JavaScript must refresh its memory view after allocating a record, since wasm
+memory may grow. Delivery transfers ownership to the inbox.
+
+Completion fields depend on kind: HTTP uses `a` for status (zero for transport
+failure) and blobs for body and error; file-opened uses name, MIME, and bytes;
+downloaded, storage-value, and query-value use `a` as a success or found flag;
+clock uses `a` for UTC offset in minutes and an eight-byte little-endian Unix
+millisecond value in its first blob. Dropped uses `a` for file/image/text,
+`b` and `c` for image dimensions, `d` for thumbnail width, and blobs for name,
+MIME, bytes, and thumbnail RGBA. Pasted-text uses its first blob for text.
+
+The file picker waits for a user activation if none is active. Image clipboard
+writing requires a secure context and user activation. An empty storage value
+deletes the key. `encodeHeaders` skips empty or colon-containing names and
+fields containing line breaks; its caller frees the returned buffer.
