@@ -1,6 +1,5 @@
 const std = @import("std");
 
-/// Single source of truth: build.zig.zon `.version` (docs/VERSIONING.md). `-Dversion-meta=<str>` appends "+<str>".
 fn versionString(b: *std.Build) []const u8 {
     const base: []const u8 = @import("build.zig.zon").version;
     _ = std.SemanticVersion.parse(base) catch @panic("build.zig.zon .version is not valid semver");
@@ -62,35 +61,18 @@ pub fn build(b: *std.Build) void {
 pub const InstallAppOptions = struct {
     port: u16 = 8080,
     output_dir: []const u8 = "dist",
-    /// Zig dependencies that ship a `bridge.js` at their package root. Each
-    /// listed dep must actually have a `bridge.js` file -- resolution is
-    /// lazy, so a typo or missing file fails loudly when the RunStep executes.
-    /// Order is preserved; earlier entries are emitted earlier in the merged
-    /// JS. The user project's own `bridge.js` (if any) is always emitted last
-    /// so it can override dep-provided symbols.
     bridge_deps: []const *std.Build.Dependency = &.{},
-    /// Name of the build-and-serve step registered by `installApp`. Override
-    /// when the host `build.zig` already owns a step named `"run"` (e.g. a
-    /// non-web CLI variant) to avoid a duplicate-step error.
     run_step_name: []const u8 = "run",
-    /// If non-null, also register a build-only step with this name that
-    /// produces the `dist/` artifacts without starting the dev server.
     build_step_name: ?[]const u8 = null,
-    /// Web fonts: copied to `dist/fonts/`, declared with `@font-face`, and
-    /// loaded before the app's `init` runs.
     fonts: []const FontFile = &.{},
 };
 
-/// One font file for `InstallAppOptions.fonts`.
 pub const FontFile = struct {
-    /// CSS `font-family` name, e.g. "IBM Plex Mono".
     family: []const u8,
-    /// CSS `font-weight`: 400 regular, 500 medium, 700 bold.
     weight: u16 = 400,
     path: std.Build.LazyPath,
 };
 
-/// Add `--font family weight path` for each file to a zunk CLI run.
 pub fn addFontArgs(run: *std.Build.Step.Run, fonts: []const FontFile) void {
     for (fonts) |f| {
         run.addArg("--font");
