@@ -93,3 +93,16 @@ fallback. Deploy filenames hash JavaScript before the source-map trailer, but
 SRI covers the final served bytes. The build fingerprint includes the zunk
 executable as well as the project's inputs, so rebuilding the generator
 invalidates its cache.
+
+## src/gen/js_resolve.zig
+
+Exact bindings take precedence over the double-underscore internal fallback.
+The file-dialog bridge returns paths via the shared string buffer; open/save
+mode is 0/1 and patterns are semicolon-separated Win32 globs. File System
+Access pickers must start in the originating user gesture. The accessibility
+bridge's record and string buffers are valid only for the duration of each
+call; its wire format is in `src/gen/js/a11y.js`.
+
+Text cluster rasterization writes coverage bytes, or straight-alpha RGBA for
+the color variant, and reports width, height, bearings, and advance. A zero
+byte count means no ink or insufficient output capacity; metrics remain valid.
