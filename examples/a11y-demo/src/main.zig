@@ -1,14 +1,4 @@
-/// A11y DOM-mirror demo (wire format v2, see src/gen/js/a11y.js).
-///
-/// Hand-builds the 64-byte records Teak's `Host.publishA11yTree` ships and
-/// calls the same externs, to show the mirror end to end without Teak:
-///   * a nested tree (toolbar > buttons, tablist > tabs, status live region);
-///   * checkbox / slider / progressbar state updating in place;
-///   * a textbox with a value and selection;
-///   * actions coming back: click / focus / typed-value requests from the DOM
-///     (assistive technology, or devtools `$0.click()`) are drained with
-///     `__zunk_poll_a11y_actions` and counted on screen.
-/// Inspect `#zunk-a11y-root` in devtools, or read the tree with a screen reader.
+// Wire format: src/gen/js/a11y.js.
 const std = @import("std");
 const zunk = @import("zunk");
 const canvas = zunk.web.canvas;
@@ -54,7 +44,7 @@ comptime {
 
 const ActionRecord = extern struct { kind: u32, cmd_index: u32, str_off: u32, str_len: u32 };
 
-/// Wire role codes (a subset; the full table is in js/a11y.js).
+// Role codes must match src/gen/js/a11y.js.
 const Role = enum(u32) {
     generic = 0,
     text = 2,
@@ -104,10 +94,6 @@ export fn init() void {
 export fn frame(_: f32) void {
     input.poll();
 
-    // Tick a few values so the JS-side diff has something to update
-    // each frame (aria-valuenow on the slider, aria-checked on the
-    // checkbox). Demonstrates that the shim updates attributes in place
-    // instead of rebuilding nodes.
     frame_count +%= 1;
     slider_value = @as(f32, @floatFromInt(frame_count % 240)) / 240.0;
     if (frame_count % 120 == 0) checkbox_on = !checkbox_on;
@@ -127,7 +113,6 @@ fn pollActions() void {
         switch (a.kind) {
             0 => {
                 clicks += 1;
-                // A tab activation selects it (cmd_index 11 / 12).
                 if (a.cmd_index == 11) selected_tab = 0;
                 if (a.cmd_index == 12) selected_tab = 1;
                 if (a.cmd_index == 2) checkbox_on = !checkbox_on;
@@ -185,7 +170,7 @@ fn add(count: usize, used: *u32, node: Node) usize {
     const value = put(used, node.value);
     records[count] = .{
         .cmd_index = node.key,
-        .role = @intFromEnum(node.role),
+        .role = @backingInt(node.role),
         .label_offset = label[0],
         .label_len = label[1],
         .bounds_x = @intCast(40 + count * 8),

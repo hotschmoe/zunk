@@ -192,3 +192,8 @@ Its rows have the padded stride and region readback indices are region-relative.
 
 The shader flips the vertical clip-space coordinate so texture coordinate y=0
 is at the top of the text quad.
+
+## examples/file-dialog-demo/src/main.zig
+
+The demo mirrors Teak's slot table and callback ABI. A zero-length result means
+the picker was cancelled or rejected.
