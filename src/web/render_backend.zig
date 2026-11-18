@@ -100,22 +100,3 @@ pub const Canvas2DBackend = struct {
         validateBackend(Canvas2DBackend);
     }
 };
-
-test "Rect.contains" {
-    const r = Rect{ .x = 10, .y = 20, .w = 100, .h = 50 };
-    const std = @import("std");
-    try std.testing.expect(r.contains(50, 40));
-    try std.testing.expect(!r.contains(5, 40));
-    try std.testing.expect(!r.contains(50, 5));
-    try std.testing.expect(!r.contains(111, 40));
-}
-
-test "Rect.shrink" {
-    const r = Rect{ .x = 10, .y = 20, .w = 100, .h = 50 };
-    const s = r.shrink(5);
-    const std = @import("std");
-    try std.testing.expectApproxEqAbs(@as(f32, 15), s.x, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 25), s.y, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 90), s.w, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 40), s.h, 0.001);
-}

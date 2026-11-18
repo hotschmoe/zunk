@@ -70,37 +70,3 @@ pub fn decode(raw: []const u8, out: []Event) usize {
     }
     return n;
 }
-
-test "decode: start, update with a cursor, commit; unknown kinds are skipped" {
-    var raw: [64]u8 = undefined;
-    var w: usize = 0;
-    const put = struct {
-        fn rec(buf: []u8, at: *usize, kind: u32, cursor: u32, text: []const u8) void {
-            std.mem.writeInt(u32, buf[at.*..][0..4], kind, .little);
-            std.mem.writeInt(u32, buf[at.* + 4 ..][0..4], cursor, .little);
-            std.mem.writeInt(u32, buf[at.* + 8 ..][0..4], @intCast(text.len), .little);
-            @memcpy(buf[at.* + 12 ..][0..text.len], text);
-            at.* += 12 + ((text.len + 3) & ~@as(usize, 3));
-        }
-    }.rec;
-    put(&raw, &w, 1, 0, "");
-    put(&raw, &w, 9, 0, "x"); // unknown
-    put(&raw, &w, 2, 3, "\u{3042}"); // あ, caret after it
-    put(&raw, &w, 3, 0, "\u{3042}\u{3044}");
-    var ev: [8]Event = undefined;
-    const n = decode(raw[0..w], &ev);
-    try std.testing.expectEqual(@as(usize, 3), n);
-    try std.testing.expectEqual(Kind.start, ev[0].kind);
-    try std.testing.expectEqual(Kind.update, ev[1].kind);
-    try std.testing.expectEqual(@as(usize, 3), ev[1].cursor);
-    try std.testing.expectEqualStrings("\u{3042}", ev[1].text);
-    try std.testing.expectEqualStrings("\u{3042}\u{3044}", ev[2].text);
-}
-
-test "decode: a truncated record is dropped, not read out of bounds" {
-    var raw: [14]u8 = @splat(0);
-    std.mem.writeInt(u32, raw[0..4], 3, .little);
-    std.mem.writeInt(u32, raw[8..12], 100, .little);
-    var ev: [2]Event = undefined;
-    try std.testing.expectEqual(@as(usize, 0), decode(&raw, &ev));
-}

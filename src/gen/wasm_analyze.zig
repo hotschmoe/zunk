@@ -367,14 +367,3 @@ fn skipLimits(wasm: []const u8, pos: *usize) void {
         _ = readLeb128(wasm, pos);
     }
 }
-
-test "analyze minimal wasm" {
-    const minimal = [_]u8{
-        0x00, 0x61, 0x73, 0x6D,
-        0x01, 0x00, 0x00, 0x00,
-    };
-    var result = try analyze(std.testing.allocator, &minimal);
-    defer result.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 0), result.imports.len);
-    try std.testing.expectEqual(@as(usize, 0), result.exports.len);
-}

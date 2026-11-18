@@ -242,26 +242,3 @@ pub fn callback(
         .is_callback = true,
     };
 }
-
-test "ValKind wasm param counts" {
-    try std.testing.expectEqual(@as(u8, 1), ValKind.i32.wasmParamCount());
-    try std.testing.expectEqual(@as(u8, 2), ValKind.string.wasmParamCount());
-    try std.testing.expectEqual(@as(u8, 0), ValKind.void.wasmParamCount());
-}
-
-test "Handle round-trip" {
-    const h = Handle.fromInt(42);
-    try std.testing.expectEqual(@as(i32, 42), h.toInt());
-    try std.testing.expect(!h.isNull());
-    try std.testing.expect(Handle.null_handle.isNull());
-}
-
-test "manifest serialization compiles" {
-    const descs = comptime [_]FuncDesc{
-        func("getContext", "canvas", &.{param("sel", .string)}, ret(.handle), .dom),
-        func("clear", "canvas", &.{ param("r", .f32), param("g", .f32) }, ret(.void), .dom),
-    };
-    const m = comptime serializeManifest(&descs);
-    try std.testing.expect(m.len > 0);
-    try std.testing.expectEqual(@as(u8, 2), m[0]);
-}

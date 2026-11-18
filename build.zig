@@ -9,7 +9,7 @@ fn versionString(b: *std.Build) []const u8 {
 }
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    _ = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     const webzocket = b.dependency("webzocket", .{}).module("webzocket");
@@ -48,16 +48,15 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
 
-    const test_step = b.step("test", "Run all tests");
+    const test_step = b.step("test", "Run the blocking end-to-end gate");
+    const test_cmd = b.addSystemCommand(&.{ "node", "tools/test.mjs", "blocking" });
+    test_cmd.addArtifactArg(exe);
+    test_step.dependOn(&test_cmd.step);
 
-    const test_mod = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    test_mod.addOptions("build_options", version_options);
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = test_mod })).step);
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = exe.root_module })).step);
+    const heavy_step = b.step("test-heavy", "Run the background end-to-end gate");
+    const heavy_cmd = b.addSystemCommand(&.{ "node", "tools/test.mjs", "heavy" });
+    heavy_cmd.addArtifactArg(exe);
+    heavy_step.dependOn(&heavy_cmd.step);
 }
 
 pub const InstallAppOptions = struct {

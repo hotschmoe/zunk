@@ -85,36 +85,11 @@ We optimize for clean architecture, not backwards compatibility. **When we refac
 <!-- END:dev-philosophy -->
 
 <!-- BEGIN:testing-philosophy -->
-## Testing Philosophy: Diagnostics, Not Verdicts
+## Testing
 
-**Tests are diagnostic tools, not success criteria.** A passing test suite does not mean the code is good. A failing test does not mean the code is wrong.
+Follow [ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md): no unit tests, at most ten blocking end-to-end tests, and a separate background gate. Do not add snapshots or tests of implementation structure.
 
-**When a test fails, ask three questions in order:**
-1. Is the test itself correct and valuable?
-2. Does the test align with our current design vision?
-3. Is the code actually broken?
-
-Only if all three answers are "yes" should you fix the code.
-
-**Why this matters:**
-- Tests encode assumptions. Assumptions can be wrong or outdated.
-- Changing code to pass a bad test makes the codebase worse, not better.
-- Evolving projects explore new territory - legacy testing assumptions don't always apply.
-
-**What tests ARE good for:**
-- **Regression detection**: Did a refactor break dependent modules? Did API changes break integrations?
-- **Sanity checks**: Does initialization complete? Do core operations succeed? Does the happy path work?
-- **Behavior documentation**: Tests show what the code currently does, not necessarily what it should do.
-
-**What tests are NOT:**
-- A definition of correctness
-- A measure of code quality
-- Something to "make pass" at all costs
-- A specification to code against
-
-**The real success metric**: Does the code further our project's vision and goals?
-
-**Don't test the type system**: When writing tests, do not add cases for invariants or errors already enforced by the static type system (e.g., type mismatches, missing required arguments, nullability violations, return type correctness, enum exhaustiveness). The type checker handles these at compile time. Test solely runtime behaviors, business rules, algorithmic logic, and edge cases using only valid typed inputs.
+Run `zig build test -j4` for the blocking gate and `zig build test-heavy -j4` for the background gate. Both require Node.js. The background gate runs on a schedule and does not block pull requests; investigate failures by finding the regressing commit and fixing head.
 <!-- END:testing-philosophy -->
 
 <!-- BEGIN:footer -->

@@ -305,29 +305,3 @@ pub fn onMouseMove(cb: bind.CallbackFn) void {
 pub fn onTouch(cb: bind.CallbackFn) void {
     zunk_input_set_touch_callback(bind.registerCallback(cb));
 }
-
-test "InputState layout matches the generated JS flush" {
-    // keys (3 x 32) then mouse f32 x6, 4 bytes, touch, gamepad, viewport,
-    // focus, typed chars — the offsets `emitInputSystem` writes.
-    try std.testing.expectEqual(@as(usize, 96), @offsetOf(InputState, "mouse_x"));
-    try std.testing.expectEqual(@as(usize, 112), @offsetOf(InputState, "mouse_wheel"));
-    try std.testing.expectEqual(@as(usize, 116), @offsetOf(InputState, "mouse_wheel_x"));
-    try std.testing.expectEqual(@as(usize, 120), @offsetOf(InputState, "mouse_buttons"));
-    try std.testing.expectEqual(@as(usize, 123), @offsetOf(InputState, "modifiers"));
-    try std.testing.expectEqual(@as(usize, 124), @offsetOf(InputState, "touch_count"));
-    try std.testing.expectEqual(@as(usize, 125 + 120), @offsetOf(InputState, "gamepad_connected"));
-    try std.testing.expectEqual(@as(usize, 245 + 21), @offsetOf(InputState, "viewport_width"));
-    try std.testing.expectEqual(@as(usize, 266 + 13), @offsetOf(InputState, "typed_chars_len"));
-    try std.testing.expectEqual(@as(usize, 280), @offsetOf(InputState, "typed_chars"));
-    try std.testing.expectEqual(@as(usize, 280 + 255), @sizeOf(InputState));
-}
-
-test "getModifiers decodes the modifier bits" {
-    input_state.modifiers = 0b1010; // ctrl + meta
-    defer input_state.modifiers = 0;
-    const m = getModifiers();
-    try std.testing.expect(!m.shift);
-    try std.testing.expect(m.ctrl);
-    try std.testing.expect(!m.alt);
-    try std.testing.expect(m.meta);
-}

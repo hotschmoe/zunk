@@ -77,19 +77,3 @@ comptime {
     _ = &bind.__zunk_string_buf_len;
     _ = &bind.__zunk_invoke_callback;
 }
-
-test {
-    @import("std").testing.refAllDecls(@This());
-    _ = web.fx;
-}
-
-test "version is semver and matches build.zig.zon" {
-    const std = @import("std");
-    const opts = @import("build_options");
-    const parsed = try std.SemanticVersion.parse(version);
-    const manifest = try std.SemanticVersion.parse(opts.manifest_version);
-    try std.testing.expectEqual(manifest.major, parsed.major);
-    try std.testing.expectEqual(manifest.minor, parsed.minor);
-    try std.testing.expectEqual(manifest.patch, parsed.patch);
-    try std.testing.expectEqualStrings(manifest.pre orelse "", parsed.pre orelse "");
-}

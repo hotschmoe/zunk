@@ -3,12 +3,15 @@ name: CI
 on:
   pull_request:
     branches: [master]
+  schedule:
+    - cron: '17 19 * * *'
 
 env:
-  ZIG_VERSION: "0.17.0"
+  ZIG_VERSION: "0.17.1"
 
 jobs:
   test:
+    if: github.event_name == 'pull_request'
     name: Test (${{ matrix.os }}, ${{ matrix.optimize }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -32,12 +35,13 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Build
-        run: zig build -Doptimize=${{ matrix.optimize }}
+        run: zig build -j4 -Doptimize=${{ matrix.optimize }}
 
       - name: Run Tests
-        run: zig build test -Doptimize=${{ matrix.optimize }}
+        run: zig build test -j4 -Doptimize=${{ matrix.optimize }}
 
   format:
+    if: github.event_name == 'pull_request'
     name: Format Check
     runs-on: ubuntu-latest
     steps:
@@ -51,4 +55,14 @@ jobs:
 
       - name: Check Formatting
         run: zig fmt --check src/
+
+  heavy:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - run: zig build test-heavy -j4
 

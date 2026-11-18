@@ -1041,34 +1041,3 @@ fn gitignoreTemplate() []const u8 {
     \\
     ;
 }
-
-test "--font takes family, weight and path and is repeatable" {
-    const args = [_][]const u8{
-        "--wasm",       "a.wasm",
-        "--font",       "IBM Plex Mono",
-        "400",          "fonts/Regular.ttf",
-        "--font",       "IBM Plex Mono",
-        "700",          "fonts/Bold.ttf",
-        "--output-dir", "out",
-    };
-    const parsed = parseBuildArgs(&args);
-    try std.testing.expect(parsed.arg_error == null);
-    try std.testing.expectEqual(@as(usize, 2), parsed.fonts().len);
-    try std.testing.expectEqualStrings("IBM Plex Mono", parsed.fonts()[0].family);
-    try std.testing.expectEqual(@as(u16, 700), parsed.fonts()[1].weight);
-    try std.testing.expectEqualStrings("fonts/Bold.ttf", parsed.fonts()[1].path);
-    try std.testing.expectEqualStrings("out", parsed.output_dir);
-}
-
-test "--font rejects a bad weight, a quoted family and a missing path" {
-    const bad_weight = [_][]const u8{ "--font", "F", "bold", "f.ttf" };
-    try std.testing.expect(parseBuildArgs(&bad_weight).arg_error != null);
-    const quoted = [_][]const u8{ "--font", "F\"x", "400", "f.ttf" };
-    try std.testing.expect(parseBuildArgs(&quoted).arg_error != null);
-    const short = [_][]const u8{ "--font", "F", "400" };
-    try std.testing.expect(parseBuildArgs(&short).arg_error != null);
-}
-
-test {
-    @import("std").testing.refAllDecls(@This());
-}
