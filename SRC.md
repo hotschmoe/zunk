@@ -83,3 +83,13 @@ WebSocket read loop assumes the dev client sends no data frames; watcher
 threads broadcast while connection threads wait for closure, and the mutex
 protects the slot list. HMR swaps only when enabled and only wasm changed;
 other changes trigger a full reload. Normal peer disconnects are not logged.
+
+## src/main.zig
+
+Bridge dependencies are loaded in CLI order, followed by the first project
+bridge found (`bridge.js`, then `js/bridge.js`) so the project can override
+dependency symbols. A missing requested font stops the build to avoid silent
+fallback. Deploy filenames hash JavaScript before the source-map trailer, but
+SRI covers the final served bytes. The build fingerprint includes the zunk
+executable as well as the project's inputs, so rebuilding the generator
+invalidates its cache.
