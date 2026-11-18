@@ -130,3 +130,13 @@ the textarea ignores those input events. Its record format is little-endian:
 bytes. Kinds 1, 2, and 3 mean composition start, update, and commit; only an
 update carries a cursor. The queue holds at most 64 records and drops the oldest
 on overflow. Its selection is read during poll, after the browser updates it.
+
+## src/gen/js/fx.js
+
+Completion records have a 40-byte little-endian header: kind and ID, four
+signed integer fields, then four blob lengths. Unpadded blobs follow in order.
+The field meanings and ownership rules are in the `src/web/fx.zig` section.
+Picker requests wait for user activation when needed; a new request cancels the
+armed or open one. Image ingestion downscales to `MAX_IMAGE_SIDE` and creates
+an RGBA thumbnail; an unscaled JPEG retains its original bytes, otherwise the
+image is encoded as PNG.

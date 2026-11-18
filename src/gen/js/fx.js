@@ -1,31 +1,3 @@
-// --- Host services (zunk.web.fx) ---
-// The browser half of `src/web/fx.zig`; the protocol is written down in
-// docs/ARCHITECTURE.md ("Host services"). Two directions:
-//
-//   wasm -> JS   imports `zunk_fx_<name>`: start work, copy any wasm bytes
-//                synchronously (wasm memory may move later), never block.
-//   JS -> wasm   every result is a completion record queued here and handed
-//                over only when wasm calls `zunk_fx_pump`, which allocates
-//                the record in wasm memory (`zunk_fx_alloc`) and passes it to
-//                `zunk_fx_deliver`. JS never calls into wasm at any other
-//                time, so wasm state is never touched mid-frame.
-//
-// Completion record, little endian:
-//    0  u32 kind (KIND below)   4  u32 id (0 = unsolicited)
-//    8  i32 a  12 i32 b  16 i32 c  20 i32 d      (meaning per kind)
-//   24  u32 len0 .. 36 u32 len3                  (blob lengths)
-//   40  blob0 blob1 blob2 blob3                  (concatenated, unpadded)
-//
-//   kind          a              b      c       d        blobs
-//   http          status (0=err) -      -       -        body, err
-//   file_opened   -              -      -       -        name, mime, bytes
-//   file_cancelled -
-//   downloaded    ok (0/1)
-//   storage_value found (0/1)                            value
-//   clock         utc offset min                          i64 unix ms (8 bytes)
-//   dropped       0 file 1 image 2 text   width  height  thumb_w   name, mime, bytes, thumb RGBA
-//   pasted_text   -                                       text
-//   query_value   found (0/1)                             value
 const zunkFx = (() => {
   const KIND = { http: 1, file_opened: 2, file_cancelled: 3, downloaded: 4, storage_value: 5, clock: 6, dropped: 7, pasted_text: 8, query_value: 9 };
   const HEADER = 40;
@@ -60,22 +32,18 @@ const zunkFx = (() => {
     queue.push(rec);
   }
 
-  // ---- wasm -> JS --------------------------------------------------------
-
-  // Hand at most `max` queued records to wasm.
   function pump(max) {
     for (let n = 0; n < max && queue.length > 0; n++) {
       const rec = queue.shift();
       const ptr = exports.zunk_fx_alloc(rec.length);
       if (!ptr) { console.warn('[zunk fx] out of wasm memory; dropped a completion'); continue; }
-      // `alloc` may have grown memory: take the buffer only now.
+      // Allocation may have grown wasm memory.
       new Uint8Array(memory.buffer, ptr, rec.length).set(rec);
       exports.zunk_fx_deliver(ptr, rec.length);
     }
   }
 
-  // fetch(). `headers` is "Name: value" lines. The body is read straight out
-  // of wasm memory: fetch copies a BufferSource when the request is built.
+  // fetch copies the body BufferSource when the request is built.
   function http(id, method, urlPtr, urlLen, hdrPtr, hdrLen, bodyPtr, bodyLen, timeoutMs) {
     const url = str(urlPtr, urlLen);
     const headers = {};
@@ -101,11 +69,10 @@ const zunkFx = (() => {
       .finally(() => clearTimeout(timer));
   }
 
-  // Blob + temporary <a download>. Completes at once.
   function download(id, namePtr, nameLen, mimePtr, mimeLen, bytesPtr, bytesLen) {
     let ok = 1;
     try {
-      // The Blob constructor snapshots the bytes, so the wasm view is safe.
+      // Blob snapshots the bytes before wasm memory can move.
       const blob = new Blob([new Uint8Array(memory.buffer, bytesPtr, bytesLen)], { type: str(mimePtr, mimeLen) });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -123,14 +90,8 @@ const zunkFx = (() => {
     push(KIND.downloaded, id, [ok], []);
   }
 
-  // ---- open_file ----------------------------------------------------------
-  // Browsers only open a file picker from a user activation. The request is
-  // issued by wasm a frame or more after the click that caused it, so: if an
-  // activation is still live the picker opens now; otherwise the request is
-  // ARMED and the picker opens on the next pointer press or key press. A new
-  // request replaces (cancels) an armed or open one.
   let fileInput = null;
-  let pick = null;   // { id, accept } of the request waiting for / showing a picker
+  let pick = null;
   let armed = false;
 
   function ensureInput() {
@@ -192,15 +153,12 @@ const zunkFx = (() => {
     return (i >= 0 && MIME_BY_EXT[name.slice(i + 1).toLowerCase()]) || 'application/octet-stream';
   }
 
-  // ---- storage, clock, query, clipboard ------------------------------------
-
   function storage_get(id, keyPtr, keyLen) {
     let v = null;
     try { v = localStorage.getItem(str(keyPtr, keyLen)); } catch (e) { console.warn('[zunk fx] localStorage unavailable:', e); }
     push(KIND.storage_value, id, [v === null ? 0 : 1], [v === null ? null : utf8(v)]);
   }
 
-  // An empty value deletes the key.
   function storage_set(keyPtr, keyLen, valPtr, valLen) {
     try {
       if (valLen === 0) localStorage.removeItem(str(keyPtr, keyLen));
@@ -237,7 +195,7 @@ const zunkFx = (() => {
   }
 
   function clipboard_write_image(ptr, len) {
-    // Copy out of wasm memory first: the buffer may be reused before the async write runs.
+    // The buffer may be reused before the async write runs.
     const bytes = new Uint8Array(len);
     bytes.set(new Uint8Array(memory.buffer, ptr, len));
     if (!navigator.clipboard || !navigator.clipboard.write || typeof ClipboardItem === 'undefined') {
@@ -248,8 +206,6 @@ const zunkFx = (() => {
     navigator.clipboard.write([item]).catch((e) => console.warn('[zunk fx] clipboard image write failed:', e));
   }
 
-  // ---- paste and drop (JS -> wasm, unsolicited) ----------------------------
-
   const editable = t => !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
 
   function canvasFor(w, h) {
@@ -259,8 +215,6 @@ const zunkFx = (() => {
     return canvas.convertToBlob ? canvas.convertToBlob({ type: 'image/png' }) : new Promise((ok, no) => canvas.toBlob(b => b ? ok(b) : no(new Error('toBlob failed')), 'image/png'));
   }
 
-  // Decode, downscale to MAX_IMAGE_SIDE, re-encode (PNG; a JPEG that needed no
-  // downscale keeps its bytes), and make a THUMB_SIDE RGBA preview.
   async function ingestImage(file) {
     const bmp = await createImageBitmap(file);
     const long = Math.max(bmp.width, bmp.height);
