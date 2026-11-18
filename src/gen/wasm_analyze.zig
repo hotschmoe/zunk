@@ -171,7 +171,6 @@ fn parseTypeSection(
         }
         pos.* += 1;
 
-        // Read params
         const num_params = readLeb128(wasm, pos) orelse return;
         var params = try allocator.alloc(WasmValType, num_params);
         var j: usize = 0;
@@ -181,7 +180,6 @@ fn parseTypeSection(
             pos.* += 1;
         }
 
-        // Read returns
         const num_returns = readLeb128(wasm, pos) orelse {
             allocator.free(params);
             return;

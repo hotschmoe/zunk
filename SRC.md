@@ -68,3 +68,18 @@ The file picker waits for a user activation if none is active. Image clipboard
 writing requires a secure context and user activation. An empty storage value
 deletes the key. `encodeHeaders` skips empty or colon-containing names and
 fields containing line breaks; its caller frees the returned buffer.
+
+## src/gen/source_map.zig
+
+Source maps cover bridge chunks at line granularity and embed their source;
+generated lines outside these spans remain unmapped. Span ends are exclusive
+and cannot precede their starts. Callers skip map generation when there are no
+spans. A trailing partial line counts as a line.
+
+## src/gen/serve.zig
+
+The dev server expects bodyless GET requests to fit in the first read. The
+WebSocket read loop assumes the dev client sends no data frames; watcher
+threads broadcast while connection threads wait for closure, and the mutex
+protects the slot list. HMR swaps only when enabled and only wasm changed;
+other changes trigger a full reload. Normal peer disconnects are not logged.

@@ -1,31 +1,12 @@
 const std = @import("std");
 
-/// Source Map v3 generator.
-///
-/// Current scope (v1): emit one source per bridge.js chunk. Lines of the
-/// generated JS that fall inside a chunk's span are mapped back to the
-/// chunk's original source text, so a stack trace from a library-provided
-/// bridge.js lands in readable code in devtools. Lines outside bridge spans
-/// are left unmapped; browsers fall back to showing the generated JS as-is
-/// for those regions, which is exactly what we want.
-///
-/// Category-level sections (one source per Web API category like canvas /
-/// audio / webgpu) are a planned follow-up.
 pub const Span = struct {
-    /// Label shown in devtools (e.g. the bridge chunk's origin).
     source: []const u8,
-    /// Original source content inlined into sourcesContent[].
     source_content: []const u8,
-    /// Byte offset in the generated JS where this span's content begins.
     start_byte: usize,
-    /// Byte offset in the generated JS where this span's content ends
-    /// (exclusive). Must be >= start_byte.
     end_byte: usize,
 };
 
-/// Build a Source Map v3 JSON document for the given generated JS.
-/// `spans` must be non-empty; caller handles the empty-map case (skip
-/// emitting a .js.map entirely).
 pub fn build(
     allocator: std.mem.Allocator,
     generated_js: []const u8,
@@ -58,8 +39,6 @@ pub fn build(
     return aw.toOwnedSlice();
 }
 
-/// Count how many output lines a span occupies. A span that doesn't end
-/// with '\n' still occupies a final partial line.
 fn countLines(text: []const u8) u32 {
     if (text.len == 0) return 0;
     var n: u32 = 0;
@@ -81,7 +60,6 @@ fn byteOffsetToLine(text: []const u8, offset: usize) u32 {
 const Section = struct {
     source_index: u32,
     start_line: u32,
-    /// exclusive
     end_line: u32,
 };
 
@@ -90,7 +68,6 @@ fn writeMappings(
     generated_js: []const u8,
     spans: []const Span,
 ) !void {
-    // Convert byte spans to line spans once, in source-index order.
     var sections_buf: [64]Section = undefined;
     std.debug.assert(spans.len <= sections_buf.len);
     var sections = sections_buf[0..spans.len];
@@ -101,7 +78,6 @@ fn writeMappings(
         while (i < generated_js.len) : (i += 1) {
             if (generated_js[i] == '\n') total_lines += 1;
         }
-        // Trailing partial line without newline still counts.
         if (generated_js.len > 0 and generated_js[generated_js.len - 1] != '\n') total_lines += 1;
     }
 
@@ -115,9 +91,6 @@ fn writeMappings(
         };
     }
 
-    // Emit mappings: one ';' between generated lines. For lines inside a
-    // section, emit a single VLQ segment mapping gen col 0 -> source N,
-    // relative line, col 0. For lines outside, emit nothing.
     var last_source_idx: i32 = 0;
     var last_src_line: i32 = 0;
 
@@ -130,9 +103,6 @@ fn writeMappings(
         const src_idx: i32 = @intCast(section.source_index);
         const rel_src_line: i32 = @intCast(line - section.start_line);
 
-        // Segment values: [col_in_gen, src_idx_delta, src_line_delta, src_col_delta]
-        // col_in_gen is reset to 0 each line, so it's always 0.
-        // src_col is always 0 in our line-granularity mapping.
         try encodeVlq(w, 0);
         try encodeVlq(w, src_idx - last_source_idx);
         try encodeVlq(w, rel_src_line - last_src_line);
@@ -153,9 +123,7 @@ fn findSection(sections: []const Section, line: u32) ?*const Section {
 const base64_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn encodeVlq(w: *std.Io.Writer, value: i32) !void {
-    // Base64 VLQ (as specified by source map v3):
-    // - Sign goes in the LSB of the unsigned representation.
-    // - 5 data bits per base64 digit, continuation bit in the 6th.
+    // Source map v3 uses signed base64 VLQ with five data bits per digit.
     var v: u32 = if (value < 0)
         (@as(u32, @intCast(-value)) << 1) | 1
     else

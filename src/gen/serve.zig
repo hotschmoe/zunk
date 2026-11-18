@@ -7,9 +7,6 @@ const Io = std.Io;
 
 const default_favicon = @embedFile("favicon.ico");
 
-// Raw handle type for WS registry (tracks active WebSocket connections across threads).
-// Using the socket handle directly keeps the registry cheap -- we only need identity
-// and the ability to write frames out of a shared `Io`.
 const SockHandle = std.posix.fd_t;
 
 fn reloadScript(port: u16) [reload_script_max]u8 {
@@ -54,15 +51,9 @@ pub const ServeConfig = struct {
     build_cmd: []const []const u8 = &.{ "zig", "build" },
     proxy_prefix: ?[]const u8 = null,
     proxy_target: ?[]const u8 = null,
-    /// When true, wasm-only rebuilds trigger a hot module swap instead of a
-    /// full page reload. Any non-wasm change in `dist/` still triggers a
-    /// full reload.
     hmr: bool = false,
 };
 
-/// A WebSocket connection registered for broadcasts. The stream is shared across
-/// threads (the connection thread parks in a read loop, the watcher threads push
-/// `reload` / `clear` / `error:` frames), so the mutex protects the slot list itself.
 const WsSlot = struct {
     id: SockHandle,
     stream: net.Stream,
@@ -176,9 +167,7 @@ fn connectionThread(
     var reader = stream.reader(io, &read_buf);
     const r = &reader.interface;
 
-    // Read whatever the client sent in their first packet. We don't try to
-    // parse HTTP framing -- the dev server only handles simple GET requests
-    // that fit in a single TCP segment (no body). 4096 bytes is generous.
+    // The dev server expects a bodyless GET to fit in the first read.
     r.fillMore() catch return;
     const request_bytes = r.buffered();
     if (request_bytes.len == 0) return;
@@ -316,8 +305,6 @@ fn wsWriteText(io: Io, stream: net.Stream, msg: []const u8) !void {
     }
 }
 
-/// Parks until the peer closes. We don't parse client-to-server frames -- the
-/// dev client never sends any. A close frame or EOF drops out of the loop.
 fn wsReadLoop(reader: *net.Stream.Reader) void {
     const r = &reader.interface;
     while (true) {
@@ -338,8 +325,6 @@ fn watcherThread(io: Io, root_dir_path: []const u8, ws_reg: *WsRegistry, hmr_ena
         if (!pollDistChanged(io, root_dir_path, &prev)) continue;
         change = prev.last_change;
 
-        // HMR only when enabled, a .wasm file is known, and *only* wasm
-        // bytes changed this cycle. Anything else -> full reload.
         if (hmr_enabled and change.wasm_only and change.wasm_name_len > 0) {
             var url_buf: [280]u8 = undefined;
             const msg = std.fmt.bufPrint(&url_buf, "hmr:/{s}", .{change.wasm_name[0..change.wasm_name_len]}) catch {
@@ -355,8 +340,6 @@ fn watcherThread(io: Io, root_dir_path: []const u8, ws_reg: *WsRegistry, hmr_ena
     }
 }
 
-/// Two-bucket dist fingerprint: wasm-only vs everything else. Tracks the
-/// last .wasm filename seen so a hot-swap can emit its URL.
 const DistFingerprint = struct {
     wasm_fp: i128 = 0,
     other_fp: i128 = 0,
@@ -533,7 +516,6 @@ fn logDim(comptime fmt: []const u8, args: anytype, console: *rich.Console) void 
     console.printStyled(msg, rich.Style.empty.dim()) catch {};
 }
 
-/// Blocking write-all over a Stream. Creates a transient writer, writes, flushes.
 fn streamWriteAll(io: Io, stream: net.Stream, data: []const u8) !void {
     var buf: [4096]u8 = undefined;
     var writer = stream.writer(io, &buf);
@@ -542,8 +524,6 @@ fn streamWriteAll(io: Io, stream: net.Stream, data: []const u8) !void {
     try reifyWriteErr(&writer, w.flush());
 }
 
-/// Convert `error.WriteFailed` into the underlying transport error, silently
-/// absorbing peer-disconnect cases so we don't spam logs on normal closes.
 fn reifyWriteErr(writer: *net.Stream.Writer, result: anyerror!void) !void {
     result catch |err| switch (err) {
         error.WriteFailed => if (writer.err) |e| switch (e) {
@@ -608,8 +588,6 @@ fn proxyRequest(
     var backend = backend_addr.connect(io, .{ .mode = .stream }) catch return error.ConnectionRefused;
     defer backend.close(io);
 
-    // Rewrite request path (strip any host-specific prefix handling the caller would want
-    // -- dev server just forwards the path as-is).
     const first_line_end = std.mem.find(u8, request, "\r\n") orelse return error.InvalidRequest;
     var rewritten_aw: std.Io.Writer.Allocating = .init(allocator);
     defer rewritten_aw.deinit();
@@ -624,7 +602,6 @@ fn proxyRequest(
 
     try streamWriteAll(io, backend, rewritten_aw.written());
 
-    // Shuttle response bytes backend -> client.
     var read_buf: [8192]u8 = undefined;
     var backend_reader = backend.reader(io, &read_buf);
     const r = &backend_reader.interface;
