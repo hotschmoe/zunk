@@ -120,3 +120,13 @@ exports and uses the shared exchange buffer; otherwise the new module starts
 fresh. HMR failure triggers a reload. WebGPU initialization starts early to
 overlap wasm download; a failure offers `window.zunkFallback` before showing
 the unavailable message.
+
+## src/gen/js/ime.js
+
+The hidden textarea handles IME and virtual-keyboard text. The normal input
+layer already consumes printable keydowns; paste and drop use host services, so
+the textarea ignores those input events. Its record format is little-endian:
+32-bit kind, UTF-8 byte cursor, and byte length followed by text padded to four
+bytes. Kinds 1, 2, and 3 mean composition start, update, and commit; only an
+update carries a cursor. The queue holds at most 64 records and drops the oldest
+on overflow. Its selection is read during poll, after the browser updates it.

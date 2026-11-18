@@ -1,23 +1,3 @@
-// --- IME bridge (zunk.web.ime) ---
-// The browser half of `src/web/ime.zig`. A canvas cannot receive IME input, so a
-// visually hidden <textarea> takes keyboard focus while the app has a focused
-// text field. The browser's IME (candidate window, preedit) works against that
-// element; this bridge turns its events into a small queue that wasm drains once
-// per frame (`zunk_ime_poll`), like the host-services bridge: JS never calls into
-// wasm.
-//
-// Record, little endian, 4-byte aligned:
-//   u32 kind   1 = composition started, 2 = composition text changed,
-//              3 = text committed (also: a composition ended; empty = cancelled)
-//   u32 cursor caret inside the text, in UTF-8 bytes (kind 2), else 0
-//   u32 len    byte length of the text
-//   len bytes  UTF-8, padded to a multiple of 4
-//
-// Double insertion: zunk's input layer already turns printable keydowns into
-// typed text and preventDefault()s them, so no `input` event follows for them.
-// The textarea therefore only ever reports text the keyboard path cannot: IME
-// results and insertText from virtual keyboards / automation. Paste and drop
-// arrive through the host-services bridge and are ignored here.
 const zunkIme = (() => {
   const MAX_QUEUE = 64;
   const encoder = new TextEncoder();
@@ -47,8 +27,7 @@ const zunkIme = (() => {
     ta.setAttribute('autocapitalize', 'off');
     ta.spellcheck = false;
     ta.tabIndex = -1;
-    // Invisible but laid out (so the browser anchors the IME window at its caret);
-    // 16px keeps iOS from zooming on focus.
+    // Layout anchors the IME window; 16px prevents iOS focus zoom.
     ta.style.cssText = 'position:absolute;left:0;top:0;width:2px;height:20px;margin:0;padding:0;border:0;' +
       'outline:0;opacity:0;overflow:hidden;resize:none;background:transparent;color:transparent;' +
       'caret-color:transparent;font:16px sans-serif;white-space:pre;pointer-events:none;z-index:-1;';
@@ -57,7 +36,7 @@ const zunkIme = (() => {
     ta.addEventListener('compositionstart', () => { composing = true; push(1, '', 0); });
     ta.addEventListener('compositionupdate', e => {
       const text = e.data || '';
-      // The caret is read at `poll` time: the browser updates the field's selection after this event.
+      // The browser updates selection after this event; read it during poll.
       push(2, text, encoder.encode(text).length);
     });
     ta.addEventListener('compositionend', e => {
@@ -70,9 +49,7 @@ const zunkIme = (() => {
       if (e.data) push(3, e.data, 0);
       ta.value = '';
     });
-    // The textarea is a text field to the browser, so its keys would also drive the page
-    // (Tab moves focus away; Backspace/arrows edit the hidden text). Keep what zunk's input
-    // layer treats as app keys away from the field; composition keys must reach the IME.
+    // App keys must not edit the hidden field; composition keys must reach the IME.
     ta.addEventListener('keydown', e => {
       if (e.isComposing || e.keyCode === 229) return;
       const k = e.key;
@@ -80,7 +57,7 @@ const zunkIme = (() => {
       if (['Tab', 'Escape', 'Enter', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', 'Backspace', 'Delete'].includes(k)) e.preventDefault();
       else if (chord && k.length === 1 && 'acxyz'.includes(k.toLowerCase())) e.preventDefault();
     });
-    // A click on the canvas moves focus to the body; hand it straight back while a field is focused.
+    // A canvas click moves focus away from the hidden field.
     window.addEventListener('mouseup', () => { if (active) refocus(); });
     return ta;
   }
@@ -98,7 +75,6 @@ const zunkIme = (() => {
     else { composing = false; ta.value = ''; ta.blur(); }
   }
 
-  // Place the field at the caret: canvas-relative CSS px (x, y of the line's top-left, h its height).
   function set_spot(x, y, h) {
     ensure();
     const canvas = document.getElementById('app') || document.querySelector('canvas');
@@ -108,10 +84,8 @@ const zunkIme = (() => {
     ta.style.height = Math.max(1, h) + 'px';
   }
 
-  // Copy whole records into wasm memory at `ptr` (capacity `cap` bytes); returns bytes written.
   function poll(ptr, cap) {
     if (active) refocus();
-    // The caret inside the newest preedit: the field's selection end (UTF-16) in UTF-8 bytes.
     const last = queue[queue.length - 1];
     if (composing && last && last.kind === 2) {
       let idx = ta.selectionEnd;
