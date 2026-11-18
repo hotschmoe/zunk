@@ -197,3 +197,8 @@ is at the top of the text quad.
 
 The demo mirrors Teak's slot table and callback ABI. A zero-length result means
 the picker was cancelled or rejected.
+
+## examples/atlas-upload/src/main.zig
+
+The gradient's source rows include padding bytes; they must not leak into the
+atlas. This exercises a source stride larger than its copied width.
