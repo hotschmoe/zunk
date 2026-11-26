@@ -115,7 +115,7 @@ Mtime-based fingerprinting of the zunk executable, `src/**/*.zig`, `build.zig`, 
 
 ### 3.4 `zunk doctor` -- DONE
 
-Checks zig version (spawns `zig version`, parses semver, validates >= 0.17.0), wasm32 target availability, project structure (`build.zig`, `build.zig.zon`, `src/main.zig`), and `.gitignore` presence. Color-coded output with OK/WARN/FAIL status per check and a summary line.
+Checks zig version (spawns `zig version`, parses semver, validates >= 0.17.1), wasm32 target availability, project structure (`build.zig`, `build.zig.zon`, `src/main.zig`), and `.gitignore` presence. Color-coded output with OK/WARN/FAIL status per check and a summary line.
 
 ### 3.5 Resolution report improvements -- DONE
 

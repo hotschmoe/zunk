@@ -271,7 +271,7 @@ zunk/
 
 ## Quick Start
 
-Requires Zig 0.17.
+Requires Zig 0.17.1 or newer.
 
 ### Install
 
@@ -330,7 +330,7 @@ Zunk takes a fundamentally different approach: it reads the WASM import table (w
 | JS output size | ~50KB+ hello-world | ~2KB hello-world |
 | String passing | Copies through JS heap | Direct linear memory reads |
 | Input model | Per-event callbacks (async) | Polling (shared memory, game-friendly) |
-| Requires | Rust nightly features | Zig 0.17 |
+| Requires | Rust nightly features | Zig 0.17.1 |
 
 ### vs Emscripten
 

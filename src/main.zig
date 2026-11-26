@@ -781,8 +781,8 @@ fn checkZigVersion(ver_str: []const u8) bool {
         } else break;
     }
     if (parts[0] > 0) return true;
-    if (parts[1] >= 17) return true;
-    return false;
+    if (parts[1] > 17) return true;
+    return parts[1] == 17 and parts[2] >= 1;
 }
 
 fn initCommand(io: std.Io, args: []const []const u8, console: *rich.Console) !void {
@@ -908,7 +908,7 @@ fn buildZigZonTemplate() []const u8 {
     \\.{
     \\    .name = .app,
     \\    .version = "0.0.0",
-    \\    .minimum_zig_version = "0.17.0",
+    \\    .minimum_zig_version = "0.17.1",
     \\    .dependencies = .{
     \\        .zunk = .{ .path = "../.." },
     \\    },

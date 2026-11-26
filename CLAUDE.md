@@ -111,7 +111,7 @@ zunk is a build tool and runtime library for writing browser applications entire
 
 ### Toolchain
 
-- **Language**: Zig 0.17 (`minimum_zig_version` in `build.zig.zon`; CI pins `ZIG_VERSION` in `.github/workflows/ci.yml`)
+- **Language**: Zig, minimum 0.17.1 (`minimum_zig_version` in `build.zig.zon`; CI pins `ZIG_VERSION` in `.github/workflows/ci.yml`)
 - **Build**: `zig build` (native CLI), `zig build run -- <args>` (run the CLI)
 - **Gates**: `zig build test -j4` is the blocking end-to-end gate (needs Node); `zig build test-heavy -j4` is the background gate (needs Node and Chrome/Chromium). Both run `tools/test.mjs`. There are no unit tests; see ENGINEERING.md.
 - **Target**: the zunk CLI is a native executable; user projects compile to `wasm32-freestanding`
