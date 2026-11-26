@@ -1,0 +1,152 @@
+.{
+    .held_files = .{
+        "src/assert.zig",
+        "src/fuzz.zig",
+        "src/fuzz_generate.zig",
+        "src/gen/build_path.zig",
+        "src/gen/wasm_reader.zig",
+        "src/gen/wasm_analyze.zig",
+        "src/gen/js_identifier.zig",
+        "tools/tidy.zig",
+    },
+    .metrics = .{
+        "long_lines",
+        "long_functions",
+        "longest_function",
+        "assertion_deficit",
+        "usize_fields",
+        "self_recursion",
+        "mutual_recursion",
+        "while_true",
+        "camel_case",
+        "allocation",
+        "clock",
+        "environment",
+        "threads",
+        "files_io",
+        "scripts",
+        "tests",
+    },
+    .groups = .{
+        .{
+            .name = "build.zig",
+            .counts = .{
+                1, 1, 74, 8, 0, 0,
+                0, 0, 3,  0, 0, 0,
+                0, 0, 0,  0,
+            },
+        },
+        .{
+            .name = "examples",
+            .counts = .{
+                91, 5, 126, 216, 0, 0,
+                0,  0, 51,  3,   0, 0,
+                0,  0, 0,   0,
+            },
+        },
+        .{
+            .name = "repository",
+            .counts = .{
+                0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                0, 0, 2, 0,
+            },
+        },
+        .{
+            .name = "src/*.zig",
+            .counts = .{
+                46, 4,  104, 48, 2, 1,
+                0,  0,  28,  23, 0, 0,
+                0,  61, 0,   0,
+            },
+        },
+        .{
+            .name = "src/assert.zig",
+            .counts = .{
+                0, 0, 3, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/bind",
+            .counts = .{
+                0, 0, 59, 6, 1, 0,
+                0, 0, 9,  0, 0, 0,
+                0, 0, 0,  0,
+            },
+        },
+        .{
+            .name = "src/fuzz.zig",
+            .counts = .{
+                0, 0,  43, 0, 0, 0,
+                0, 0,  0,  2, 3, 0,
+                0, 14, 0,  0,
+            },
+        },
+        .{
+            .name = "src/fuzz_generate.zig",
+            .counts = .{
+                0, 0, 46, 0,  0, 0,
+                0, 0, 0,  16, 0, 0,
+                0, 0, 0,  0,
+            },
+        },
+        .{
+            .name = "src/gen",
+            .counts = .{
+                187, 7,  249, 123, 4, 1,
+                0,   6,  70,  40,  0, 0,
+                2,   14, 0,   0,
+            },
+        },
+        .{
+            .name = "src/gen/build_path.zig",
+            .counts = .{
+                0, 0, 25, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0,
+            },
+        },
+        .{
+            .name = "src/gen/js_identifier.zig",
+            .counts = .{
+                0, 0, 54, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0,
+            },
+        },
+        .{
+            .name = "src/gen/wasm_analyze.zig",
+            .counts = .{
+                0, 0, 36, 0,  0, 0,
+                0, 0, 0,  10, 0, 0,
+                0, 0, 0,  0,
+            },
+        },
+        .{
+            .name = "src/gen/wasm_reader.zig",
+            .counts = .{
+                0, 0, 14, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0,
+            },
+        },
+        .{
+            .name = "src/web",
+            .counts = .{
+                53, 1, 85,  112, 2, 0,
+                0,  0, 191, 6,   0, 0,
+                0,  0, 0,   0,
+            },
+        },
+        .{
+            .name = "tools/tidy.zig",
+            .counts = .{
+                0, 0,  47, 0, 0, 0,
+                0, 0,  0,  1, 2, 0,
+                0, 10, 0,  0,
+            },
+        },
+    },
+}

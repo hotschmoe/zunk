@@ -47,8 +47,11 @@ pub fn build(b: *std.Build) void {
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
 
+    const tidy_run = add_tidy(b, optimize);
+
     const test_step = b.step("test", "Run the blocking end-to-end gate");
     const test_cmd = b.addSystemCommand(&.{ "node", "tools/test.mjs", "blocking" });
+    test_cmd.step.dependOn(&tidy_run.step);
     test_cmd.addArtifactArg(exe);
     test_cmd.addArg(@tagName(optimize));
     test_step.dependOn(&test_cmd.step);
@@ -77,6 +80,28 @@ pub fn build(b: *std.Build) void {
     const fuzz_long = b.addRunArtifact(fuzz);
     fuzz_long.addArgs(&.{ "--iterations", "200000" });
     b.step("fuzz-heavy", "Run the random background build-path gate").dependOn(&fuzz_long.step);
+}
+
+fn add_tidy(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Build.Step.Run {
+    const tidy = b.addExecutable(.{
+        .name = "tidy",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/tidy.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "assert", .module = b.createModule(.{
+                .root_source_file = b.path("src/assert.zig"),
+                .target = b.graph.host,
+                .optimize = optimize,
+            }) }},
+        }),
+    });
+    const run = b.addRunArtifact(tidy);
+    run.has_side_effects = true;
+    run.setCwd(b.path("."));
+    run.addPassthruArgs();
+    b.step("tidy", "Measure Zig style and enforce ratchets").dependOn(&run.step);
+    return run;
 }
 
 pub const InstallAppOptions = struct {
