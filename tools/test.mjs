@@ -1,11 +1,12 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 
 const [mode, binary] = process.argv.slice(2);
 const root = resolve('.');
+mkdirSync(join(root, '.zig-cache'), { recursive: true });
 const work = mkdtempSync(join(root, '.zig-cache', 'e2e-'));
 
 function run(command, args, cwd = root, timeout) {

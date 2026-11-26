@@ -1,4 +1,7 @@
 const std = @import("std");
+const reader = @import("wasm_reader.zig");
+const assert = @import("../assert.zig").assert;
+const Sections = @import("wasm_sections.zig").Sections;
 
 pub const WasmValType = enum(u8) {
     i32 = 0x7F,
@@ -18,6 +21,7 @@ pub const Import = struct {
     module: []const u8,
     name: []const u8,
     type_idx: u32,
+    kind: u8 = 0,
     func_type: ?FuncType = null,
     param_names: []const []const u8 = &.{},
 };
@@ -28,12 +32,7 @@ pub const Export = struct {
     index: u32,
 };
 
-pub const ExportKind = enum(u8) {
-    func = 0,
-    table = 1,
-    memory = 2,
-    global = 3,
-};
+pub const ExportKind = enum(u8) { func = 0, table = 1, memory = 2, global = 3 };
 
 pub const Analysis = struct {
     imports: []Import,
@@ -43,6 +42,8 @@ pub const Analysis = struct {
     has_name_section: bool,
 
     pub fn deinit(self: *Analysis, allocator: std.mem.Allocator) void {
+        assert(self.imports.len <= entries_max);
+        assert(self.func_types.len <= entries_max);
         for (self.imports) |*imp| {
             allocator.free(imp.module);
             allocator.free(imp.name);
@@ -61,12 +62,17 @@ pub const Analysis = struct {
     }
 
     pub fn getImportSignature(self: *const Analysis, imp: *const Import) ?FuncType {
+        assert(imp.kind <= 3);
+        assert(self.func_types.len <= entries_max);
+        if (imp.kind != 0) return null;
         if (imp.func_type) |ft| return ft;
         if (imp.type_idx < self.func_types.len) return self.func_types[imp.type_idx];
         return null;
     }
 
     pub fn hasExport(self: *const Analysis, name: []const u8) bool {
+        assert(self.exports.len <= entries_max);
+        assert(self.imports.len <= entries_max);
         for (self.exports) |exp| {
             if (exp.kind == .func and std.mem.eql(u8, exp.name, name)) return true;
         }
@@ -74,12 +80,16 @@ pub const Analysis = struct {
     }
 };
 
-const SECTION_TYPE: u8 = 1;
-const SECTION_IMPORT: u8 = 2;
-const SECTION_EXPORT: u8 = 7;
-const SECTION_CUSTOM: u8 = 0;
+pub const input_max: u32 = 10 * 1024 * 1024;
+pub const entries_max: u32 = 65536;
+pub const steps_max: u64 = 256 * 1024 * 1024;
 
-pub fn analyze(allocator: std.mem.Allocator, wasm: []const u8) !Analysis {
+pub fn analyze(allocator: std.mem.Allocator, wasm: []const u8, steps: *u64) !Analysis {
+    if (wasm.len > input_max) return error.InputLimit;
+    var input = reader.Reader{ .bytes = wasm, .steps = steps };
+    const header = try input.take(8);
+    if (!std.mem.eql(u8, header[0..4], "\x00asm")) return error.InvalidWasmMagic;
+    if (!std.mem.eql(u8, header[4..8], "\x01\x00\x00\x00")) return error.InvalidVersion;
     var result = Analysis{
         .imports = &.{},
         .exports = &.{},
@@ -87,281 +97,168 @@ pub fn analyze(allocator: std.mem.Allocator, wasm: []const u8) !Analysis {
         .explicit_manifest = null,
         .has_name_section = false,
     };
-
-    if (wasm.len < 8) return result;
-
-    if (!std.mem.eql(u8, wasm[0..4], &[_]u8{ 0x00, 0x61, 0x73, 0x6D })) {
-        return error.InvalidWasmMagic;
+    var previous: u8 = 0;
+    var sections = Sections{};
+    for (0..wasm.len) |_| {
+        if (input.position == wasm.len) break;
+        const id = try input.byte();
+        if (id > 12) return error.InvalidSection;
+        // Data-count precedes code in the WebAssembly section order.
+        const order: u8 = if (id == 12) 10 else if (id >= 10) id + 1 else id;
+        if (id != 0 and order <= previous) return error.InvalidSectionOrder;
+        if (id != 0) previous = order;
+        const bytes = try input.take(try input.integer());
+        var section = reader.Reader{ .bytes = bytes, .steps = steps };
+        if (id >= 3 and id != 7) {
+            try sections.parse(&section, id, @intCast(result.func_types.len));
+            try section.finished();
+        } else try parse_section(allocator, &section, id, &result);
     }
-
-    var pos: usize = 8;
-
-    var imports_list: std.ArrayList(Import) = .empty;
-    defer imports_list.deinit(allocator);
-    var exports_list: std.ArrayList(Export) = .empty;
-    defer exports_list.deinit(allocator);
-    var types_list: std.ArrayList(FuncType) = .empty;
-    defer types_list.deinit(allocator);
-
-    while (pos < wasm.len) {
-        const section_id = wasm[pos];
-        pos += 1;
-        const section_size = readLeb128(wasm, &pos) orelse break;
-        const section_end = pos + section_size;
-
-        switch (section_id) {
-            SECTION_TYPE => {
-                try parseTypeSection(allocator, wasm, &pos, section_end, &types_list);
-            },
-            SECTION_IMPORT => {
-                try parseImportSection(allocator, wasm, &pos, section_end, &imports_list);
-            },
-            SECTION_EXPORT => {
-                try parseExportSection(allocator, wasm, &pos, section_end, &exports_list);
-            },
-            SECTION_CUSTOM => {
-                const name_len = readLeb128(wasm, &pos) orelse break;
-                if (pos + name_len <= section_end) {
-                    const section_name = wasm[pos .. pos + name_len];
-                    pos += name_len;
-
-                    if (std.mem.eql(u8, section_name, "name")) {
-                        result.has_name_section = true;
-                        parseNameSection(allocator, wasm, &pos, section_end, imports_list.items) catch {};
-                    } else if (std.mem.eql(u8, section_name, "zunk_bindings")) {
-                        if (section_end > pos) {
-                            result.explicit_manifest = wasm[pos..section_end];
-                        }
-                    }
-                }
-                pos = section_end;
-            },
-            else => {
-                pos = section_end;
-            },
+    try sections.finish();
+    for (result.imports) |*imp| {
+        if (imp.kind == 0) {
+            if (imp.type_idx >= result.func_types.len) return error.InvalidTypeIndex;
+            imp.func_type = result.func_types[imp.type_idx];
         }
     }
-
-    for (imports_list.items) |*imp| {
-        if (imp.type_idx < types_list.items.len) {
-            imp.func_type = types_list.items[imp.type_idx];
-        }
-    }
-
-    result.imports = try imports_list.toOwnedSlice(allocator);
-    result.exports = try exports_list.toOwnedSlice(allocator);
-    result.func_types = try types_list.toOwnedSlice(allocator);
-
+    assert(input.position == wasm.len);
+    assert(result.imports.len <= entries_max);
     return result;
 }
 
-fn parseTypeSection(
+fn parse_section(
     allocator: std.mem.Allocator,
-    wasm: []const u8,
-    pos: *usize,
-    end: usize,
-    types: *std.ArrayList(FuncType),
+    section: *reader.Reader,
+    id: u8,
+    result: *Analysis,
 ) !void {
-    const count = readLeb128(wasm, pos) orelse return;
-    var i: usize = 0;
-    while (i < count and pos.* < end) : (i += 1) {
-        if (pos.* >= wasm.len or wasm[pos.*] != 0x60) {
-            pos.* = end;
-            return;
-        }
-        pos.* += 1;
-
-        const num_params = readLeb128(wasm, pos) orelse return;
-        var params = try allocator.alloc(WasmValType, num_params);
-        var j: usize = 0;
-        while (j < num_params) : (j += 1) {
-            if (pos.* >= wasm.len) break;
-            params[j] = @fromBackingInt(@intCast(wasm[pos.*]));
-            pos.* += 1;
-        }
-
-        const num_returns = readLeb128(wasm, pos) orelse {
-            allocator.free(params);
-            return;
-        };
-        var returns = try allocator.alloc(WasmValType, num_returns);
-        j = 0;
-        while (j < num_returns) : (j += 1) {
-            if (pos.* >= wasm.len) break;
-            returns[j] = @fromBackingInt(@intCast(wasm[pos.*]));
-            pos.* += 1;
-        }
-
-        try types.append(allocator, .{ .params = params, .returns = returns });
-    }
-}
-
-fn parseImportSection(
-    allocator: std.mem.Allocator,
-    wasm: []const u8,
-    pos: *usize,
-    end: usize,
-    imports: *std.ArrayList(Import),
-) !void {
-    const count = readLeb128(wasm, pos) orelse return;
-    var i: usize = 0;
-    while (i < count and pos.* < end) : (i += 1) {
-        const mod_len = readLeb128(wasm, pos) orelse return;
-        if (pos.* + mod_len > wasm.len) return;
-        const module = try allocator.dupe(u8, wasm[pos.* .. pos.* + mod_len]);
-        pos.* += mod_len;
-
-        const name_len = readLeb128(wasm, pos) orelse {
-            allocator.free(module);
-            return;
-        };
-        if (pos.* + name_len > wasm.len) {
-            allocator.free(module);
-            return;
-        }
-        const name = try allocator.dupe(u8, wasm[pos.* .. pos.* + name_len]);
-        pos.* += name_len;
-
-        if (pos.* >= wasm.len) {
-            allocator.free(module);
-            allocator.free(name);
-            return;
-        }
-        const kind = wasm[pos.*];
-        pos.* += 1;
-
-        if (kind == 0) {
-            const type_idx = readLeb128(wasm, pos) orelse {
-                allocator.free(module);
-                allocator.free(name);
-                return;
-            };
-            try imports.append(allocator, .{
-                .module = module,
-                .name = name,
-                .type_idx = @intCast(type_idx),
-            });
-        } else {
-            allocator.free(module);
-            allocator.free(name);
-            switch (kind) {
-                1 => {
-                    pos.* += 1;
-                    skipLimits(wasm, pos);
-                },
-                2 => {
-                    skipLimits(wasm, pos);
-                },
-                3 => {
-                    pos.* += 2;
-                },
-                else => {},
-            }
-        }
-    }
-}
-
-fn parseExportSection(
-    allocator: std.mem.Allocator,
-    wasm: []const u8,
-    pos: *usize,
-    end: usize,
-    exports: *std.ArrayList(Export),
-) !void {
-    const count = readLeb128(wasm, pos) orelse return;
-    var i: usize = 0;
-    while (i < count and pos.* < end) : (i += 1) {
-        const name_len = readLeb128(wasm, pos) orelse return;
-        if (pos.* + name_len > wasm.len) return;
-        const name = try allocator.dupe(u8, wasm[pos.* .. pos.* + name_len]);
-        pos.* += name_len;
-
-        if (pos.* >= wasm.len) {
-            allocator.free(name);
-            return;
-        }
-        const kind: ExportKind = @fromBackingInt(@intCast(wasm[pos.*]));
-        pos.* += 1;
-
-        const index = readLeb128(wasm, pos) orelse {
-            allocator.free(name);
-            return;
-        };
-
-        try exports.append(allocator, .{
-            .name = name,
-            .kind = kind,
-            .index = @intCast(index),
-        });
-    }
-}
-
-fn parseNameSection(
-    allocator: std.mem.Allocator,
-    wasm: []const u8,
-    pos: *usize,
-    end: usize,
-    imports: []Import,
-) !void {
-    while (pos.* < end) {
-        if (pos.* >= wasm.len) return;
-        const subsection_id = wasm[pos.*];
-        pos.* += 1;
-        const subsection_size = readLeb128(wasm, pos) orelse return;
-        const subsection_end = pos.* + subsection_size;
-
-        if (subsection_id == 2) {
-            const func_count = readLeb128(wasm, pos) orelse return;
-            var fi: usize = 0;
-            while (fi < func_count and pos.* < subsection_end) : (fi += 1) {
-                const func_idx = readLeb128(wasm, pos) orelse return;
-                const local_count = readLeb128(wasm, pos) orelse return;
-
-                var names: std.ArrayList([]const u8) = .empty;
-                defer names.deinit(allocator);
-
-                var li: usize = 0;
-                while (li < local_count and pos.* < subsection_end) : (li += 1) {
-                    _ = readLeb128(wasm, pos) orelse break;
-                    const nl = readLeb128(wasm, pos) orelse break;
-                    if (pos.* + nl <= wasm.len) {
-                        try names.append(allocator, try allocator.dupe(u8, wasm[pos.* .. pos.* + nl]));
-                        pos.* += nl;
-                    }
-                }
-
-                if (func_idx < imports.len) {
-                    imports[func_idx].param_names = try names.toOwnedSlice(allocator);
-                } else {
-                    for (names.items) |n| allocator.free(n);
+    assert(id <= 12);
+    assert(section.position == 0);
+    switch (id) {
+        0 => try parse_custom(allocator, section, result),
+        1 => result.func_types = try parse_types(allocator, section),
+        2 => {
+            result.imports = try parse_imports(allocator, section);
+            for (result.imports) |*imp| {
+                if (imp.kind == 0 and imp.type_idx < result.func_types.len) {
+                    imp.func_type = result.func_types[imp.type_idx];
                 }
             }
+        },
+        7 => result.exports = try parse_exports(allocator, section),
+        else => unreachable,
+    }
+    try section.finished();
+}
+
+fn entry_count(input: *reader.Reader) !u32 {
+    assert(input.position <= input.bytes.len);
+    const count = try input.integer();
+    if (count > input.bytes.len - input.position) return error.UnexpectedEnd;
+    if (count > entries_max) return error.EntryLimit;
+    assert(count <= entries_max);
+    return count;
+}
+
+fn parse_types(allocator: std.mem.Allocator, input: *reader.Reader) ![]FuncType {
+    assert(input.position == 0);
+    const types = try allocator.alloc(FuncType, try entry_count(input));
+    for (types) |*signature| {
+        if (try input.byte() != 0x60) return error.InvalidFunctionType;
+        const params = try allocator.alloc(WasmValType, try entry_count(input));
+        for (params) |*value| value.* = @fromBackingInt(try input.value_type());
+        const returns = try allocator.alloc(WasmValType, try entry_count(input));
+        for (returns) |*value| value.* = @fromBackingInt(try input.value_type());
+        signature.* = .{ .params = params, .returns = returns };
+    }
+    assert(types.len <= entries_max);
+    return types;
+}
+
+fn parse_imports(allocator: std.mem.Allocator, input: *reader.Reader) ![]Import {
+    assert(input.position == 0);
+    const imports = try allocator.alloc(Import, try entry_count(input));
+    for (imports) |*imp| {
+        const module = try allocator.dupe(u8, try input.name());
+        const name = try allocator.dupe(u8, try input.name());
+        const kind = try input.byte();
+        var type_index: u32 = 0;
+        switch (kind) {
+            0 => type_index = try input.integer(),
+            1 => {
+                const reference = try input.value_type();
+                if (reference != 0x70 and reference != 0x6f) return error.InvalidValueType;
+                try input.limits();
+            },
+            2 => try input.limits(),
+            3 => {
+                _ = try input.value_type();
+                if (try input.byte() > 1) return error.InvalidMutability;
+            },
+            else => return error.InvalidImportKind,
         }
-
-        pos.* = subsection_end;
+        imp.* = .{ .module = module, .name = name, .kind = kind, .type_idx = type_index };
     }
+    assert(imports.len <= entries_max);
+    return imports;
 }
 
-fn readLeb128(data: []const u8, pos: *usize) ?usize {
-    var result: usize = 0;
-    var shift: u6 = 0;
-    while (pos.* < data.len) {
-        const byte = data[pos.*];
-        pos.* += 1;
-        result |= @as(usize, byte & 0x7F) << shift;
-        if (byte & 0x80 == 0) return result;
-        shift +%= 7;
-        if (shift > 35) return null;
+fn parse_exports(allocator: std.mem.Allocator, input: *reader.Reader) ![]Export {
+    assert(input.position == 0);
+    const exports = try allocator.alloc(Export, try entry_count(input));
+    for (exports) |*exp| {
+        const name = try allocator.dupe(u8, try input.name());
+        const kind = try input.byte();
+        if (kind > 3) return error.InvalidExportKind;
+        exp.* = .{ .name = name, .kind = @fromBackingInt(kind), .index = try input.integer() };
     }
-    return null;
+    assert(exports.len <= entries_max);
+    return exports;
 }
 
-fn skipLimits(wasm: []const u8, pos: *usize) void {
-    if (pos.* >= wasm.len) return;
-    const flags = wasm[pos.*];
-    pos.* += 1;
-    _ = readLeb128(wasm, pos);
-    if (flags & 1 != 0) {
-        _ = readLeb128(wasm, pos);
+fn parse_custom(allocator: std.mem.Allocator, input: *reader.Reader, result: *Analysis) !void {
+    assert(input.position == 0);
+    const name = try input.name();
+    if (std.mem.eql(u8, name, "name")) {
+        result.has_name_section = true;
+        for (0..input.bytes.len) |_| {
+            if (input.position == input.bytes.len) break;
+            const id = try input.byte();
+            const bytes = try input.take(try input.integer());
+            if (id == 2) {
+                var names = reader.Reader{ .bytes = bytes, .steps = input.steps };
+                try parse_names(allocator, &names, result.imports);
+                try names.finished();
+            }
+        }
+    } else {
+        if (std.mem.eql(u8, name, "zunk_bindings")) {
+            result.explicit_manifest = input.bytes[input.position..];
+        }
+        input.position = @intCast(input.bytes.len);
     }
+    assert(input.position == input.bytes.len);
+}
+
+fn parse_names(allocator: std.mem.Allocator, input: *reader.Reader, imports: []Import) !void {
+    assert(input.position == 0);
+    const count = try entry_count(input);
+    for (0..count) |_| {
+        const index = try input.integer();
+        const locals = try entry_count(input);
+        var signature: ?FuncType = null;
+        if (index < imports.len) signature = imports[index].func_type;
+        var names: [][]const u8 = &.{};
+        if (signature) |value| names = try allocator.alloc([]const u8, value.params.len);
+        @memset(names, "");
+        for (0..locals) |_| {
+            const local_index = try input.integer();
+            const name = try input.name();
+            if (local_index < names.len) {
+                names[local_index] = try allocator.dupe(u8, name);
+            }
+        }
+        if (index < imports.len) imports[index].param_names = names;
+    }
+    assert(input.position <= input.bytes.len);
 }

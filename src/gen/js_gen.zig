@@ -28,6 +28,7 @@ pub const GenOptions = struct {
 };
 
 pub const Categories = std.enums.EnumSet(resolver.Category);
+pub const Disposition = enum { provided, unresolved };
 
 pub const GenResult = struct {
     js: []const u8,
@@ -36,12 +37,14 @@ pub const GenResult = struct {
     report: []const u8,
     js_hash: [16]u8,
     categories: Categories,
+    dispositions: []Disposition,
 
     pub fn deinit(self: *GenResult, allocator: std.mem.Allocator) void {
         allocator.free(self.js);
         if (self.js_map.len != 0) allocator.free(self.js_map);
         allocator.free(self.html);
         allocator.free(self.report);
+        allocator.free(self.dispositions);
     }
 };
 
@@ -51,8 +54,12 @@ pub fn generate(
     opts: GenOptions,
 ) !GenResult {
     var resolutions = try allocator.alloc(resolver.Resolution, analysis.imports.len);
+    const dispositions = try allocator.alloc(Disposition, analysis.imports.len);
+    errdefer allocator.free(dispositions);
+    @memset(dispositions, .unresolved);
+    var resolved_count: usize = 0;
     defer {
-        for (resolutions) |*r| allocator.free(r.js_body);
+        for (resolutions[0..resolved_count]) |*r| allocator.free(r.js_body);
         allocator.free(resolutions);
     }
 
@@ -63,6 +70,7 @@ pub fn generate(
     for (analysis.imports, 0..) |*imp, i| {
         const sig = analysis.getImportSignature(imp);
         resolutions[i] = try resolver.resolve(allocator, imp, sig);
+        resolved_count += 1;
         const r = &resolutions[i];
 
         if (r.needs_handles) needs.handles = true;
@@ -116,8 +124,11 @@ pub fn generate(
     for (analysis.imports, 0..) |*imp, i| {
         const r = &resolutions[i];
 
-        if (!std.mem.eql(u8, imp.module, "env")) continue;
-        try w.print("  {s}() {{ {s} }},\n", .{ imp.name, r.js_body });
+        if (!std.mem.eql(u8, imp.module, "env") or imp.kind != 0) continue;
+        try w.writeAll("  [");
+        try std.json.Stringify.value(imp.name, .{}, w);
+        try w.print("]() {{ {s} }},\n", .{r.js_body});
+        if (r.confidence != .stub) dispositions[i] = .provided;
     }
 
     try w.writeAll("};\n\n");
@@ -285,6 +296,7 @@ pub fn generate(
         .report = try report_aw.toOwnedSlice(),
         .js_hash = hex,
         .categories = categories_used,
+        .dispositions = dispositions,
     };
 }
 
@@ -1009,8 +1021,12 @@ fn generateReport(
         for (analysis.imports, 0..) |imp, i| {
             if (i > 0) try w.writeAll(",");
             const r = &resolutions[i];
-            try w.print("{{\"module\":\"{s}\",\"name\":\"{s}\",\"confidence\":\"{s}\",\"category\":\"{s}\"", .{
-                imp.module, imp.name, @tagName(r.confidence), @tagName(r.category),
+            try w.writeAll("{\"module\":");
+            try std.json.Stringify.value(imp.module, .{}, w);
+            try w.writeAll(",\"name\":");
+            try std.json.Stringify.value(imp.name, .{}, w);
+            try w.print(",\"confidence\":\"{s}\",\"category\":\"{s}\"", .{
+                @tagName(r.confidence), @tagName(r.category),
             });
             if (r.confidence == .stub) {
                 if (suggestMatch(imp.name)) |suggestion| {

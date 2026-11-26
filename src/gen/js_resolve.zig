@@ -49,6 +49,9 @@ pub fn resolve(
     signature: ?wa.FuncType,
 ) !Resolution {
     const name = import.name;
+    if (import.kind != 0 or !std.mem.eql(u8, import.module, "env")) {
+        return generateStub(allocator, name, null);
+    }
 
     // Exact matches must precede the `__` internal-stub fallback.
     if (exactMatch(allocator, name)) |res| return res;
@@ -874,7 +877,9 @@ fn generateStub(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncTyp
     defer body_aw.deinit();
     const w = &body_aw.writer;
 
-    try w.print("console.warn('[zunk] unresolved import: {s}", .{name});
+    try w.writeAll("console.warn('[zunk] unresolved import:', ");
+    try std.json.Stringify.value(name, .{}, w);
+    try w.writeAll(", '");
 
     if (sig) |ft| {
         try w.print("(", .{});
