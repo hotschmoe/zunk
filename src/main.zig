@@ -292,7 +292,7 @@ fn openOutputDir(io: std.Io, parsed: BuildArgs) !std.Io.Dir {
 
 fn printReport(console: *rich.Console, allocator: std.mem.Allocator, report: []const u8, title: []const u8, json_mode: bool) !void {
     if (json_mode) {
-        try console.print(report);
+        try console.printPlain(report);
         return;
     }
     try console.print("");

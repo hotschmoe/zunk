@@ -148,6 +148,10 @@ if (mode === 'blocking') {
     run(binary, ['build', '--wasm', inputWasm, '--output-dir', invalidFont, '--font', 'Example', 'bold', font]);
     assert.ok(!existsSync(invalidFont), 'invalid font weight should prevent output');
     console.log('CLI: font asset and invalid weight');
+    const report = JSON.parse(run(binary, ['build', '--wasm', inputWasm, '--output-dir', join(work, 'report'), '--report-json']));
+    assert.equal(report.stubs, 0, 'input-demo has unresolved imports');
+    assert.equal(report.resolutions.length, report.total_imports);
+    console.log('CLI: JSON build report');
     await browserSmoke(inputWasm);
     await gpuSmoke(wasms['mesh-3d']);
 } else {
