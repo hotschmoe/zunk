@@ -97,6 +97,8 @@ The blocking gate runs `zig build tidy` before the end-to-end runner. Use
 `zig build tidy -- --table --root <path>` reports another tree without a ratchet.
 The hand-maintained `held_files` list in `tools/tidy_ratchet.zon` holds rewritten
 files individually at the style target. See SRC.md for scope and metric definitions.
+Seam inventories include raw libc/posix calls and process calls; `globals` counts
+container-member mutable declarations. Pure `std.fs.path` helpers are not file IO.
 
 The blocking gate includes the real build-path generative tester with seed 1 and
 512 iterations. Run `zig build fuzz -- --seed 1` for its default 4,096 cases;

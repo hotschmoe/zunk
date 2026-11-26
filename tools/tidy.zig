@@ -73,6 +73,8 @@ const Metric = enum {
     environment,
     threads,
     files_io,
+    processes,
+    globals,
     scripts,
     tests,
 };
@@ -82,7 +84,8 @@ const ratcheted = [_]Metric{
     .long_lines,   .long_functions, .longest_function, .assertion_deficit,
     .usize_fields, .self_recursion, .mutual_recursion, .while_true,
     .camel_case,   .allocation,     .clock,            .environment,
-    .threads,      .files_io,       .scripts,          .tests,
+    .threads,      .files_io,       .processes,        .globals,
+    .scripts,      .tests,
 };
 const Ratchets = [ratcheted.len]u64;
 
@@ -166,6 +169,7 @@ const State = struct {
     token_owners: [tokens_max]u16 = undefined,
     token_scopes: [tokens_max]u16 = undefined,
     struct_fields: [nodes_max]bool = undefined,
+    container_members: [nodes_max]bool = undefined,
     edges: [functions_max][functions_max / 64]u64 = undefined,
     version: [128]u8 = undefined,
     version_len: u8 = 0,
@@ -431,7 +435,7 @@ fn measure(state: *State, path: *const Path, source: [:0]const u8) !void {
     try collect_scopes(state, tree);
     try collect_functions(state, group, path, tree);
     try assign_owners(state, tree);
-    mark_struct_fields(state, tree);
+    mark_container_members(state, tree);
     for (0..tree.nodes.len) |index| {
         const node: Ast.Node.Index = @fromBackingInt(@intCast(index));
         measure_node(state, group, .{ .path = path.*, .line = 1 }, tree, node);
@@ -623,16 +627,19 @@ fn assign_owners(state: *State, tree: Ast) !void {
     assert(next == state.functions_len);
 }
 
-fn mark_struct_fields(state: *State, tree: Ast) void {
+fn mark_container_members(state: *State, tree: Ast) void {
     assert(tree.nodes.len <= nodes_max);
     @memset(state.struct_fields[0..tree.nodes.len], false);
+    @memset(state.container_members[0..tree.nodes.len], false);
+    for (tree.rootDecls()) |member| state.container_members[@backingInt(member)] = true;
     for (0..tree.nodes.len) |index| {
         const node: Ast.Node.Index = @fromBackingInt(@intCast(index));
         var buffer: [2]Ast.Node.Index = undefined;
         const container = tree.fullContainerDecl(&buffer, node) orelse continue;
-        if (tree.tokenTag(container.ast.main_token) != .keyword_struct) continue;
+        const is_struct = tree.tokenTag(container.ast.main_token) == .keyword_struct;
         for (container.ast.members) |member| {
-            state.struct_fields[@backingInt(member)] = true;
+            state.container_members[@backingInt(member)] = true;
+            state.struct_fields[@backingInt(member)] = is_struct;
         }
     }
     assert(tree.nodes.len <= state.struct_fields.len);
@@ -643,6 +650,9 @@ fn measure_node(state: *State, group: *Group, base: Site, tree: Ast, node: Ast.N
     const token = tree.nodeMainToken(node);
     const site: Site = .{ .path = base.path, .line = state.token_lines[token] };
     if (state.struct_fields[@backingInt(node)]) measure_field(group, site, tree, node);
+    if (state.container_members[@backingInt(node)] and tree.tokenTag(token) == .keyword_var) {
+        record(group, .globals, site);
+    }
     if (tree.fullWhile(node)) |loop| {
         if (std.mem.eql(u8, tree.getNodeSource(loop.ast.cond_expr), "true")) {
             record(group, .while_true, site);
@@ -779,14 +789,280 @@ const allocation_names = [_][]const u8{
     "createMap",
 };
 const environment_names = [_][]const u8{
-    "getenv",    "getEnvVarOwned", "getEnvMap", "GetEnvironmentVariableW",
-    "createMap",
+    "getenv",                  "getEnvVarOwned",          "getEnvMap", "GetEnvironmentVariableW",
+    "createMap",               "setenv",                  "unsetenv",  "putenv",
+    "clearenv",                "getenv_s",                "_dupenv_s", "GetEnvironmentVariableA",
+    "SetEnvironmentVariableA", "SetEnvironmentVariableW",
 };
 const file_names = [_][]const u8{
-    "openFile", "openFileAbsolute", "createFile",           "openDir",   "openDirAbsolute",
-    "readFile", "readFileAlloc",    "readFileAllocOptions", "writeFile", "deleteFile",
-    "rename",   "createDir",        "createDirPath",        "realPath",
+    "openFile",
+    "openFileAbsolute",
+    "createFile",
+    "openDir",
+    "openDirAbsolute",
+    "readFile",
+    "readFileAlloc",
+    "readFileAllocOptions",
+    "writeFile",
+    "deleteFile",
+    "rename",
+    "createDir",
+    "createDirPath",
+    "realPath",
+    "currentPath",
+    "currentPathAlloc",
+    "executablePath",
+    "executablePathAlloc",
+    "executableDirPath",
+    "executableDirPathAlloc",
+    "openExecutable",
+    "setCurrentDir",
+    "setCurrentPath",
 };
+
+const stdio_names = [_][]const u8{
+    "fopen",
+    "fopen64",
+    "_wfopen",
+    "_wfopen_s",
+    "fopen_s",
+    "freopen",
+    "fdopen",
+    "fclose",
+    "fread",
+    "fread_unlocked",
+    "fwrite_unlocked",
+    "fgetc_unlocked",
+    "fputc_unlocked",
+    "fwrite",
+    "fseek",
+    "fseeko",
+    "ftell",
+    "ftello",
+    "fflush",
+    "fgetc",
+    "fgets",
+    "fputc",
+    "fputs",
+    "fprintf",
+    "fscanf",
+    "rewind",
+    "fileno",
+    "tmpfile",
+    "tmpnam",
+    "popen",
+    "pclose",
+    "dlopen",
+    "dlclose",
+    "dlsym",
+};
+const raw_file_names = [_][]const u8{
+    "remove",
+    "open",
+    "openat",
+    "openatZ",
+    "open64",
+    "openat64",
+    "openat2",
+    "openZ",
+    "creat",
+    "close",
+    "close_range",
+    "read",
+    "readv",
+    "pread",
+    "pread64",
+    "preadv",
+    "preadv2",
+    "write",
+    "writev",
+    "pwrite",
+    "pwrite64",
+    "pwritev",
+    "pwritev2",
+    "lseek",
+    "lseek64",
+    "llseek",
+    "stat",
+    "fstat",
+    "lstat",
+    "fstatat",
+    "fstatatZ",
+    "fstat64",
+    "fstatat64",
+    "stat64",
+    "statx",
+    "access",
+    "faccessat",
+    "faccessat2",
+    "unlink",
+    "unlinkat",
+    "rename",
+    "renameat",
+    "renameat2",
+    "mkdir",
+    "mkdirat",
+    "rmdir",
+    "chdir",
+    "fchdir",
+    "getcwd",
+    "readlink",
+    "readlinkat",
+    "symlink",
+    "symlinkat",
+    "link",
+    "linkat",
+    "truncate",
+    "ftruncate",
+    "chmod",
+    "fchmod",
+    "fchmodat",
+    "chown",
+    "fchown",
+    "fchownat",
+    "umask",
+    "mmap",
+    "mmap2",
+    "munmap",
+    "msync",
+    "dup",
+    "dup2",
+    "dup3",
+    "fcntl",
+    "fsync",
+    "fdatasync",
+    "sendfile",
+    "copy_file_range",
+    "getdents",
+    "getdents64",
+    "flock",
+    "utimes",
+    "futimes",
+    "utimensat",
+    "futimens",
+    "inotify_init1",
+    "inotify_add_watch",
+    "opendir",
+    "fdopendir",
+    "readdir",
+    "closedir",
+    "memfd_create",
+    "memfd_createZ",
+    "mremap",
+    "sync",
+    "syncfs",
+    "fanotify_init",
+    "fanotify_mark",
+    "fanotify_markZ",
+    "name_to_handle_at",
+    "name_to_handle_atZ",
+};
+const clock_names = [_][]const u8{
+    "timestamp",
+    "milliTimestamp",
+    "microTimestamp",
+    "nanoTimestamp",
+    "clock",
+    "clock_gettime",
+    "clock_getres",
+    "clock_settime",
+    "gettimeofday",
+    "settimeofday",
+    "time",
+    "times",
+    "sleep",
+    "nanosleep",
+    "clock_nanosleep",
+    "usleep",
+    "Sleep",
+    "GetTickCount",
+    "GetTickCount64",
+    "QueryPerformanceCounter",
+    "QueryPerformanceFrequency",
+    "mach_absolute_time",
+    "clock_get_time",
+    "timerfd_create",
+    "timerfd_settime",
+    "timerfd_gettime",
+};
+const thread_names = [_][]const u8{
+    "clone",
+    "clone3",
+    "gettid",
+    "sched_yield",
+    "CreateThread",
+    "CreateRemoteThread",
+    "thrd_create",
+    "thrd_join",
+    "thrd_detach",
+    "thrd_sleep",
+    "thrd_yield",
+    "thrd_current",
+};
+const process_names = [_][]const u8{
+    "clone",
+    "clone3",
+    "fork",
+    "vfork",
+    "execve",
+    "execveat",
+    "execv",
+    "execvp",
+    "execvpe",
+    "execl",
+    "execlp",
+    "execle",
+    "posix_spawn",
+    "posix_spawnp",
+    "wait",
+    "waitpid",
+    "waitid",
+    "wait4",
+    "wait3",
+    "execvpeZ",
+    "execveZ",
+    "execvpZ",
+    "fexecve",
+    "system",
+    "popen",
+    "pclose",
+    "getpid",
+    "getppid",
+    "kill",
+    "killpg",
+    "pidfd_open",
+    "pidfd_send_signal",
+    "CreateProcessA",
+    "CreateProcessW",
+    "ShellExecuteA",
+    "ShellExecuteW",
+    "ShellExecuteExW",
+};
+
+fn raw_namespace(tree: Ast, node: Ast.Node.Index) bool {
+    assert(@backingInt(node) < tree.nodes.len);
+    assert(tree.firstToken(node) <= tree.lastToken(node));
+    return has_chain(tree, node, &.{ "std", "c" }) or
+        has_chain(tree, node, &.{ "std", "posix" }) or
+        has_chain(tree, node, &.{ "os", "linux" });
+}
+
+fn receiver_value(tree: Ast, callee: Ast.Node.Index) Ast.Node.Index {
+    assert(@backingInt(callee) < tree.nodes.len);
+    const first = tree.firstToken(callee);
+    assert(first <= tree.lastToken(callee));
+    if (tree.tokenTag(first) != .identifier) return callee;
+    const receiver = tree.tokenSlice(first);
+    for (tree.rootDecls()) |node| {
+        const declaration = tree.fullVarDecl(node) orelse continue;
+        if (tree.tokenTag(declaration.ast.mut_token) != .keyword_const) continue;
+        const name = tree.tokenSlice(declaration.ast.mut_token + 1);
+        if (!std.mem.eql(u8, receiver, name)) continue;
+        const value = declaration.ast.init_node.unwrap() orelse return callee;
+        return if (tree.nodeTag(value) == .field_access) value else callee;
+    }
+    return callee;
+}
 
 fn measure_banned(group: *Group, site: Site, tree: Ast, callee: Ast.Node.Index) void {
     assert(@backingInt(callee) < tree.nodes.len);
@@ -801,8 +1077,7 @@ fn measure_banned(group: *Group, site: Site, tree: Ast, callee: Ast.Node.Index) 
         record(group, .allocation, site);
     }
     if (has_chain(tree, callee, &.{ "std", "time" }) or
-        has_chain(tree, callee, &.{ "Io", "Clock" }) or
-        listed(name, &.{ "timestamp", "milliTimestamp", "microTimestamp", "nanoTimestamp" }))
+        has_chain(tree, callee, &.{ "Io", "Clock" }) or listed(name, &clock_names))
     {
         record(group, .clock, site);
     }
@@ -812,13 +1087,38 @@ fn measure_banned(group: *Group, site: Site, tree: Ast, callee: Ast.Node.Index) 
     {
         record(group, .environment, site);
     }
-    if (has_chain(tree, callee, &.{ "std", "Thread" })) record(group, .threads, site);
-    if (has_chain(tree, callee, &.{ "std", "fs" }) or
+    measure_system_calls(group, site, tree, callee);
+    assert(site.line > 0);
+}
+
+fn measure_system_calls(group: *Group, site: Site, tree: Ast, callee: Ast.Node.Index) void {
+    assert(@backingInt(callee) < tree.nodes.len);
+    const name = callee_name(tree, callee);
+    const receiver = receiver_value(tree, callee);
+    const raw = raw_namespace(tree, callee) or raw_namespace(tree, receiver);
+    if (has_chain(tree, receiver, &.{ "std", "Thread" }) or
+        has_chain(tree, callee, &.{ "std", "Thread" }) or
+        has_chain(tree, callee, &.{ "Io", "Threaded" }) or
+        std.mem.startsWith(u8, name, "pthread_") or listed(name, &thread_names) or
+        (raw and std.mem.startsWith(u8, name, "futex"))) record(group, .threads, site);
+    if ((has_chain(tree, callee, &.{ "std", "fs" }) and
+        !has_chain(tree, callee, &.{ "fs", "path" })) or
         has_chain(tree, callee, &.{ "Io", "Dir" }) or
         has_chain(tree, callee, &.{ "Io", "File" }) or listed(name, &file_names) or
-        listed(name, config.file_helpers))
+        listed(name, config.file_helpers) or listed(name, &stdio_names) or
+        (raw and listed(name, &raw_file_names)) or
+        has_chain(tree, receiver, &.{ "std", "DynLib" }) or
+        has_chain(tree, callee, &.{ "std", "DynLib" }))
     {
         record(group, .files_io, site);
+    }
+    if (((has_chain(tree, callee, &.{ "std", "process" }) or
+        has_chain(tree, receiver, &.{ "std", "process" })) and
+        listed(name, &.{ "spawn", "run", "replace" })) or
+        (listed(name, &process_names) and
+            (!listed(name, &.{ "wait", "kill" }) or raw or tree.nodeTag(callee) == .identifier)))
+    {
+        record(group, .processes, site);
     }
     assert(site.line > 0);
 }
