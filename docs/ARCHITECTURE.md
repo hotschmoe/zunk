@@ -108,6 +108,8 @@ enum_val                     -- enum discriminant (1 WASM param)
 - `js_hint` -- generation hint (builtin, dom, webgpu, audio, etc.)
 - `is_callback` -- whether this is a callback registration
 
+`bind.Module(descs)` serializes descriptors into a manifest, and the analyzer keeps a `zunk_bindings` custom section as `Analysis.explicit_manifest`. Nothing reads it: the Layer 2 modules do not use `Module`, and the generator resolves from import names and signatures alone.
+
 **Handle** -- Opaque reference to a JS object:
 ```
 Handle = enum(i32) { null_handle = 0, _ }
