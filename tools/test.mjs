@@ -61,8 +61,39 @@ async function withServer(wasm, name, visit) {
     }
 }
 
+// Virtual time outruns a loaded machine and the GPU process, so pages are polled over DevTools in real time.
+async function pollPage(flags, profile, url, expression, done) {
+    const chrome = spawn(findBrowser(), [...flags, '--remote-debugging-port=0', `--user-data-dir=${join(work, profile)}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    try {
+        let stderr = '';
+        const devtools = await new Promise((ok, fail) => {
+            const timer = setTimeout(() => fail(new Error(`browser did not open DevTools\n${stderr}`)), 30000);
+            chrome.stderr.on('data', (chunk) => {
+                stderr += chunk;
+                const found = /DevTools listening on ws:\/\/([^/]+)\//.exec(stderr);
+                if (found) { clearTimeout(timer); ok(found[1]); }
+            });
+        });
+        const page = await (await fetch(`http://${devtools}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' })).json();
+        const socket = new WebSocket(page.webSocketDebuggerUrl);
+        await new Promise((ok, fail) => { socket.onopen = ok; socket.onerror = () => fail(new Error('DevTools socket failed')); });
+        const evaluate = () => new Promise((ok) => {
+            socket.onmessage = (message) => ok(String(JSON.parse(message.data).result?.result?.value ?? ''));
+            socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression } }));
+        });
+        let seen = '';
+        for (let i = 0; i < 300 && !done(seen); i++) {
+            await sleep(100);
+            seen = await evaluate();
+        }
+        socket.close();
+        return seen;
+    } finally {
+        chrome.kill();
+    }
+}
+
 async function browserSmoke(wasm) {
-    const browser = findBrowser();
     await withServer(wasm, 'browser', async (url, output) => {
         const index = join(output, 'index.html');
         const html = readFileSync(index, 'utf8');
@@ -76,45 +107,19 @@ async function browserSmoke(wasm) {
         });</script>`;
         assert.ok(html.includes('</head>'), 'generated page has no head');
         writeFileSync(index, html.replace('</head>', `${hook}</head>`));
-        const page = run(browser, ['--headless', '--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--disable-dev-shm-usage', '--virtual-time-budget=5000', `--user-data-dir=${join(work, 'chrome')}`, '--dump-dom', url], root, 30000);
-        assert.match(page, /data-smoke="passed"/, 'browser did not start and render the input demo');
+        const flags = ['--headless', '--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--disable-dev-shm-usage'];
+        const smoke = await pollPage(flags, 'chrome', url, `document.body?.dataset.smoke ?? ''`, (value) => value !== '');
+        assert.equal(smoke, 'passed', 'browser did not start and render the input demo');
         console.log('Browser: dev server, wasm startup and canvas rendering');
     });
 }
 
-// Virtual time outruns the GPU process, so this run polls the page over DevTools instead of dumping the DOM.
 async function gpuSmoke(wasm) {
     const flags = ['--headless', '--no-sandbox', '--disable-dev-shm-usage', '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--enable-features=Vulkan,WebGPU', '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader', '--use-angle=swiftshader'];
     await withServer(wasm, 'browser-gpu', async (url) => {
-        const chrome = spawn(findBrowser(), [...flags, '--remote-debugging-port=0', `--user-data-dir=${join(work, 'chrome-gpu')}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
-        try {
-            let stderr = '';
-            const devtools = await new Promise((ok, fail) => {
-                const timer = setTimeout(() => fail(new Error(`browser did not open DevTools\n${stderr}`)), 30000);
-                chrome.stderr.on('data', (chunk) => {
-                    stderr += chunk;
-                    const found = /DevTools listening on ws:\/\/([^/]+)\//.exec(stderr);
-                    if (found) { clearTimeout(timer); ok(found[1]); }
-                });
-            });
-            const page = await (await fetch(`http://${devtools}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' })).json();
-            const socket = new WebSocket(page.webSocketDebuggerUrl);
-            await new Promise((ok, fail) => { socket.onopen = ok; socket.onerror = () => fail(new Error('DevTools socket failed')); });
-            const title = () => new Promise((ok) => {
-                socket.onmessage = (message) => ok(JSON.parse(message.data).result.result.value);
-                socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: 'document.title' } }));
-            });
-            let seen = '';
-            for (let i = 0; i < 300 && !seen.includes('readback'); i++) {
-                await sleep(100);
-                seen = await title();
-            }
-            socket.close();
-            assert.equal(seen, 'zunk mesh-3d: readback ok', 'mesh-3d did not draw and read back through WebGPU');
-            console.log('Browser: WebGPU frame, resources destroyed before present, readback');
-        } finally {
-            chrome.kill();
-        }
+        const title = await pollPage(flags, 'chrome-gpu', url, 'document.title', (value) => value.includes('readback'));
+        assert.equal(title, 'zunk mesh-3d: readback ok', 'mesh-3d did not draw and read back through WebGPU');
+        console.log('Browser: WebGPU frame, resources destroyed before present, readback');
     });
 }
 
