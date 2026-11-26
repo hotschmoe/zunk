@@ -4,7 +4,7 @@ const zunk = @import("zunk");
 
 const wa = @import("gen/wasm_analyze.zig");
 const js_gen = @import("gen/js_gen.zig");
-const dev_server = @import("gen/serve.zig");
+const dev_server = @import("gen/dev_server.zig");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -372,14 +372,15 @@ fn buildCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const 
 
         const proxy = parseProxy(parsed.proxy);
 
-        try dev_server.serve(allocator, io, parsed.output_dir, parsed.port, .{
-            .autoreload = true,
-            .port = parsed.port,
-            .watch_sources = parsed.watch,
-            .proxy_prefix = proxy.prefix,
-            .proxy_target = proxy.target,
-            .hmr = parsed.hmr,
-        }, console);
+        try dev_server.serve(.{ .allocator = allocator, .io = io,
+            .root = parsed.output_dir, .config = .{
+                .autoreload = true,
+                .port = parsed.port,
+                .watch_sources = parsed.watch,
+                .proxy_prefix = proxy.prefix,
+                .proxy_target = proxy.target,
+                .hmr = parsed.hmr,
+            } });
     }
 }
 

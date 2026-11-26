@@ -98,6 +98,12 @@ The blocking gate runs `zig build tidy` before the end-to-end runner. Use
 The hand-maintained `held_files` list in `tools/tidy_ratchet.zon` holds rewritten
 files individually at the style target. See SRC.md for scope and metric definitions.
 
+The blocking gate also checks the installed CLI's 64 MiB budget and
+the dev server (page, JS, wasm, WebSocket source reload and process cleanup).
+`zig build check-size` runs the size check alone. `zig build check-cross`
+compiles and links the CLI and its packages for Linux, Windows GNU and macOS
+on x86_64 and aarch64; the background gate includes it.
+
 The blocking gate includes the real build-path generative tester with seed 1 and
 512 iterations. Run `zig build fuzz -- --seed 1` for its default 4,096 cases;
 `zig build fuzz-heavy` runs 200,000 cases with a fresh seed in the background.
@@ -154,7 +160,7 @@ src/
     js_resolve.zig     -- import name -> JS body resolution
     js_gen.zig         -- JS + HTML generator, build report
     source_map.zig     -- source maps for bridge.js chunks
-    serve.zig          -- dev server, watcher, live reload, HMR
+    dev_server.zig     -- dev server entry; serve_loop/serve_io/serve_os own the loop and IO
     js/                -- embedded JS for a11y, fx and ime
 examples/              -- 12 example apps, each with its own build.zig
 tools/test.mjs         -- both gates

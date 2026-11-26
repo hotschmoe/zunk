@@ -241,7 +241,7 @@ zunk/
       js_resolve.zig            #   Resolution engine + Web API knowledge base
       js_gen.zig                #   JS + HTML generator, build report
       source_map.zig            #   Source maps for bridge.js chunks
-      serve.zig                 #   Dev server, file watcher, live reload, HMR
+      dev_server.zig            #   Dev server entry; serve_loop/serve_io/serve_os own logic/IO
       js/                       #   Embedded JS: a11y mirror, host services, IME
   examples/
     input-demo/                 # Keyboard, mouse, touch input
@@ -350,7 +350,13 @@ Working today: the WASM analyzer, the resolution engine, the JS/HTML generator, 
 
 The WebGPU surface covers what teak and a CAD viewer needed: vertex and index buffers, instancing, samplers, depth and stencil, MSAA, offscreen targets, blend modes, compute, sub-rect texture uploads, and buffer readback. There are twelve examples under `examples/`.
 
-The blocking gate (`zig build test`) builds the CLI, builds one example, and checks `build` and `deploy` output. The background gate (`zig build test-heavy`) builds six more examples and runs `input-demo` and `mesh-3d` (WebGPU) in headless Chrome.
+The blocking gate (`zig build test`) checks CLI size and style, builds one example,
+checks `build` and `deploy` output, runs short seeded generation, and checks the dev
+server's file responses, WebSocket reload and shutdown. The background gate
+(`zig build test-heavy`) cross-compiles the CLI for Linux, Windows and macOS on
+x86_64 and aarch64, builds six more examples, and runs `input-demo` and `mesh-3d`
+(WebGPU) in headless Chrome. `zig build check-size` and `zig build check-cross`
+run the size and cross-compilation checks separately.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for what is open and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions.
 
