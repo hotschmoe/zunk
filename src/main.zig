@@ -201,13 +201,17 @@ const BuildContext = struct {
         allocator.free(self.fonts);
         allocator.free(self.wasm);
         self.analysis.deinit(allocator);
-        for (self.bridge_chunks) |c| {
-            allocator.free(c.origin);
-            allocator.free(c.source);
-        }
+        freeBridgeChunks(allocator, self.bridge_chunks);
         allocator.free(self.bridge_chunks);
     }
 };
+
+fn freeBridgeChunks(allocator: std.mem.Allocator, chunks: []const js_gen.BridgeJsChunk) void {
+    for (chunks) |c| {
+        allocator.free(c.origin);
+        allocator.free(c.source);
+    }
+}
 
 fn prepareBuild(allocator: std.mem.Allocator, io: std.Io, parsed: BuildArgs, console: *rich.Console) !?BuildContext {
     if (parsed.arg_error) |msg| {
@@ -243,10 +247,7 @@ fn prepareBuild(allocator: std.mem.Allocator, io: std.Io, parsed: BuildArgs, con
 
     const bridge_chunks = try collectBridgeChunks(allocator, io, parsed.bridgeDeps(), console);
     errdefer {
-        for (bridge_chunks) |c| {
-            allocator.free(c.origin);
-            allocator.free(c.source);
-        }
+        freeBridgeChunks(allocator, bridge_chunks);
         allocator.free(bridge_chunks);
     }
 
@@ -437,7 +438,6 @@ fn deployCommand(allocator: std.mem.Allocator, io: std.Io, args: []const []const
         .fonts = ctx.fonts,
         .fonts_blocking = ctx.fonts_blocking,
         .js_filename = hashed_js_name,
-        .wasm_preload = true,
         .js_integrity = sri,
     }, result.categories);
     const deploy_html = try html_aw.toOwnedSlice();
@@ -498,10 +498,7 @@ fn collectBridgeChunks(
 ) ![]js_gen.BridgeJsChunk {
     var chunks: std.ArrayList(js_gen.BridgeJsChunk) = .empty;
     errdefer {
-        for (chunks.items) |c| {
-            allocator.free(c.origin);
-            allocator.free(c.source);
-        }
+        freeBridgeChunks(allocator, chunks.items);
         chunks.deinit(allocator);
     }
 
@@ -602,42 +599,23 @@ fn computeSourceFingerprint(io: std.Io, wasm_path: []const u8, parsed: BuildArgs
 
     pollDirRecursive(io, "src", &fingerprint);
 
-    const build_files = [_][]const u8{ "build.zig", "build.zig.zon" };
-    for (build_files) |file_path| {
-        const file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch continue;
-        defer file.close(io);
-        const stat = file.stat(io) catch continue;
-        fingerprint +%= @intCast(stat.mtime.nanoseconds);
-    }
-
-    {
-        const file = std.Io.Dir.cwd().openFile(io, wasm_path, .{}) catch return fingerprint;
-        defer file.close(io);
-        const stat = file.stat(io) catch return fingerprint;
-        fingerprint +%= @intCast(stat.mtime.nanoseconds);
-    }
-
-    for (bridge_js_paths) |bp| {
-        const file = std.Io.Dir.cwd().openFile(io, bp, .{}) catch continue;
-        defer file.close(io);
-        const stat = file.stat(io) catch continue;
-        fingerprint +%= @intCast(stat.mtime.nanoseconds);
-    }
-
-    for (parsed.bridgeDeps()) |bp| {
-        const file = std.Io.Dir.cwd().openFile(io, bp, .{}) catch continue;
-        defer file.close(io);
-        const stat = file.stat(io) catch continue;
-        fingerprint +%= @intCast(stat.mtime.nanoseconds);
-    }
-    for (parsed.fonts()) |f| {
-        const file = std.Io.Dir.cwd().openFile(io, f.path, .{}) catch continue;
-        defer file.close(io);
-        const stat = file.stat(io) catch continue;
-        fingerprint +%= @intCast(stat.mtime.nanoseconds);
-    }
+    const cwd = std.Io.Dir.cwd();
+    _ = addMtime(io, cwd, "build.zig", &fingerprint);
+    _ = addMtime(io, cwd, "build.zig.zon", &fingerprint);
+    if (!addMtime(io, cwd, wasm_path, &fingerprint)) return fingerprint;
+    for (bridge_js_paths) |path| _ = addMtime(io, cwd, path, &fingerprint);
+    for (parsed.bridgeDeps()) |path| _ = addMtime(io, cwd, path, &fingerprint);
+    for (parsed.fonts()) |f| _ = addMtime(io, cwd, f.path, &fingerprint);
 
     return fingerprint;
+}
+
+fn addMtime(io: std.Io, dir: std.Io.Dir, path: []const u8, fingerprint: *i128) bool {
+    const file = dir.openFile(io, path, .{}) catch return false;
+    defer file.close(io);
+    const stat = file.stat(io) catch return false;
+    fingerprint.* +%= @intCast(stat.mtime.nanoseconds);
+    return true;
 }
 
 fn pollDirRecursive(io: std.Io, dir_path: []const u8, fingerprint: *i128) void {
@@ -650,13 +628,8 @@ fn pollDirRecursive(io: std.Io, dir_path: []const u8, fingerprint: *i128) void {
             var sub_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
             const sub_path = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
             pollDirRecursive(io, sub_path, fingerprint);
-        } else if (entry.kind == .file) {
-            if (std.mem.endsWith(u8, entry.name, ".zig")) {
-                const file = dir.openFile(io, entry.name, .{}) catch continue;
-                defer file.close(io);
-                const stat = file.stat(io) catch continue;
-                fingerprint.* +%= @intCast(stat.mtime.nanoseconds);
-            }
+        } else if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".zig")) {
+            _ = addMtime(io, dir, entry.name, fingerprint);
         }
     }
 }
