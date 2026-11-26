@@ -44,11 +44,12 @@ paths. Each file has its own group, excluded from its directory's counts, and
 must meet every style target independently of its stored numbers. It must
 exist, be in scope and not be skipped or generated. Duplicate and noncanonical
 paths fail. Updates preserve the entire list, including when a file is missing;
-they never remove entries. Initially it contains `src/assert.zig`, `src/fuzz.zig`,
+they never remove entries. Zunk holds `src/assert.zig`, `src/fuzz.zig`,
 `src/fuzz_generate.zig`, `src/gen/build_path.zig`, `src/gen/wasm_reader.zig`,
 `src/gen/wasm_analyze.zig`, `src/gen/js_identifier.zig` and `tools/tidy.zig`.
-Teak replaces its former hard-coded tidy special case with the single entry
-`"tools/tidy.zig"` in this list.
+Seam inventories and globals may be nonzero; style targets are zero, with
+longest function at most 70. Moving a held file
+out of a group also moves its assertion demand and surplus credit.
 
 The columns mean:
 
@@ -73,11 +74,7 @@ The columns mean:
   `max(0, 2 * nontrivial_functions - assertions_in_nontrivial_functions)`.
   Extra assertions in one nontrivial function can cover another's deficit.
   `functions_no_assert` still reports all bodies with no assertion calls.
-  The teak reference initially records functions with fewer than two assertions
-  for diagnostic sites, then overwrites the number with a group deficit; it does
-  not actually enforce two per function. We keep the group rule, exempt trivial
-  bodies, and reject filler assertions. Sites sample under-asserted nontrivial
-  functions; they are not individual numeric deficits.
+  Sites sample under-asserted nontrivial functions, rather than numeric deficits.
 - `usize_fields`, `sized_fields`: struct fields typed `usize` or `?usize`, versus
   explicit `uN`/`iN` or their optional form. Tuple fields count. Union members,
   enum tags, aliases, pointers, arrays and slices do not. `isize` is not `usize`.
@@ -94,16 +91,23 @@ The columns mean:
   other loops bounded nor inspects exits within these loops.
 - `camel_case`: lowercase-initial function names with an uppercase ASCII letter,
   excluding type constructors. Escaped identifiers are not normalized.
-- `allocation`, `clock`, `environment`, `threads`, `files_io`: potential banned
+- `allocation`, `clock`, `environment`, `threads`, `files_io`, `processes`: potential banned
   calls, once per category per call. One call can count in several categories.
   These expose seams; they do not prove an allocation happens after startup.
+- `globals`: container-member `var` declarations at file scope or in any struct,
+  union or enum, including containers declared inside functions (static locals).
+  `threadlocal` and extern variables count; `const`, instance fields and ordinary
+  call-local variables do not. Membership comes from the AST, independent of
+  function ownership. Each declaration counts once, even inside generic types.
+  This inventory exposes persistent state for the simulator's repeated runs;
+  it does not distinguish a cache from a registry or prove semantic determinism.
 - `scripts`: git-tracked `.sh`, `.py`, `.mjs`, `.js` and `.ps1` files, excluding
   `src/gen/js/` (shipped application code) and `ref/` (read-only prior art).
   Shipped JS is not tooling; counting it as tooling would measure the wrong debt.
   Untracked Zig files are measured too. `tests` counts AST test declarations in
-  every discovered nongenerated Zig file, even outside style scope. Held files'
-  tests belong to their individual group; all other tests and all scripts belong
-  to `repository`, so totals do not double-count. Tests must always be zero.
+  every discovered nongenerated Zig file, even outside style scope. Held files' tests belong to
+  their individual group; all other tests and all scripts belong to `repository`,
+  so totals do not double-count. Tests must always be zero.
 
 The standard allocation field-call names are `alloc`, `alignedAlloc`,
 `allocSentinel`, `allocWithOptions`, `allocAdvanced`, `create`, `realloc`, `remap`,
@@ -118,18 +122,44 @@ The standard allocation field-call names are `alloc`, `alignedAlloc`,
 GPU `resize` and our bounded `Buffer.append` can be false positives; aliases and
 wrappers with different names can be missed. Native resource creation allocates too.
 
-Clock calls contain `std.time` or `Io.Clock` chains, or end in `timestamp`,
-`milliTimestamp`, `microTimestamp`, `nanoTimestamp`. Environment names are
-`getenv`, `getEnvVarOwned`, `getEnvMap`, `GetEnvironmentVariableW`, `createMap`,
-plus chains `init.environ_map` and `minimal.environ`. Thread calls contain
-`std.Thread`. File calls contain `std.fs`, `Io.Dir`, `Io.File`, or end in
-`openFile`, `openFileAbsolute`, `createFile`, `openDir`, `openDirAbsolute`,
-`readFile`, `readFileAlloc`, `readFileAllocOptions`, `writeFile`, `deleteFile`,
-`rename`, `createDir`, `createDirPath`, `realPath`. Whitespace and comments do not
-break chains. Pure `std.fs.path` helpers count; imported aliases, differently
-named instance methods, native extern calls and wrappers may be missed. Zunk
-currently adds no helper names. Tidy necessarily uses allocation, clock, files
-and git; these seam inventories are allowed in held files and are ratcheted.
+Clock calls contain `std.time` or `Io.Clock`, or use the clock/timestamp names
+in `clock_names`: libc and kernel clock queries, `sleep`, `nanosleep`, `usleep`,
+Windows timing and Mach time. `std.Io.sleep` counts as clock access. Environment
+names cover libc `getenv` and setters, standard environment helpers and Windows
+get/set APIs, plus `init.environ_map` and `minimal.environ` chains. Thread calls
+contain `std.Thread` or `Io.Threaded`, use `pthread_`/`thrd_` APIs, clone or thread
+helpers; raw futex operations count too. Clone counts as both thread and process
+access because flags determine what it creates.
+
+File calls contain `std.fs` except `std.fs.path`, `Io.Dir`, `Io.File`, or use the
+standard file names in `file_names`. Path helpers operate on strings and do not
+count as IO; allocating `join` still counts as allocation. `stdio_names` adds
+libc stdio, including `fopen`/`fopen64`, `fread`, `fwrite`, `fclose`, seeking,
+stdio output, temporary files and pipe streams, plus `dlopen`/`dlclose`/`dlsym`.
+`std.DynLib` calls count as file access. `raw_file_names` covers descriptor IO,
+metadata, directories, links, mappings, sync and file watches through `std.c`,
+`std.posix` and `std.os.linux`. Common names such as `read`, `close` and `remove`
+require a raw receiver, so an application collection's `remove` is not file IO.
+Raw reads/closes of sockets also count: descriptor kind is not inferred.
+
+`processes` covers `std.process.spawn`, `run`, `replace`, libc/kernel exec,
+fork, spawn, wait, process identity and signals, and Windows process launch APIs.
+It counts call sites, not the number of children. `popen`/`pclose` count as both
+file and process access. Ambiguous `wait`/`kill` require a raw receiver or bare
+call; child instance `wait`/`kill` are not inferred, while their spawn is counted.
+
+Token chains ignore whitespace and comments. One file-level `const` alias to a
+field-access namespace is recognized for raw APIs, `std.Thread`, `std.DynLib`
+and `std.process`. This is lexical inventory: it does not resolve local shadows,
+alias chains, arbitrary receivers, imports, syscall numbers, function pointers,
+native extern calls with other names or differently named application wrappers.
+Name-only matching can overcount same-named application methods. The arrays in
+the program are the complete name lists, reviewed against Zig 0.17.1's standard
+sources; they also cover common libc externs a program can declare itself.
+
+Zunk currently adds no allocation, environment or file helper names. Tidy
+necessarily uses allocation, a clock, files and git; held files allow and ratchet
+these seam inventories and globals.
 
 Every discovered `build.zig.zon` must have the same decoded
 `minimum_zig_version`, including tool manifests. Missing values, invalid syntax
@@ -148,11 +178,21 @@ their source and manifests are never modified.
 The ratchet is parsed with `std.zon`. Its metric-name header fixes numeric row
 order. Stored metrics are long lines/functions, longest function, deficit,
 usize fields, recursion, literal infinite loops, camelCase, banned-call counts,
-scripts and tests. Sizes, assertions, trivial functions and literal long lines
-are reported only. Every stored number must match exactly. Decreases fail until
-`-- --update` records them; increases are refused even by update. The complete
-snapshot is validated before writing. A new group must start with zero long
-lines/functions, deficit, usize fields, recursion, while-true, camelCase and tests,
+globals, scripts and tests. Sizes, assertions, trivial functions and literal long
+lines are reported only. Every stored number must match exactly. Decreases fail until
+`-- --update` records them; increases are refused even by update. A raise is
+legitimate in three cases: a count that was always there has become
+visible (tidy learned to see it, or an implicit operation was made explicit); a
+call moved from one group into another, lowering the first by at least as much;
+or a long function in old code was split, adding a function to the assertion
+average. The stored number is then edited by hand and the change report explains
+why.
+Held-file regrouping can likewise remove surplus assertion credit from a group;
+this accounting change needs an explained hand edit. New metrics are seeded by
+hand. Replacing tidy itself re-seeds only its seam inventories; its style stays
+at target. The complete snapshot is validated before writing. A new group must
+start with zero long lines/functions, deficit, usize fields, recursion,
+while-true, camelCase and tests,
 and longest function at most 70. Seam counts may be nonzero. Existing debt is
 seeded once by hand; update cannot bootstrap it. Removed groups measure zero
 until update drops them. Failures name group, metric, before/after and at most
@@ -161,7 +201,7 @@ twenty current file:line samples. Vanished sites have no remaining location.
 One startup allocation reserves `State`; it is released at shutdown. Limits:
 2 MiB per input, 4,096 files/directories/held paths, 65,536 entries per directory,
 2,048 functions and 4,096 containers per file, 524,288 tokens/nodes, nesting
-depth 256, 32 groups, 512 bytes per path, 20 sites per metric/group, 256 KiB
+depth 256, 128 groups, 512 bytes per path, 20 sites per metric/group, 256 KiB
 report buffer and 64 MiB parser scratch. Git output is capped at 2 MiB and
 4,096 names. Limits return named errors and fail; nothing is silently omitted.
 No owned heap memory is acquired after startup. The standard AST/ZON parser
