@@ -91,6 +91,15 @@ Follow [ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master
 
 Run `zig build test -j4` for the blocking gate and `zig build test-heavy -j4` for the background gate. Both require Node.js; the background gate also requires Chromium or Google Chrome (set `CHROME_BIN` to override detection). The background gate runs on a schedule and does not block pull requests; investigate failures by finding the regressing commit and fixing head.
 
+The blocking gate runs `zig build tidy` before the end-to-end runner. Use
+`zig build tidy -- --table` to print the measurements and
+`zig build tidy -- --update` to record decreases; increases are refused.
+`zig build tidy -- --table --root <path>` reports another tree without a ratchet.
+The hand-maintained `held_files` list in `tools/tidy_ratchet.zon` holds rewritten
+files individually at the style target. See SRC.md for scope and metric definitions.
+Seam inventories include raw libc/posix calls and process calls; `globals` counts
+container-member mutable declarations. Pure `std.fs.path` helpers are not file IO.
+
 The blocking gate includes the real build-path generative tester with seed 1 and
 512 iterations. Run `zig build fuzz -- --seed 1` for its default 4,096 cases;
 `zig build fuzz-heavy` runs 200,000 cases with a fresh seed in the background.
@@ -121,6 +130,7 @@ zunk is a build tool and runtime library for writing browser applications entire
 
 - **Language**: Zig, minimum 0.17.1 (`minimum_zig_version` in `build.zig.zon`; CI pins `ZIG_VERSION` in `.github/workflows/ci.yml`)
 - **Build**: `zig build` (native CLI), `zig build run -- <args>` (run the CLI)
+- **Style**: `zig build tidy`; `zig build tidy -- --table`; `zig build tidy -- --update` to tighten. Report packages with `zig build tidy -- --table --root <path>`.
 - **Gates**: `zig build test -j4` is the blocking end-to-end gate (needs Node); `zig build test-heavy -j4` is the background gate (needs Node and Chrome/Chromium). Both run `tools/test.mjs`. There are no unit tests; see ENGINEERING.md.
 - **Build-path generation**: `zig build fuzz -- --seed 1`; `zig build fuzz-heavy` for the long background run. The blocking gate includes a 512-case fixed-seed run.
 - **Target**: the zunk CLI is a native executable; user projects compile to `wasm32-freestanding`
