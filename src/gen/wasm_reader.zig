@@ -6,9 +6,9 @@ pub const Error = error{
     InvalidLeb128,
     InvalidUtf8,
     InvalidSection,
-    InvalidValueType,
+    UnsupportedValueType,
     InvalidImportKind,
-    InvalidLimits,
+    UnsupportedLimits,
     StepLimit,
 };
 
@@ -71,8 +71,8 @@ pub const Reader = struct {
         assert(self.position <= self.bytes.len);
         const value = try self.byte();
         switch (value) {
-            0x7f, 0x7e, 0x7d, 0x7c, 0x70, 0x6f => {},
-            else => return error.InvalidValueType,
+            0x7f, 0x7e, 0x7d, 0x7c, 0x7b, 0x70, 0x6f => {},
+            else => return error.UnsupportedValueType,
         }
         assert(value != 0);
         return value;
@@ -81,9 +81,9 @@ pub const Reader = struct {
     pub fn limits(self: *Reader) Error!void {
         assert(self.position <= self.bytes.len);
         const flags = try self.byte();
-        if (flags > 1) return error.InvalidLimits;
-        const minimum = try self.integer();
-        if (flags == 1 and try self.integer() < minimum) return error.InvalidLimits;
+        if (flags > 3) return error.UnsupportedLimits;
+        _ = try self.integer();
+        if (flags & 1 != 0) _ = try self.integer();
         assert(self.position <= self.bytes.len);
     }
 

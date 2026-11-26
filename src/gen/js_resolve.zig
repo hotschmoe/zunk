@@ -18,6 +18,7 @@ pub const Confidence = enum {
     medium,
     low,
     stub,
+    missing,
 };
 
 pub const Category = enum {
@@ -50,7 +51,11 @@ pub fn resolve(
 ) !Resolution {
     const name = import.name;
     if (import.kind != 0 or !std.mem.eql(u8, import.module, "env")) {
-        return generateStub(allocator, name, null);
+        return .{
+            .js_body = try allocator.dupe(u8, ""),
+            .confidence = .missing,
+            .description = "Not supplied by the generated import object",
+        };
     }
 
     // Exact matches must precede the `__` internal-stub fallback.
@@ -58,7 +63,7 @@ pub fn resolve(
 
     if (std.mem.startsWith(u8, name, "__")) {
         return .{
-            .js_body = try allocator.dupe(u8, "// internal"),
+            .js_body = try allocator.dupe(u8, ""),
             .confidence = .exact,
             .category = .zunk_internal,
             .description = "Internal WASM symbol",

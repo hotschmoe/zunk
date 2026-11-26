@@ -1,13 +1,13 @@
 const std = @import("std");
 const reader = @import("wasm_reader.zig");
 const assert = @import("../assert.zig").assert;
-const Sections = @import("wasm_sections.zig").Sections;
 
 pub const WasmValType = enum(u8) {
     i32 = 0x7F,
     i64 = 0x7E,
     f32 = 0x7D,
     f64 = 0x7C,
+    v128 = 0x7B,
     funcref = 0x70,
     externref = 0x6F,
 };
@@ -61,7 +61,7 @@ pub const Analysis = struct {
         self.* = undefined;
     }
 
-    pub fn getImportSignature(self: *const Analysis, imp: *const Import) ?FuncType {
+    pub fn get_import_signature(self: *const Analysis, imp: *const Import) ?FuncType {
         assert(imp.kind <= 3);
         assert(self.func_types.len <= entries_max);
         if (imp.kind != 0) return null;
@@ -70,7 +70,7 @@ pub const Analysis = struct {
         return null;
     }
 
-    pub fn hasExport(self: *const Analysis, name: []const u8) bool {
+    pub fn has_export(self: *const Analysis, name: []const u8) bool {
         assert(self.exports.len <= entries_max);
         assert(self.imports.len <= entries_max);
         for (self.exports) |exp| {
@@ -97,24 +97,19 @@ pub fn analyze(allocator: std.mem.Allocator, wasm: []const u8, steps: *u64) !Ana
         .explicit_manifest = null,
         .has_name_section = false,
     };
-    var previous: u8 = 0;
-    var sections = Sections{};
+    var seen: [8]bool = @splat(false);
     for (0..wasm.len) |_| {
         if (input.position == wasm.len) break;
         const id = try input.byte();
-        if (id > 12) return error.InvalidSection;
-        // Data-count precedes code in the WebAssembly section order.
-        const order: u8 = if (id == 12) 10 else if (id >= 10) id + 1 else id;
-        if (id != 0 and order <= previous) return error.InvalidSectionOrder;
-        if (id != 0) previous = order;
         const bytes = try input.take(try input.integer());
+        if (id != 0 and id != 1 and id != 2 and id != 7) continue;
+        if (id != 0) {
+            if (seen[id] or (id == 1 and seen[2])) return error.InvalidSectionOrder;
+            seen[id] = true;
+        }
         var section = reader.Reader{ .bytes = bytes, .steps = steps };
-        if (id >= 3 and id != 7) {
-            try sections.parse(&section, id, @intCast(result.func_types.len));
-            try section.finished();
-        } else try parse_section(allocator, &section, id, &result);
+        try parse_section(allocator, &section, id, &result);
     }
-    try sections.finish();
     for (result.imports) |*imp| {
         if (imp.kind == 0) {
             if (imp.type_idx >= result.func_types.len) return error.InvalidTypeIndex;
@@ -132,7 +127,7 @@ fn parse_section(
     id: u8,
     result: *Analysis,
 ) !void {
-    assert(id <= 12);
+    assert(id == 0 or id == 1 or id == 2 or id == 7);
     assert(section.position == 0);
     switch (id) {
         0 => try parse_custom(allocator, section, result),
@@ -146,7 +141,7 @@ fn parse_section(
             }
         },
         7 => result.exports = try parse_exports(allocator, section),
-        else => unreachable,
+        else => assert(false),
     }
     try section.finished();
 }
@@ -187,7 +182,7 @@ fn parse_imports(allocator: std.mem.Allocator, input: *reader.Reader) ![]Import 
             0 => type_index = try input.integer(),
             1 => {
                 const reference = try input.value_type();
-                if (reference != 0x70 and reference != 0x6f) return error.InvalidValueType;
+                if (reference != 0x70 and reference != 0x6f) return error.UnsupportedValueType;
                 try input.limits();
             },
             2 => try input.limits(),

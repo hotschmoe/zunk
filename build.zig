@@ -50,6 +50,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run the blocking end-to-end gate");
     const test_cmd = b.addSystemCommand(&.{ "node", "tools/test.mjs", "blocking" });
     test_cmd.addArtifactArg(exe);
+    test_cmd.addArg(@tagName(optimize));
     test_step.dependOn(&test_cmd.step);
 
     const heavy_step = b.step("test-heavy", "Run the background end-to-end gate");
@@ -58,8 +59,9 @@ pub fn build(b: *std.Build) void {
     heavy_step.dependOn(&heavy_cmd.step);
 
     const fuzz_options = b.addOptions();
-    const fuzz_commit = b.run(&.{ "git", "rev-parse", "HEAD" });
-    fuzz_options.addOption([]const u8, "commit", std.mem.trim(u8, fuzz_commit, "\r\n"));
+    const fuzz_commit = b.option([]const u8, "commit", "Commit recorded by the tester") orelse
+        "unknown";
+    fuzz_options.addOption([]const u8, "commit", fuzz_commit);
     const fuzz = b.addExecutable(.{
         .name = "zunk-fuzz",
         .root_module = b.createModule(.{
@@ -72,9 +74,6 @@ pub fn build(b: *std.Build) void {
     const fuzz_run = b.addRunArtifact(fuzz);
     fuzz_run.addPassthruArgs();
     b.step("fuzz", "Run seeded build-path generation and oracles").dependOn(&fuzz_run.step);
-    const fuzz_short = b.addRunArtifact(fuzz);
-    fuzz_short.addArgs(&.{ "--seed", "1", "--iterations", "512" });
-    test_step.dependOn(&fuzz_short.step);
     const fuzz_long = b.addRunArtifact(fuzz);
     fuzz_long.addArgs(&.{ "--iterations", "200000" });
     b.step("fuzz-heavy", "Run the random background build-path gate").dependOn(&fuzz_long.step);

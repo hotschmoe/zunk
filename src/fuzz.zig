@@ -32,8 +32,15 @@ const Counters = struct {
     option_limit: u64 = 0,
     source_map: u64 = 0,
     fonts: u64 = 0,
+    well_formed: u64 = 0,
+    skipped_damage: u64 = 0,
+    skipped_identical: u64 = 0,
+    v128: u64 = 0,
+    shared_memory: u64 = 0,
+    tag_section: u64 = 0,
+    unknown_section: u64 = 0,
     profiles: [16]u64 = @splat(0),
-    mutations: [16]u64 = @splat(0),
+    mutations: [20]u64 = @splat(0),
     truncated_sections: [13]u64 = @splat(0),
 };
 const Context = struct {
@@ -124,7 +131,42 @@ fn parse_options(io: std.Io, args: []const []const u8) !Options {
 fn check_case(case: *const workload.Case, memory: []u8, counters: *Counters) !void {
     assert(memory.len == 3 * memory_max);
     assert(case.count <= workload.imports_max);
-    const options = @import("gen/js_gen.zig").GenOptions{
+    const options = generation_options(case);
+    var first_output = path.Publication{};
+    var second_output = path.Publication{};
+    const first = observe(memory[0..memory_max], case.buffer.slice(), options, .{}, &first_output);
+    const second = observe(
+        memory[memory_max..][0..memory_max],
+        case.buffer.slice(),
+        options,
+        .{},
+        &second_output,
+    );
+    if (first) |result| {
+        if (case.expectation == .reject) return error.AcceptedMalformed;
+        const again = second catch return error.NondeterministicError;
+        try compare_output(result, again);
+        counters.determinism += 1;
+        try check_accepted(case, memory[2 * memory_max ..], counters, result, options);
+    } else |err| {
+        if (second) |_| return error.NondeterministicAcceptance else |other| {
+            if (err != other) return error.NondeterministicError;
+        }
+        if (case.expectation != .reject) return err;
+        switch (err) {
+            error.OutOfMemory, error.WriteFailed, error.StepLimit => return err,
+            else => {},
+        }
+        if (first_output.stage != .reader) return error.RejectedAtWrongStage;
+        counters.rejected_reader += 1;
+        counters.no_output += 1;
+    }
+}
+
+fn generation_options(case: *const workload.Case) @import("gen/js_gen.zig").GenOptions {
+    assert(case.buffer.length <= workload.input_max);
+    assert(case.expectation != .skipped or case.buffer.length == case.baseline.length);
+    return .{
         .wasm_filename = "fuzz.wasm",
         .json_report = true,
         .wasm_preload = case.buffer.length % 2 == 0,
@@ -139,43 +181,43 @@ fn check_case(case: *const workload.Case, memory: []u8, counters: *Counters) !vo
         }} else &.{},
         .fonts_blocking = case.buffer.length % 7 == 0,
     };
-    var first_output = path.Publication{};
-    var second_output = path.Publication{};
-    const first = observe(memory[0..memory_max], case.buffer.slice(), options, .{}, &first_output);
-    const second = observe(
-        memory[memory_max..][0..memory_max],
-        case.buffer.slice(),
-        options,
-        .{},
-        &second_output,
-    );
-    if (first) |result| {
-        if (case.malformed) return error.AcceptedMalformed;
-        const again = second catch return error.NondeterministicError;
-        try compare_output(result, again);
-        counters.determinism += 1;
-        var oracle = std.heap.FixedBufferAllocator.init(memory[2 * memory_max ..]);
-        try accounting(case, result, oracle.allocator(), counters);
-        try probe_limits(case, memory[2 * memory_max ..], options, counters);
-        counters.accepted += 1;
-        counters.custom += @intFromBool(result.analysis.has_name_section);
-        counters.zero_imports += @intFromBool(case.count == 0);
-        counters.many_imports += @intFromBool(case.count >= 96);
-        counters.source_map += @intFromBool(result.generated.js_map.len > 0);
-        counters.fonts += @intFromBool(options.fonts.len > 0);
-    } else |err| {
-        if (second) |_| return error.NondeterministicAcceptance else |other| {
-            if (err != other) return error.NondeterministicError;
-        }
-        if (!case.malformed) return err;
-        switch (err) {
-            error.OutOfMemory, error.WriteFailed, error.StepLimit => return err,
-            else => {},
-        }
-        if (first_output.stage != .reader) return error.RejectedAtWrongStage;
-        counters.rejected_reader += 1;
-        counters.no_output += 1;
-    }
+}
+
+fn check_accepted(
+    case: *const workload.Case,
+    memory: []u8,
+    counters: *Counters,
+    result: path.Result,
+    options: @import("gen/js_gen.zig").GenOptions,
+) !void {
+    assert(memory.len == memory_max);
+    assert(case.expectation != .reject);
+    if (case.expectation == .skipped) {
+        var baseline_output = path.Publication{};
+        const baseline = try observe(
+            memory,
+            case.baseline.slice(),
+            options,
+            .{},
+            &baseline_output,
+        );
+        compare_output(result, baseline) catch return error.SkippedBytesChangedOutput;
+        counters.skipped_damage += 1;
+        counters.skipped_identical += 1;
+    } else counters.well_formed += 1;
+    var oracle = std.heap.FixedBufferAllocator.init(memory);
+    try accounting(case, result, oracle.allocator(), counters);
+    try probe_limits(case, memory, options, counters);
+    counters.accepted += 1;
+    counters.custom += @intFromBool(result.analysis.has_name_section);
+    counters.zero_imports += @intFromBool(case.count == 0);
+    counters.many_imports += @intFromBool(case.count >= 96);
+    counters.source_map += @intFromBool(result.generated.js_map.len > 0);
+    counters.fonts += @intFromBool(options.fonts.len > 0);
+    counters.v128 += @intFromBool(case.profile == 1);
+    counters.shared_memory += @intFromBool(case.profile == 12);
+    counters.tag_section += 1;
+    counters.unknown_section += 1;
 }
 
 fn observe(
@@ -231,13 +273,15 @@ fn accounting(
         if (!std.mem.eql(u8, declaration.module, import.module) or
             !std.mem.eql(u8, declaration.name, import.name) or declaration.kind != import.kind)
             return error.ChangedImport;
-        const signature = result.analysis.getImportSignature(import);
+        const signature = result.analysis.get_import_signature(import);
         const resolution = try resolver.resolve(allocator, import, signature);
-        const expected = resolution.confidence != .stub;
+        const expected = declaration.kind == 0 and
+            std.mem.eql(u8, declaration.module, "env") and resolution.confidence != .stub;
         const provided = result.generated.dispositions[index] == .provided;
         const entry = entries.array.items[index].object;
         const confidence = entry.get("confidence") orelse return error.MissingConfidence;
-        const unresolved = std.mem.eql(u8, confidence.string, "stub");
+        const unresolved = std.mem.eql(u8, confidence.string, "stub") or
+            std.mem.eql(u8, confidence.string, "missing");
         if (provided != expected or provided == unresolved) return error.ImportAccounting;
         if (!std.mem.eql(u8, entry.get("module").?.string, declaration.module) or
             !std.mem.eql(u8, entry.get("name").?.string, declaration.name))
@@ -259,7 +303,7 @@ fn probe_limits(
     counters: *Counters,
 ) !void {
     assert(memory.len == memory_max);
-    assert(!case.malformed);
+    assert(case.expectation != .reject);
     var output = path.Publication{};
     const tiny = observe(memory[0..1], case.buffer.slice(), options, .{}, &output);
     if (tiny) |_| return error.MissedMemoryLimit else |err| {
@@ -334,20 +378,27 @@ fn recover_declarations(case: *workload.Case) !void {
 
 fn replay_expectation(context: *Context, file: []const u8) !void {
     assert(context.case.buffer.length <= workload.input_max);
-    recover_declarations(context.case) catch |err| switch (err) {
-        error.InputLimit => return err,
-        else => context.case.malformed = true,
-    };
     var filename: [4096]u8 = undefined;
     const expectation = try std.fmt.bufPrint(&filename, "{s}.expect", .{file});
     var bytes: [16]u8 = undefined;
     const saved = std.Io.Dir.cwd().readFile(context.io, expectation, &bytes) catch |err| {
-        if (err == error.FileNotFound) return;
+        if (err == error.FileNotFound) return recover_declarations(context.case);
         return err;
     };
     if (std.mem.eql(u8, saved, "reject\n")) {
-        context.case.malformed = true;
+        context.case.expectation = .reject;
+        return;
+    } else if (std.mem.eql(u8, saved, "skipped\n")) {
+        context.case.expectation = .skipped;
+        const baseline = try std.fmt.bufPrint(&filename, "{s}.baseline", .{file});
+        const original = try std.Io.Dir.cwd().readFile(
+            context.io,
+            baseline,
+            &context.case.baseline.bytes,
+        );
+        context.case.baseline.length = @intCast(original.len);
     } else if (!std.mem.eql(u8, saved, "accept\n")) return error.InvalidExpectation;
+    try recover_declarations(context.case);
     assert(saved.len > 0);
 }
 
@@ -372,8 +423,19 @@ fn save_failure(context: *const Context, reason: []const u8) !void {
     const expectation = try std.fmt.bufPrint(&expectation_name, "{s}.expect", .{file});
     try std.Io.Dir.cwd().writeFile(context.io, .{
         .sub_path = expectation,
-        .data = if (context.case.malformed) "reject\n" else "accept\n",
+        .data = switch (context.case.expectation) {
+            .accept => "accept\n",
+            .reject => "reject\n",
+            .skipped => "skipped\n",
+        },
     });
+    if (context.case.expectation == .skipped) {
+        const baseline = try std.fmt.bufPrint(&expectation_name, "{s}.baseline", .{file});
+        try std.Io.Dir.cwd().writeFile(context.io, .{
+            .sub_path = baseline,
+            .data = context.case.baseline.slice(),
+        });
+    }
     assert(file.len < filename.len);
     assert(expectation.len < expectation_name.len);
 }

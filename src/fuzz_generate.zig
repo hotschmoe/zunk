@@ -52,7 +52,7 @@ pub const Buffer = struct {
     }
 
     pub fn section(self: *Buffer, id: u8, body: []const u8) !void {
-        assert(id <= 12);
+        assert(body.len <= input_max);
         try self.byte(id);
         try self.integer(@intCast(body.len));
         try self.append(body);
@@ -68,11 +68,13 @@ pub const Buffer = struct {
 };
 
 pub const Declaration = struct { module: []const u8, name: []const u8, kind: u8 };
+pub const Expectation = enum { accept, reject, skipped };
 pub const Case = struct {
     buffer: Buffer = .{},
+    baseline: Buffer = .{},
     declarations: [imports_max]Declaration = undefined,
     count: u32 = 0,
-    malformed: bool = false,
+    expectation: Expectation = .accept,
     mutation: u8 = 0,
     profile: u8 = 0,
     import_offset: u32 = 0,
@@ -81,18 +83,20 @@ pub const Case = struct {
     export_offset: u32 = 0,
     truncation: u8 = 0,
     parameters: u8 = 0,
+    names_offset: u32 = 0,
+    bindings_offset: u32 = 0,
 };
 
 pub fn generate(case: *Case, random: std.Random, number: u32) !void {
     case.* = .{};
     case.profile = @intCast(number % 16);
-    case.mutation = @intCast((number / 16) % 16);
+    case.mutation = @intCast((number / 16) % 20);
     case.truncation = case.profile % 13;
     assert(case.profile < 16);
     try case.buffer.append(header);
     try types(case, random);
     try imports(case, random);
-    try remaining_sections(case, random);
+    try remaining_sections(case);
     try mutate(case, random);
     assert(case.buffer.length <= input_max);
 }
@@ -108,7 +112,7 @@ fn types(case: *Case, random: std.Random) !void {
     const returns = random.uintLessThan(u8, 3);
     try body.byte(returns);
     for (0..returns) |_| try body.byte(values[random.uintLessThan(u8, values.len)]);
-    try body.append(&.{ 0x60, 0, 0 });
+    try body.append(if (case.profile == 1) &.{ 0x60, 1, 0x7b, 0 } else &.{ 0x60, 0, 0 });
     if (case.profile == 0) {
         try case.buffer.append(&.{ 1, @as(u8, @intCast(body.length)) | 128, 0 });
         try case.buffer.append(body.slice());
@@ -151,6 +155,8 @@ fn imports(case: *Case, random: std.Random) !void {
         };
         const name = if (case.profile == 11 and index % 2 == 0)
             long_name[0..384]
+        else if (case.profile == 8 and index == 1)
+            "default"
         else
             select_name(case.profile, random);
         const kind: u8 = if (case.profile == 12) @intCast(index) else 0;
@@ -164,9 +170,9 @@ fn imports(case: *Case, random: std.Random) !void {
         switch (kind) {
             0 => try body.byte(0),
             1 => try body.append(&.{ 0x70, 0, 1 }),
-            2 => try body.append(&.{ 0, 1 }),
+            2 => try body.append(&.{ 3, 1, 2 }),
             3 => try body.append(&.{ 0x7f, 0 }),
-            else => unreachable,
+            else => assert(false),
         }
     }
     const start = case.buffer.length;
@@ -177,13 +183,14 @@ fn imports(case: *Case, random: std.Random) !void {
     assert(case.import_offset > start);
 }
 
-fn remaining_sections(case: *Case, random: std.Random) !void {
+fn remaining_sections(case: *Case) !void {
     assert(case.buffer.length >= 8);
     const imported = case.profile == 12;
     const functions = if (imported) 1 else case.count;
     try case.buffer.section(3, &.{ 1, 1 });
     try case.buffer.section(4, if (imported) &.{0} else &.{ 1, 0x70, 0, 1 });
     try case.buffer.section(5, if (imported) &.{0} else &.{ 1, 0, 1 });
+    try case.buffer.section(13, &.{ 1, 0, 1 });
     try case.buffer.section(6, &.{ 1, 0x7f, 0, 0x41, 0, 0x0b });
     var exports = Buffer{};
     try exports.byte(1);
@@ -194,25 +201,28 @@ fn remaining_sections(case: *Case, random: std.Random) !void {
     case.export_offset = case.buffer.length - 2;
     var start = Buffer{};
     try start.integer(functions);
-    try case.buffer.section(8, start.slice());
+    if (case.profile != 1) try case.buffer.section(8, start.slice());
     var elements = Buffer{};
     try elements.append(&.{ 1, 0, 0x41, 0, 0x0b, 1 });
     try elements.integer(functions);
     try case.buffer.section(9, elements.slice());
+    try case.buffer.section(12, &.{1});
     try case.buffer.section(10, &.{ 1, 5, 0, 0x41, 0, 0x1a, 0x0b });
     try case.buffer.section(11, &.{ 1, 0, 0x41, 0, 0x0b, 1, 'x' });
     var custom = Buffer{};
-    const name: []const u8 = if (random.boolean()) "zunk_bindings" else "custom";
-    try custom.name(name);
+    try custom.name("zunk_bindings");
     try custom.append("{}");
     try case.buffer.section(0, custom.slice());
+    case.bindings_offset = case.buffer.length - custom.length + 1;
     try case.buffer.section(0, &.{ 4, 'n', 'a', 'm', 'e', 2, 1, 0 });
+    case.names_offset = case.buffer.length - 2;
+    try case.buffer.section(200, &.{ 1, 2, 3 });
     assert(case.buffer.length <= input_max);
 }
 
 fn mutate(case: *Case, random: std.Random) !void {
-    assert(case.mutation < 16);
-    case.malformed = case.mutation != 0;
+    assert(case.mutation < 20);
+    case.expectation = if (case.mutation == 0) .accept else .reject;
     const bytes = &case.buffer.bytes;
     switch (case.mutation) {
         0 => {},
@@ -220,7 +230,7 @@ fn mutate(case: *Case, random: std.Random) !void {
         2 => bytes[9] = 127,
         3 => try case.buffer.append(&.{ 0, 0xff, 0xff, 0xff, 0xff, 0x1f }),
         4 => bytes[case.import_offset] = if (bytes[case.import_offset] == 127) 126 else 127,
-        5 => bytes[8] = 13,
+        5 => try damage_skipped(case, random),
         6 => try case.buffer.section(2, &.{0}),
         7 => try case.buffer.section(1, &.{0}),
         8 => {
@@ -232,10 +242,14 @@ fn mutate(case: *Case, random: std.Random) !void {
         12 => bytes[case.export_offset] = 4,
         13 => try case.buffer.append(&.{ 0, 0x80, 0x80, 0x80, 0x80, 0x80, 0 }),
         14 => {
-            if (case.count > 0) bytes[case.kind_offset] = 4 else bytes[8] = 255;
+            if (case.count > 0) bytes[case.kind_offset] = 4 else bytes[4] = 2;
         },
         15 => try truncate(case, random),
-        else => unreachable,
+        16 => bytes[case.names_offset] = 127,
+        17 => bytes[case.bindings_offset] = 0xff,
+        18 => bytes[11] = 0x61,
+        19 => try case.buffer.section(7, &.{0}),
+        else => assert(false),
     }
     assert(case.buffer.length <= input_max);
 }
@@ -257,5 +271,30 @@ fn truncate(case: *Case, random: std.Random) !void {
             return;
         }
     }
-    unreachable;
+    assert(false);
+    return error.MissingTruncation;
+}
+
+fn damage_skipped(case: *Case, random: std.Random) !void {
+    assert(case.mutation == 5);
+    case.baseline = case.buffer;
+    case.expectation = .skipped;
+    var steps: u64 = input_max * 2;
+    var input = Reader{ .bytes = case.buffer.slice(), .position = 8, .steps = &steps };
+    const ids = [_]u8{ 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 200 };
+    const target = ids[case.profile % ids.len];
+    for (0..case.buffer.length) |_| {
+        if (input.position == input.bytes.len) break;
+        const id = try input.byte();
+        const size = try input.integer();
+        const offset = input.position;
+        _ = try input.take(size);
+        if (id != target) continue;
+        const index = offset + random.uintLessThan(u32, size);
+        case.buffer.bytes[index] ^= 0xff;
+        assert(case.buffer.length == case.baseline.length);
+        return;
+    }
+    assert(false);
+    return error.MissingSkippedSection;
 }
