@@ -168,6 +168,11 @@ do not retain them across frames. Render passes, including offscreen passes,
 use the frame encoder, so later passes can sample earlier output. Compute can
 share it or use a separate encoder and submission.
 
+`bufferDestroy` and `destroyTexture` kill the handle at once. While the frame
+encoder is open the GPU object lives until `present` has submitted the frame,
+so a resource recorded in it may be destroyed before `present`. A separately
+created encoder gets no such deferral: destroy after its `queueSubmit`.
+
 Texture creation from assets and buffer mapping are asynchronous. Mapping moves
 from idle to pending to mapped, or failed until unmapped. Submit the copy with
 `present` or `queueSubmit` before requesting the map. `Readback` manages this
@@ -213,7 +218,9 @@ atlas. This exercises a source stride larger than its copied width.
 
 The cube writes stencil value 1; a translucent quad then highlights its
 silhouette only where stencil equals 1. Two 1x1 inset readbacks sample the cube
-center and an empty corner after the third frame.
+center and an empty corner after the third frame. That frame draws the inset
+from a scratch vertex buffer and scratch attachments destroyed before
+`present`; the page title then reports whether the readback saw the cube.
 
 ## examples/mesh-3d/src/scene.wgsl
 

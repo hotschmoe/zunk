@@ -593,6 +593,7 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\
         \\  _encoderH: 0,
         \\  _canvasViewH: 0,
+        \\  _doomed: [],
         \\  encoder() {
         \\    if (!this._encoderH) this._encoderH = H.store(H.get(1).createCommandEncoder());
         \\    return this._encoderH;
@@ -608,7 +609,13 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\      this._encoderH = 0;
         \\      H.get(1).queue.submit([enc.finish()]);
         \\    }
+        \\    for (const o of this._doomed.splice(0)) o.destroy();
         \\    if (this._canvasViewH) { H.release(this._canvasViewH); this._canvasViewH = 0; }
+        \\  },
+        \\  destroy(h) {
+        \\    const o = H.get(h);
+        \\    H.release(h);
+        \\    if (this._encoderH) this._doomed.push(o); else o.destroy();
         \\  },
         \\
         \\  beginPass(ptr) {

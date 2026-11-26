@@ -350,7 +350,7 @@ Working today: the WASM analyzer, the resolution engine, the JS/HTML generator, 
 
 The WebGPU surface covers what teak and a CAD viewer needed: vertex and index buffers, instancing, samplers, depth and stencil, MSAA, offscreen targets, blend modes, compute, sub-rect texture uploads, and buffer readback. There are twelve examples under `examples/`.
 
-The blocking gate (`zig build test`) builds the CLI, builds one example, and checks `build` and `deploy` output. The background gate (`zig build test-heavy`) builds six more examples and runs `input-demo` in headless Chrome.
+The blocking gate (`zig build test`) builds the CLI, builds one example, and checks `build` and `deploy` output. The background gate (`zig build test-heavy`) builds six more examples and runs `input-demo` and `mesh-3d` (WebGPU) in headless Chrome.
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) for what is open and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions.
 

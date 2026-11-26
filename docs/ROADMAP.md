@@ -40,7 +40,7 @@ The CLI works end-to-end on pre-compiled WASM. One-command builds are achieved v
 
 - [x] 12 examples under `examples/`
 - [x] Blocking gate (`zig build test`, `tools/test.mjs blocking`): CLI `version` and `help`, build `vertex-triangle`, validate its wasm, `node --check` the generated JS, `deploy` and check the hashed files are referenced
-- [x] Background gate (`zig build test-heavy`): the same build check for six more examples, `--font` handling, and a headless Chrome run of `input-demo` (dev server, wasm startup, canvas pixels)
+- [x] Background gate (`zig build test-heavy`): the same build check for six more examples, `--font` handling, and headless Chrome runs of `input-demo` (dev server, wasm startup, canvas pixels) and `mesh-3d` (WebGPU on SwiftShader: a frame whose resources are destroyed before `present`, then readback)
 - [x] CI runs `zig build` + `zig build test` on pull requests (Linux, macOS, Windows; Debug and ReleaseSafe, plus ReleaseFast and ReleaseSmall on Linux) and the background gate nightly
 
 **Not covered by any gate:** `a11y-demo`, `atlas-upload`, `audio-demo-2-assets-cached`, `file-dialog-demo` and `imgui-demo` are not built by either gate.
@@ -172,6 +172,7 @@ Added for the kerf/teak 3D work; demonstrated by `examples/mesh-3d`.
 - [x] Viewport / scissor
 - [x] Readback (`copyTextureToBuffer`, `bufferMapRead` polling, `Readback`)
 - [x] Frame-scoped handles released automatically (render passes, encoders, command buffers, canvas view)
+- [x] `bufferDestroy` / `destroyTexture` during a recorded frame take effect after `present` submits it
 - [x] Stencil: `depth24plus_stencil8`, `StencilState` on pipelines, stencil load/store/clear on passes, `renderPassSetStencilReference`
 - [x] WebGPU lifecycle documented in one place (`SRC.md`, "src/web/gpu.zig"); multi-line JS lives in the `zunkGPU` helper in `gen/js_gen.zig`
 
