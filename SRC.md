@@ -6,6 +6,124 @@ Bridge dependencies are emitted in the listed order. The user's `bridge.js` is
 emitted last so it can override dependency symbols. Fonts are copied into
 `dist/fonts/` and loaded before the app's `init` runs.
 
+Build configuration never starts a process. `-Dcommit=<id>` supplies the tester's
+provenance string and defaults to `unknown`, including in fetched dependencies.
+CI passes its checkout SHA. `tools/test.mjs` reads the checkout SHA and passes it
+to the fixed-seed fuzz invocation in the blocking gate.
+That invocation inherits the outer build's optimization mode.
+
+## src/gen/build_path.zig
+
+`build` is the pure in-memory seam from wasm bytes and generation options to
+analysis, JavaScript, HTML, source map, report, hash and import dispositions.
+It receives all storage and limits from its caller and does no IO, clock reads
+or random draws. A fixed-buffer allocator uses the caller's one allocation;
+there is no allocator growth. The CLI still owns its IO and uses the same
+reader and generator directly.
+
+The reader caps input at 10 MiB and each vector at 65,536 entries. The seam
+defaults to 1,024 imports, 65,536 option bytes and a 268,435,456-step budget.
+Options allow at most 128 fonts and 64 bridge chunks; option bytes include
+filenames, URL, integrity, font names/files, and bridge origins/bodies. These
+limits return `InputLimit`, `EntryLimit`, `ImportLimit` or `OptionLimit`.
+Insufficient caller storage returns `OutOfMemory` or the writer's `WriteFailed`.
+No limit failure publishes a partial result.
+
+Every reader byte and payload slice is charged against the shared step budget.
+Before generation the seam reserves `(wasm_bytes + option_bytes) * 128 +
+imports * 262144` steps, including bounded 64-by-64 suggestion comparisons.
+An insufficient budget returns `StepLimit`. Publication starts empty with stage
+`reader`; after analysis and reservation it changes to `generation`. Only full
+success publishes a result. Failure leaves scratch storage unspecified and the
+result null; the stage identifies which phase exhausted storage.
+
+## src/gen/wasm_reader.zig and src/gen/wasm_analyze.zig
+
+The reader extracts function types, imports, exports, the local-name subsection
+of `name`, and the opaque bytes of `zunk_bindings`. Other custom payloads and
+unrecognized name subsections are skipped. Custom section names still use the
+same checked UTF-8 name reader. Manifest bytes are retained, not JSON-validated.
+
+Every other section is skipped by its declared size: function, table, memory,
+global, start, element, code, data, data-count, tag (13), and future section IDs.
+Their bytes are never interpreted. The browser validates those payloads and
+their relationships. Zunk is a build tool, not a wasm validator; rejecting a
+new instruction, segment encoding or section would break otherwise usable apps.
+Only type/import/export uniqueness and type-before-import order are enforced.
+Import signatures must refer to available types. Names attach to imports already
+read when the custom section is encountered; other custom placement is allowed.
+
+Bounds checks cover every read, slice and vector count; unsigned LEB128 takes
+at most five bytes and cannot overflow u32. Names must be UTF-8. Vectors must
+fit the remaining payload as well as the entry limit. SIMD `v128` is a known
+value type, including in signatures used only by internal functions. Unknown
+value types return `UnsupportedValueType`. Imported table/memory limit flags
+0 through 3 are read without comparing minimum and maximum; higher flags return
+`UnsupportedLimits` because this reader has u32 limits. All malformed framing,
+unsupported input and resource exhaustion return typed errors. Analysis returns
+no partial value on error. Owned assertions cover programmer invariants and
+remain enabled in all optimize modes.
+
+## src/fuzz.zig and src/fuzz_generate.zig
+
+This executable exercises the real reader, resolver and JS/HTML generator through
+the build-path seam. Startup allocates three 16 MiB regions plus two 64 KiB
+case buffers; generation and oracles reuse them. The runner owns IO, random seed
+selection, timing and the active-case pointer used by the panic saver. The pure
+generator receives its seeded PRNG explicitly. Cases allow at most 128 imports;
+the run defaults to 4,096 iterations and caps explicit runs at 10,000,000.
+
+Sixteen profiles cross twenty mutation choices. Profiles include empty and many
+imports, duplicate module/name pairs, exact/prefix/signature resolution, unknown
+symbols, long/empty/Unicode/quoted names, other namespaces, all four import kinds,
+an internal v128 parameter, shared imported memory, tag and future section IDs.
+The three expectation classes and their oracles are:
+
+- `accept`: a well-formed reader input must build. Two different scratch regions
+  must produce identical JS, HTML, report, source map, hash and dispositions.
+- `reject`: damaged headers, section framing, type/import/export fields, custom
+  section names or name-subsection framing must return the same typed reader
+  error twice and publish nothing. Resource failures cannot stand in for input
+  rejection. Truncations cover thirteen section positions. Bindings content is
+  opaque; its custom-name/framing damage is rejected, not arbitrary manifest bytes.
+- `skipped`: change a payload byte in one of eleven skipped section kinds while
+  preserving all framing. The damaged module must build twice deterministically;
+  every generated output must also equal the undamaged baseline byte for byte.
+  Both builds receive identical options derived from their unchanged length.
+
+For accepted cases, the independent declaration list must match every analyzed
+and reported import in order, including duplicates. The oracle resolves each
+declaration against its analyzed signature. An import is `provided` exactly when
+it is a function from `env` and the resolver finds a binding other than a stub.
+The emitted disposition must agree, and the report must classify every remaining
+import as `stub` (an emitted env function fallback) or `missing` (no generated
+entry). This checks accounting, not the behavioral correctness of each JS binding;
+it deliberately shares the production resolver. Custom bridge code is opaque
+and cannot be credited as providing an import by static inspection.
+
+Accepted cases also probe one-byte storage, 4 KiB storage, one step, zero allowed
+imports, and zero option bytes. Each required limit returns its typed error with
+no result; the 4 KiB probe counts generation-stage exhaustion when reached.
+
+Counters record accepted/rejected reader cases, generation-stage storage failures,
+provided/unresolved imports, duplicate pairs, zero/many imports, custom names,
+deterministic pairs, no-output rejections, memory/step/import/option limits,
+source-map/font cases, well-formed/skipped/identical-baseline classes, and the
+v128/shared-memory/tag/future-section cases. Arrays count every profile, mutation
+and truncation position. Runs of at least 512 cases require every scalar and array
+counter to be nonzero. Replay runs check just the saved case and skip coverage.
+
+The first line prints `fuzz seed=<seed> iterations=<count> commit=<id>`; the final
+line reports elapsed seconds and cases per second. Omit `--seed` for an IO-supplied
+random seed. Pass `-Dcommit=$(git rev-parse HEAD)` to identify the code being run;
+the default is `unknown`, and a dirty working tree is not encoded in the SHA.
+Failure prints the seed, case number, commit, reason and replay path, and saves
+`zig-out/fuzz/seed-<seed>-case-<number>.wasm` with a `.wasm.expect` sidecar.
+Skipped cases also save `.wasm.baseline`; keep all siblings together. Replay with
+`zig build fuzz -- --seed <seed> --replay zig-out/fuzz/seed-<seed>-case-<number>.wasm`.
+Replay uses the saved expectation and baseline, reconstructing declarations only
+for accepted input, so a broken reader can still replay malformed cases.
+
 ## src/bind/bind.zig
 
 The exchange buffer is shared with JavaScript and reused for successive strings;
@@ -94,6 +212,10 @@ SRI covers the final served bytes. The build fingerprint includes the zunk
 executable as well as the project's inputs, so rebuilding the generator
 invalidates its cache.
 
+JSON reports use one streaming stdout writer for the report and newline. Creating
+another positional writer just for the newline can overwrite the first report
+byte when stdout is redirected to a regular file.
+
 ## src/gen/js_resolve.zig
 
 Exact bindings take precedence over the double-underscore internal fallback.
@@ -114,6 +236,20 @@ spans cover chunk bodies only and are measured before the generated header is
 rewritten. WASM bindings are mutable so HMR retargets closures to the current
 instance. Input flushing is driven by wasm to avoid clearing state early.
 
+Only function imports in `env` are emitted. Unknown env functions get warning
+stubs; tables, memories, globals and other modules get `missing` report entries,
+without stub bodies or name suggestions. JSON entries include the import kind;
+`stubs` counts actual fallback functions and `missing_imports` counts absent
+entries. Instantiation receives `{ env }` and takes memory from `exports.memory`;
+it does not construct an imported memory. Supplying a missing import requires
+extending the import object before instantiation, including from bridge code.
+There is no additional per-import terminal warning outside the requested report.
+
+Valid identifiers keep plain method syntax. Reserved words and other names use
+computed JSON-string keys so arbitrary UTF-8 names cannot break JS syntax.
+The double-underscore fallback has an empty body: an inline line comment would
+consume the generated method's closing brace.
+
 Fonts load before startup by default; `--font-nowait` still preloads them but
 does not wait. HMR state preservation requires both serialization and hydration
 exports and uses the shared exchange buffer; otherwise the new module starts
@@ -126,6 +262,17 @@ state. Ctrl/Cmd+V is delayed until its paste event or an 80 ms timeout, keeping
 paste data and the key in the same frame. Browser shortcuts and real form
 fields remain available. Focus loss clears held input, and pointer move and
 release listeners live on the window to handle drags outside the canvas.
+
+## src/gen/js_identifier.zig
+
+Identifier classification follows ECMAScript's ID_Start/ID_Continue properties,
+plus `$`, `_`, and continuation-only ZWNJ/ZWJ, and excludes reserved words.
+The owned Unicode 17.0 tables were extracted from Node's Unicode properties;
+no process, external data or runtime dependency is needed to classify names.
+Each sorted range stores its gap from the preceding range and its inclusive
+length as unsigned LEB128. Base64 keeps the checked-in data compact. Decoding
+and range validation happen at compile time. Runtime lookup uses at most eleven
+binary-search steps per property and scans at most the name's byte length.
 
 ## src/gen/js/ime.js
 

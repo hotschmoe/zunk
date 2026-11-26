@@ -18,6 +18,7 @@ pub const Confidence = enum {
     medium,
     low,
     stub,
+    missing,
 };
 
 pub const Category = enum {
@@ -49,13 +50,20 @@ pub fn resolve(
     signature: ?wa.FuncType,
 ) !Resolution {
     const name = import.name;
+    if (import.kind != 0 or !std.mem.eql(u8, import.module, "env")) {
+        return .{
+            .js_body = try allocator.dupe(u8, ""),
+            .confidence = .missing,
+            .description = "Not supplied by the generated import object",
+        };
+    }
 
     // Exact matches must precede the `__` internal-stub fallback.
     if (exactMatch(allocator, name)) |res| return res;
 
     if (std.mem.startsWith(u8, name, "__")) {
         return .{
-            .js_body = try allocator.dupe(u8, "// internal"),
+            .js_body = try allocator.dupe(u8, ""),
             .confidence = .exact,
             .category = .zunk_internal,
             .description = "Internal WASM symbol",
@@ -874,7 +882,9 @@ fn generateStub(allocator: std.mem.Allocator, name: []const u8, sig: ?wa.FuncTyp
     defer body_aw.deinit();
     const w = &body_aw.writer;
 
-    try w.print("console.warn('[zunk] unresolved import: {s}", .{name});
+    try w.writeAll("console.warn('[zunk] unresolved import:', ");
+    try std.json.Stringify.value(name, .{}, w);
+    try w.writeAll(", '");
 
     if (sig) |ft| {
         try w.print("(", .{});

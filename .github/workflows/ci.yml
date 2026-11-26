@@ -36,10 +36,10 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
 
       - name: Build
-        run: zig build -j4 -Doptimize=${{ matrix.optimize }}
+        run: zig build -j4 -Doptimize=${{ matrix.optimize }} -Dcommit=${{ github.sha }}
 
       - name: Run Tests
-        run: zig build test -j4 -Doptimize=${{ matrix.optimize }}
+        run: zig build test -j4 -Doptimize=${{ matrix.optimize }} -Dcommit=${{ github.sha }}
 
   format:
     if: github.event_name == 'pull_request'
@@ -65,5 +65,6 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ env.ZIG_VERSION }}
-      - run: zig build test-heavy -j4
+      - run: zig build fuzz-heavy -j4 -Dcommit=${{ github.sha }}
+      - run: zig build test-heavy -j4 -Dcommit=${{ github.sha }}
 

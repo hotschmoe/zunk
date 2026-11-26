@@ -242,7 +242,8 @@ fn prepareBuild(allocator: std.mem.Allocator, io: std.Io, parsed: BuildArgs, con
     };
     errdefer allocator.free(wasm);
 
-    var analysis = try wa.analyze(allocator, wasm);
+    var analysis_steps = wa.steps_max;
+    var analysis = try wa.analyze(allocator, wasm, &analysis_steps);
     errdefer analysis.deinit(allocator);
 
     const bridge_chunks = try collectBridgeChunks(allocator, io, parsed.bridgeDeps(), console);
@@ -292,7 +293,11 @@ fn openOutputDir(io: std.Io, parsed: BuildArgs) !std.Io.Dir {
 
 fn printReport(console: *rich.Console, allocator: std.mem.Allocator, report: []const u8, title: []const u8, json_mode: bool) !void {
     if (json_mode) {
-        try console.printPlain(report);
+        var buffer: [4096]u8 = undefined;
+        var writer = std.Io.File.stdout().writerStreaming(console.io, &buffer);
+        try writer.interface.writeAll(report);
+        try writer.interface.writeByte('\n');
+        try writer.interface.flush();
         return;
     }
     try console.print("");

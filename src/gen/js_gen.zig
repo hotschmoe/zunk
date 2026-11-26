@@ -2,6 +2,8 @@ const std = @import("std");
 const wa = @import("wasm_analyze.zig");
 const resolver = @import("js_resolve.zig");
 const source_map = @import("source_map.zig");
+const assert = @import("../assert.zig").assert;
+const identifiers = @import("js_identifier.zig");
 
 pub const BridgeJsChunk = struct {
     origin: []const u8,
@@ -28,6 +30,7 @@ pub const GenOptions = struct {
 };
 
 pub const Categories = std.enums.EnumSet(resolver.Category);
+pub const Disposition = enum { provided, unresolved };
 
 pub const GenResult = struct {
     js: []const u8,
@@ -36,12 +39,14 @@ pub const GenResult = struct {
     report: []const u8,
     js_hash: [16]u8,
     categories: Categories,
+    dispositions: []Disposition,
 
     pub fn deinit(self: *GenResult, allocator: std.mem.Allocator) void {
         allocator.free(self.js);
         if (self.js_map.len != 0) allocator.free(self.js_map);
         allocator.free(self.html);
         allocator.free(self.report);
+        allocator.free(self.dispositions);
     }
 };
 
@@ -51,8 +56,12 @@ pub fn generate(
     opts: GenOptions,
 ) !GenResult {
     var resolutions = try allocator.alloc(resolver.Resolution, analysis.imports.len);
+    const dispositions = try allocator.alloc(Disposition, analysis.imports.len);
+    errdefer allocator.free(dispositions);
+    @memset(dispositions, .unresolved);
+    var resolved_count: usize = 0;
     defer {
-        for (resolutions) |*r| allocator.free(r.js_body);
+        for (resolutions[0..resolved_count]) |*r| allocator.free(r.js_body);
         allocator.free(resolutions);
     }
 
@@ -61,8 +70,9 @@ pub fn generate(
     var stub_count: usize = 0;
 
     for (analysis.imports, 0..) |*imp, i| {
-        const sig = analysis.getImportSignature(imp);
+        const sig = analysis.get_import_signature(imp);
         resolutions[i] = try resolver.resolve(allocator, imp, sig);
+        resolved_count += 1;
         const r = &resolutions[i];
 
         if (r.needs_handles) needs.handles = true;
@@ -73,10 +83,10 @@ pub fn generate(
         if (r.confidence == .stub) stub_count += 1;
     }
 
-    const has_init = analysis.hasExport("init");
-    const has_frame = analysis.hasExport("frame");
-    const has_resize = analysis.hasExport("resize");
-    const has_cleanup = analysis.hasExport("cleanup");
+    const has_init = analysis.has_export("init");
+    const has_frame = analysis.has_export("frame");
+    const has_resize = analysis.has_export("resize");
+    const has_cleanup = analysis.has_export("cleanup");
 
     if (has_frame) needs.render_loop = true;
     if (has_resize) needs.resize_handler = true;
@@ -116,8 +126,9 @@ pub fn generate(
     for (analysis.imports, 0..) |*imp, i| {
         const r = &resolutions[i];
 
-        if (!std.mem.eql(u8, imp.module, "env")) continue;
-        try w.print("  {s}() {{ {s} }},\n", .{ imp.name, r.js_body });
+        if (!std.mem.eql(u8, imp.module, "env") or imp.kind != 0) continue;
+        try emit_import(w, imp.name, r.js_body);
+        if (r.confidence != .stub) dispositions[i] = .provided;
     }
 
     try w.writeAll("};\n\n");
@@ -285,7 +296,20 @@ pub fn generate(
         .report = try report_aw.toOwnedSlice(),
         .js_hash = hex,
         .categories = categories_used,
+        .dispositions = dispositions,
     };
+}
+
+fn emit_import(w: *std.Io.Writer, name: []const u8, body: []const u8) !void {
+    assert(w.end <= w.buffer.len);
+    assert(name.len <= wa.input_max);
+    if (identifiers.is_plain(name)) {
+        try w.print("  {s}() {{ {s} }},\n", .{ name, body });
+    } else {
+        try w.writeAll("  [");
+        try std.json.Stringify.value(name, .{}, w);
+        try w.print("]() {{ {s} }},\n", .{body});
+    }
 }
 
 const Features = struct {
@@ -914,7 +938,7 @@ pub fn generateHtml(
     categories: Categories,
 ) !void {
     const has_canvas = categories.contains(.canvas2d) or categories.contains(.webgpu);
-    const has_frame = analysis.hasExport("frame");
+    const has_frame = analysis.has_export("frame");
 
     try w.writeAll("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n");
     try w.writeAll("  <meta charset=\"utf-8\">\n");
@@ -1004,13 +1028,19 @@ fn generateReport(
         try w.print("\"total_imports\":{d},", .{analysis.imports.len});
         try w.print("\"total_exports\":{d},", .{analysis.exports.len});
         try w.print("\"stubs\":{d},", .{stub_count});
+        try report_missing(w, analysis, resolutions, true);
 
         try w.writeAll("\"resolutions\":[");
         for (analysis.imports, 0..) |imp, i| {
             if (i > 0) try w.writeAll(",");
             const r = &resolutions[i];
-            try w.print("{{\"module\":\"{s}\",\"name\":\"{s}\",\"confidence\":\"{s}\",\"category\":\"{s}\"", .{
-                imp.module, imp.name, @tagName(r.confidence), @tagName(r.category),
+            try w.writeAll("{\"module\":");
+            try std.json.Stringify.value(imp.module, .{}, w);
+            try w.writeAll(",\"name\":");
+            try std.json.Stringify.value(imp.name, .{}, w);
+            try w.print(",\"kind\":\"{s}\"", .{import_kinds[imp.kind]});
+            try w.print(",\"confidence\":\"{s}\",\"category\":\"{s}\"", .{
+                @tagName(r.confidence), @tagName(r.category),
             });
             if (r.confidence == .stub) {
                 if (suggestMatch(imp.name)) |suggestion| {
@@ -1036,7 +1066,9 @@ fn generateReport(
         try w.writeAll("\"lifecycle\":{");
         for (lifecycle_fns, 0..) |fname, li| {
             if (li > 0) try w.writeAll(",");
-            try w.print("\"{s}\":{s}", .{ fname, if (analysis.hasExport(fname)) "true" else "false" });
+            try w.print("\"{s}\":{s}", .{
+                fname, if (analysis.has_export(fname)) "true" else "false",
+            });
         }
         try w.writeAll("}}");
         return;
@@ -1046,13 +1078,14 @@ fn generateReport(
     try w.print("Total imports: {d}\n", .{analysis.imports.len});
     try w.print("Total exports: {d}\n", .{analysis.exports.len});
     try w.print("Unresolved (stubs): {d}\n\n", .{stub_count});
+    try report_missing(w, analysis, resolutions, false);
 
     if (stub_count > 0) {
         try w.writeAll("[red]WARNING: UNRESOLVED IMPORTS[/] -- these need a bridge.js or zunk naming convention:\n");
         for (analysis.imports, 0..) |imp, i| {
             if (resolutions[i].confidence == .stub) {
                 try w.print("   [red]*[/] {s}.{s}", .{ imp.module, imp.name });
-                if (analysis.getImportSignature(&imp)) |ft| {
+                if (analysis.get_import_signature(&imp)) |ft| {
                     try w.print(" (", .{});
                     for (ft.params, 0..) |p, j| {
                         if (j > 0) try w.print(", ", .{});
@@ -1111,7 +1144,7 @@ fn generateReport(
 
     try w.writeAll("\nLifecycle exports detected:\n");
     for (lifecycle_fns) |fname| {
-        const found = analysis.hasExport(fname);
+        const found = analysis.has_export(fname);
         if (found) {
             try w.print("  [green]{s}[/]: yes\n", .{fname});
         } else {
@@ -1120,12 +1153,40 @@ fn generateReport(
     }
 }
 
+const import_kinds = [_][]const u8{ "function", "table", "memory", "global" };
+
+fn report_missing(
+    w: *std.Io.Writer,
+    analysis: *const wa.Analysis,
+    resolutions: []const resolver.Resolution,
+    json: bool,
+) !void {
+    assert(resolutions.len == analysis.imports.len);
+    var count: u32 = 0;
+    for (resolutions) |resolution| count += @intFromBool(resolution.confidence == .missing);
+    assert(count <= analysis.imports.len);
+    if (json) {
+        try w.print("\"missing_imports\":{d},", .{count});
+        return;
+    }
+    if (count == 0) return;
+    try w.print("Missing imports (not supplied): {d}\n", .{count});
+    for (analysis.imports, resolutions) |imp, resolution| {
+        if (resolution.confidence != .missing) continue;
+        assert(imp.kind < import_kinds.len);
+        try w.print("  {s}.{s}: {s}; generated JS supplies only env functions\n", .{
+            imp.module, imp.name, import_kinds[imp.kind],
+        });
+    }
+    try w.writeAll("Provide these through the import object before instantiation.\n\n");
+}
+
 fn confidenceColor(conf: resolver.Confidence) []const u8 {
     return switch (conf) {
         .exact, .high => "green",
         .medium => "yellow",
         .low => "yellow",
-        .stub => "red",
+        .stub, .missing => "red",
     };
 }
 

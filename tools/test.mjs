@@ -1,11 +1,14 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 
-const [mode, binary] = process.argv.slice(2);
+const [mode, binary, optimize = 'debug'] = process.argv.slice(2);
 const root = resolve('.');
+const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
+assert.equal(commit.status, 0, commit.stderr);
+mkdirSync(join(root, '.zig-cache'), { recursive: true });
 const work = mkdtempSync(join(root, '.zig-cache', 'e2e-'));
 
 function run(command, args, cwd = root, timeout) {
@@ -124,6 +127,10 @@ async function gpuSmoke(wasm) {
 }
 
 if (mode === 'blocking') {
+    console.log(run('zig', [
+        'build', 'fuzz', '-j4', `-Dcommit=${commit.stdout.trim()}`, `-Doptimize=${optimize}`,
+        '--', '--seed', '1', '--iterations', '512',
+    ]));
     assert.match(run(binary, ['version']), /\d+\.\d+\.\d+/);
     assert.match(run(binary, ['help']), /deploy/);
     const wasm = example('vertex-triangle');

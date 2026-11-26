@@ -90,6 +90,14 @@ We optimize for clean architecture, not backwards compatibility. **When we refac
 Follow [ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md): no unit tests, at most ten blocking end-to-end tests, and a separate background gate. Do not add snapshots or tests of implementation structure.
 
 Run `zig build test -j4` for the blocking gate and `zig build test-heavy -j4` for the background gate. Both require Node.js; the background gate also requires Chromium or Google Chrome (set `CHROME_BIN` to override detection). The background gate runs on a schedule and does not block pull requests; investigate failures by finding the regressing commit and fixing head.
+
+The blocking gate includes the real build-path generative tester with seed 1 and
+512 iterations. Run `zig build fuzz -- --seed 1` for its default 4,096 cases;
+`zig build fuzz-heavy` runs 200,000 cases with a fresh seed in the background.
+Use `--iterations <count>` to size a fuzz run and `--replay <saved.wasm>` to replay
+a saved failure with its sidecars. `-Dcommit=<id>` records provenance and defaults
+to `unknown`; CI and `tools/test.mjs` pass the checkout commit. See SRC.md for the
+expectation classes, oracles, limits and saved-case format.
 <!-- END:testing-philosophy -->
 
 <!-- BEGIN:footer -->
@@ -114,6 +122,7 @@ zunk is a build tool and runtime library for writing browser applications entire
 - **Language**: Zig, minimum 0.17.1 (`minimum_zig_version` in `build.zig.zon`; CI pins `ZIG_VERSION` in `.github/workflows/ci.yml`)
 - **Build**: `zig build` (native CLI), `zig build run -- <args>` (run the CLI)
 - **Gates**: `zig build test -j4` is the blocking end-to-end gate (needs Node); `zig build test-heavy -j4` is the background gate (needs Node and Chrome/Chromium). Both run `tools/test.mjs`. There are no unit tests; see ENGINEERING.md.
+- **Build-path generation**: `zig build fuzz -- --seed 1`; `zig build fuzz-heavy` for the long background run. The blocking gate includes a 512-case fixed-seed run.
 - **Target**: the zunk CLI is a native executable; user projects compile to `wasm32-freestanding`
 - **Dependencies**: `webzocket` (dev-server WebSocket) and `rich_zig` (CLI output), both pinned in `build.zig.zon`
 
