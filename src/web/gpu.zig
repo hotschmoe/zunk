@@ -164,40 +164,28 @@ pub const BindGroupLayoutEntry = extern struct {
     min_size: u64,
     _padding: u64 = 0,
 
-    pub fn initBuffer(b: u32, vis: u32, buf_type: BufferBindingType) BindGroupLayoutEntry {
+    fn init(b: u32, vis: u32, entry_type: u32, type_variant: u32) BindGroupLayoutEntry {
         return .{
             .binding = b,
             .visibility = vis,
-            .entry_type = 0,
-            .type_variant = @backingInt(buf_type),
+            .entry_type = entry_type,
+            .type_variant = type_variant,
             .has_min_size = 0,
             .has_dynamic_offset = 0,
             .min_size = 0,
         };
+    }
+
+    pub fn initBuffer(b: u32, vis: u32, buf_type: BufferBindingType) BindGroupLayoutEntry {
+        return init(b, vis, 0, @backingInt(buf_type));
     }
 
     pub fn initTexture(b: u32, vis: u32, sample_type: TextureSampleType) BindGroupLayoutEntry {
-        return .{
-            .binding = b,
-            .visibility = vis,
-            .entry_type = 1,
-            .type_variant = @backingInt(sample_type),
-            .has_min_size = 0,
-            .has_dynamic_offset = 0,
-            .min_size = 0,
-        };
+        return init(b, vis, 1, @backingInt(sample_type));
     }
 
     pub fn initSampler(b: u32, vis: u32, sampler_type: SamplerBindingType) BindGroupLayoutEntry {
-        return .{
-            .binding = b,
-            .visibility = vis,
-            .entry_type = 2,
-            .type_variant = @backingInt(sampler_type),
-            .has_min_size = 0,
-            .has_dynamic_offset = 0,
-            .min_size = 0,
-        };
+        return init(b, vis, 2, @backingInt(sampler_type));
     }
 
     pub fn withDynamicOffset(self: BindGroupLayoutEntry) BindGroupLayoutEntry {
@@ -223,14 +211,18 @@ pub const BindGroupEntry = extern struct {
     offset: u64,
     size: u64,
 
-    pub fn initBuffer(b: u32, handle: bind.Handle, offset: u64, size: u64) BindGroupEntry {
+    fn init(b: u32, entry_type: u32, handle: bind.Handle, offset: u64, size: u64) BindGroupEntry {
         return .{
             .binding = b,
-            .entry_type = 0,
+            .entry_type = entry_type,
             .resource_handle = @bitCast(handle.toInt()),
             .offset = offset,
             .size = size,
         };
+    }
+
+    pub fn initBuffer(b: u32, handle: bind.Handle, offset: u64, size: u64) BindGroupEntry {
+        return init(b, 0, handle, offset, size);
     }
 
     pub fn initBufferFull(b: u32, handle: bind.Handle, size: u64) BindGroupEntry {
@@ -238,23 +230,11 @@ pub const BindGroupEntry = extern struct {
     }
 
     pub fn initTextureView(b: u32, handle: bind.Handle) BindGroupEntry {
-        return .{
-            .binding = b,
-            .entry_type = 1,
-            .resource_handle = @bitCast(handle.toInt()),
-            .offset = 0,
-            .size = 0,
-        };
+        return init(b, 1, handle, 0, 0);
     }
 
     pub fn initSampler(b: u32, handle: bind.Handle) BindGroupEntry {
-        return .{
-            .binding = b,
-            .entry_type = 2,
-            .resource_handle = @bitCast(handle.toInt()),
-            .offset = 0,
-            .size = 0,
-        };
+        return init(b, 2, handle, 0, 0);
     }
 };
 

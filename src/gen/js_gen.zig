@@ -358,13 +358,12 @@ fn emitHmrSwap(w: *std.Io.Writer, needs: Features, has_init: bool, has_cleanup: 
         try w.writeAll("    try { if (exports.cleanup) exports.cleanup(); } catch (e) { console.warn('[zunk hmr] cleanup threw:', e); }\n");
     }
 
-    // The exchange buffer pointer is an exported WebAssembly global.
     try w.writeAll(
         \\    let __zunkHmrSnapshot = null;
         \\    if (exports.__zunk_hmr_serialize && exports.__zunk_string_buf_ptr) {
         \\      const len = exports.__zunk_hmr_serialize();
         \\      if (len > 0) {
-        \\        const ptr = exports.__zunk_string_buf_ptr.value;
+        \\        const ptr = exports.__zunk_string_buf_ptr();
         \\        __zunkHmrSnapshot = new Uint8Array(memory.buffer, ptr, len).slice();
         \\      }
         \\    }
@@ -376,7 +375,7 @@ fn emitHmrSwap(w: *std.Io.Writer, needs: Features, has_init: bool, has_cleanup: 
     if (has_init) {
         try w.writeAll(
             \\    if (__zunkHmrSnapshot && exports.__zunk_hmr_hydrate && exports.__zunk_string_buf_ptr) {
-            \\      const ptr = exports.__zunk_string_buf_ptr.value;
+            \\      const ptr = exports.__zunk_string_buf_ptr();
             \\      new Uint8Array(memory.buffer, ptr, __zunkHmrSnapshot.length).set(__zunkHmrSnapshot);
             \\      exports.__zunk_hmr_hydrate(ptr, __zunkHmrSnapshot.length);
             \\    } else if (exports.init) {
@@ -593,6 +592,7 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\
         \\  _encoderH: 0,
         \\  _canvasViewH: 0,
+        \\  _doomed: [],
         \\  encoder() {
         \\    if (!this._encoderH) this._encoderH = H.store(H.get(1).createCommandEncoder());
         \\    return this._encoderH;
@@ -608,7 +608,13 @@ fn emitWebGPUState(w: *std.Io.Writer) !void {
         \\      this._encoderH = 0;
         \\      H.get(1).queue.submit([enc.finish()]);
         \\    }
+        \\    for (const o of this._doomed.splice(0)) o.destroy();
         \\    if (this._canvasViewH) { H.release(this._canvasViewH); this._canvasViewH = 0; }
+        \\  },
+        \\  destroy(h) {
+        \\    const o = H.get(h);
+        \\    H.release(h);
+        \\    if (this._encoderH) this._doomed.push(o); else o.destroy();
         \\  },
         \\
         \\  beginPass(ptr) {
@@ -1069,7 +1075,7 @@ fn generateReport(
             }
         }
         try w.writeAll("\nTo resolve these, either:\n");
-        try w.writeAll("  1. Rename to use a zunk convention (e.g., canvas_fillRect, audio_play)\n");
+        try w.writeAll("  1. Rename to use a zunk convention (e.g., ctx2d_fill_rect, audio_play)\n");
         try w.writeAll("  2. Provide a bridge.js file in your project root or js/ directory\n");
         try w.writeAll("  3. Use the Layer 2 web modules: @import(\"zunk\").web.*\n\n");
     }

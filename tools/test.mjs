@@ -29,16 +29,21 @@ function example(name) {
     return wasm;
 }
 
-async function browserSmoke(wasm) {
+const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+
+function findBrowser() {
     const candidates = [process.env.CHROME_BIN, 'google-chrome', 'chromium', 'chromium-browser'].filter(Boolean);
     const browser = candidates.find((name) => spawnSync(name, ['--version'], { stdio: 'ignore' }).status === 0);
     assert.ok(browser, 'background browser smoke requires Chromium or Google Chrome');
+    return browser;
+}
 
+async function withServer(wasm, name, visit) {
     const probe = createServer();
     await new Promise((ok, fail) => probe.once('error', fail).listen(0, '127.0.0.1', ok));
     const port = probe.address().port;
     await new Promise((ok, fail) => probe.close((err) => err ? fail(err) : ok()));
-    const output = join(work, 'browser');
+    const output = join(work, name);
     const server = spawn(binary, ['run', '--wasm', wasm, '--output-dir', output, '--port', String(port), '--no-watch'], { stdio: 'ignore' });
     const url = `http://127.0.0.1:${port}/`;
     try {
@@ -47,9 +52,49 @@ async function browserSmoke(wasm) {
             if (server.exitCode !== null) throw new Error(`dev server exited: ${server.exitCode}`);
             try { ready = (await fetch(url)).ok; } catch {}
             if (ready) break;
-            await new Promise((ok) => setTimeout(ok, 100));
+            await sleep(100);
         }
         assert.ok(ready, 'dev server did not start');
+        await visit(url, output);
+    } finally {
+        server.kill();
+    }
+}
+
+// Virtual time outruns a loaded machine and the GPU process, so pages are polled over DevTools in real time.
+async function pollPage(flags, profile, url, expression, done) {
+    const chrome = spawn(findBrowser(), [...flags, '--remote-debugging-port=0', `--user-data-dir=${join(work, profile)}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    try {
+        let stderr = '';
+        const devtools = await new Promise((ok, fail) => {
+            const timer = setTimeout(() => fail(new Error(`browser did not open DevTools\n${stderr}`)), 30000);
+            chrome.stderr.on('data', (chunk) => {
+                stderr += chunk;
+                const found = /DevTools listening on ws:\/\/([^/]+)\//.exec(stderr);
+                if (found) { clearTimeout(timer); ok(found[1]); }
+            });
+        });
+        const page = await (await fetch(`http://${devtools}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' })).json();
+        const socket = new WebSocket(page.webSocketDebuggerUrl);
+        await new Promise((ok, fail) => { socket.onopen = ok; socket.onerror = () => fail(new Error('DevTools socket failed')); });
+        const evaluate = () => new Promise((ok) => {
+            socket.onmessage = (message) => ok(String(JSON.parse(message.data).result?.result?.value ?? ''));
+            socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression } }));
+        });
+        let seen = '';
+        for (let i = 0; i < 300 && !done(seen); i++) {
+            await sleep(100);
+            seen = await evaluate();
+        }
+        socket.close();
+        return seen;
+    } finally {
+        chrome.kill();
+    }
+}
+
+async function browserSmoke(wasm) {
+    await withServer(wasm, 'browser', async (url, output) => {
         const index = join(output, 'index.html');
         const html = readFileSync(index, 'utf8');
         const hook = `<script>window.addEventListener('ZunkApplicationStarted', () => {
@@ -62,12 +107,20 @@ async function browserSmoke(wasm) {
         });</script>`;
         assert.ok(html.includes('</head>'), 'generated page has no head');
         writeFileSync(index, html.replace('</head>', `${hook}</head>`));
-        const page = run(browser, ['--headless', '--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--disable-dev-shm-usage', '--virtual-time-budget=5000', `--user-data-dir=${join(work, 'chrome')}`, '--dump-dom', url], root, 30000);
-        assert.match(page, /data-smoke="passed"/, 'browser did not start and render the input demo');
+        const flags = ['--headless', '--no-sandbox', '--disable-gpu', '--disable-software-rasterizer', '--disable-dev-shm-usage'];
+        const smoke = await pollPage(flags, 'chrome', url, `document.body?.dataset.smoke ?? ''`, (value) => value !== '');
+        assert.equal(smoke, 'passed', 'browser did not start and render the input demo');
         console.log('Browser: dev server, wasm startup and canvas rendering');
-    } finally {
-        server.kill();
-    }
+    });
+}
+
+async function gpuSmoke(wasm) {
+    const flags = ['--headless', '--no-sandbox', '--disable-dev-shm-usage', '--ignore-gpu-blocklist', '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--enable-features=Vulkan,WebGPU', '--use-vulkan=swiftshader', '--use-webgpu-adapter=swiftshader', '--use-angle=swiftshader'];
+    await withServer(wasm, 'browser-gpu', async (url) => {
+        const title = await pollPage(flags, 'chrome-gpu', url, 'document.title', (value) => value.includes('readback'));
+        assert.equal(title, 'zunk mesh-3d: readback ok', 'mesh-3d did not draw and read back through WebGPU');
+        console.log('Browser: WebGPU frame, resources destroyed before present, readback');
+    });
 }
 
 if (mode === 'blocking') {
@@ -85,12 +138,12 @@ if (mode === 'blocking') {
 } else if (mode === 'browser') {
     await browserSmoke(join(root, 'examples', 'input-demo', 'zig-out', 'bin', 'input-demo.wasm'));
 } else if (mode === 'heavy') {
-    let inputWasm;
+    const wasms = {};
     for (const name of ['input-demo', 'text-demo', 'mesh-3d', 'audio-demo-1-assets-bundled', 'texture-demo', 'particle-life']) {
-        const wasm = example(name);
-        if (name === 'input-demo') inputWasm = wasm;
+        wasms[name] = example(name);
         console.log(`Built ${name}`);
     }
+    const inputWasm = wasms['input-demo'];
     const font = join(work, 'example-font.ttf');
     writeFileSync(font, 'font fixture');
     const withFont = join(work, 'with-font');
@@ -100,7 +153,12 @@ if (mode === 'blocking') {
     run(binary, ['build', '--wasm', inputWasm, '--output-dir', invalidFont, '--font', 'Example', 'bold', font]);
     assert.ok(!existsSync(invalidFont), 'invalid font weight should prevent output');
     console.log('CLI: font asset and invalid weight');
+    const report = JSON.parse(run(binary, ['build', '--wasm', inputWasm, '--output-dir', join(work, 'report'), '--report-json']));
+    assert.equal(report.stubs, 0, 'input-demo has unresolved imports');
+    assert.equal(report.resolutions.length, report.total_imports);
+    console.log('CLI: JSON build report');
     await browserSmoke(inputWasm);
+    await gpuSmoke(wasms['mesh-3d']);
 } else {
     throw new Error(`unknown gate: ${mode}`);
 }

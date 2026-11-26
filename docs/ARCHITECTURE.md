@@ -37,7 +37,7 @@ Developer's Zig Source
    dist/
      index.html    (generated)
      app.js        (generated)
-     app.wasm      (compiled)
+     <name>.wasm   (compiled)
 ```
 
 ## Source Layout
@@ -54,7 +54,9 @@ src/
     audio.zig               Web Audio API wrappers
     asset.zig               Generic URL-based asset loading
     app.zig                 Lifecycle utilities, logging, clipboard
-    gpu.zig                 WebGPU bindings (50 extern fns, typed handles, descriptors)
+    gpu.zig                 WebGPU bindings (55 extern fns, handle aliases, descriptors)
+    fx.zig                  Host services (fetch, downloads, file pick, storage, paste/drop)
+    ime.zig                 IME composition bridge
     ui.zig                  HTML overlay UI (panels, sliders, checkboxes, buttons)
     imgui.zig               Immediate-mode canvas UI (comptime generic backend)
     render_backend.zig      Render backend abstraction (Canvas2DBackend)
@@ -62,7 +64,9 @@ src/
     wasm_analyze.zig        WASM binary parser
     js_resolve.zig          5-tier auto-resolution engine
     js_gen.zig              JS + HTML code generator
+    source_map.zig          Source maps for bridge.js chunks
     serve.zig               Dev server, file watcher, live reload, WebSocket
+    js/                     Embedded JS for a11y, fx and ime
 ```
 
 There are two distinct halves: the **runtime library** (bind/, web/) that user code imports and compiles into WASM, and the **build tool** (gen/, main.zig) that runs natively and processes the resulting WASM binary.
@@ -103,6 +107,8 @@ enum_val                     -- enum discriminant (1 WASM param)
 - `ret` -- return value descriptor
 - `js_hint` -- generation hint (builtin, dom, webgpu, audio, etc.)
 - `is_callback` -- whether this is a callback registration
+
+`bind.Module(descs)` serializes descriptors into a manifest, and the analyzer keeps a `zunk_bindings` custom section as `Analysis.explicit_manifest`. Nothing reads it: the Layer 2 modules do not use `Module`, and the generator resolves from import names and signatures alone.
 
 **Handle** -- Opaque reference to a JS object:
 ```
@@ -186,7 +192,7 @@ The asset handle stores a raw `ArrayBuffer` in the JS handle table. Type-specifi
 
 ### web/gpu.zig -- WebGPU Bindings
 
-Typed WebGPU wrappers over 50 extern functions, covering the compute pipeline and a full 3D render path. The lifecycle rules (handles, frame encoder, async operations) are documented once, at the top of `src/web/gpu.zig`; the summary:
+WebGPU wrappers over 55 extern functions, covering the compute pipeline and a 3D render path. The lifecycle rules (handles, frame encoder, async operations) are documented once, in `SRC.md` under "src/web/gpu.zig"; the summary:
 
 - **Handles.** Every GPU object is a `bind.Handle` (index into a JS table; 0 = none, 1 = device). Passes, encoders and command buffers are single-use and released by the call that consumes them. The *frame encoder* and the *canvas view* are created lazily per frame and released by `present`.
 - **Frame model.** `beginRenderPassDesc` records into the frame encoder; `present` finishes and submits it. Offscreen passes live in the same encoder, so a later pass can sample an earlier one's result. `frameEncoder()` exposes it for copies and compute.
@@ -197,12 +203,12 @@ Typed WebGPU wrappers over 50 extern functions, covering the compute pipeline an
 - **Resources**: `createBuffer` (any usage incl. `INDEX`), `createTexture`, `createTextureMultisampled`, `createDepthTexture`, `createRenderTarget` (RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC), `createTextureView`, `createTextureFromAsset`, samplers, bind groups.
 - **Pipelines**: `createRenderPipelineDesc(RenderPipelineDescriptor)` with colour format (default: canvas format, see `canvasFormat`, `canvasSize`), `BlendMode` (none / alpha / premultiplied / additive), `PrimitiveTopology` (triangle-list, line-list, ...), `CullMode`, `FrontFace`, `DepthState` (format, write, compare, bias, slope bias) and `sample_count`. `createRenderPipeline` / `createRenderPipelineHDR` remain as thin wrappers.
 - **Passes**: `beginRenderPassDesc(RenderPassDescriptor)`: colour view (null = canvas), MSAA resolve view, depth view, load/store ops, clear values. `renderPassSetIndexBuffer` + `renderPassDrawIndexed`, `renderPassDraw` with `instance_count`/`first_instance` (vertex buffers with `step_mode = .instance` advance per instance), viewport and scissor.
-- **Readback**: `copyTextureToBuffer`, `Readback`.
-- **Stencil** is intentionally not exposed (no stencil formats or ops).
+- **Readback**: `copyTextureToBuffer`, `copyTextureRegionToBuffer`, `Readback` (whole texture or a region).
+- **Stencil**: `depth24plus_stencil8`, `DepthState.stencil` (`StencilState`), `RenderPassDescriptor.stencil`, `renderPassSetStencilReference`.
 
 Compute and the original API are unchanged: `createComputePipeline`, `computePass*`, `createCommandEncoder`, `encoderFinish`, `queueSubmit`, `beginRenderPass(r,g,b,a)`, `beginRenderPassHDR`.
 
-ABI-matched structs read directly by JS via DataView: `BindGroupLayoutEntry` (40 bytes), `BindGroupEntry` (32), `VertexBufferLayout` / `VertexAttribute` (16), `RawPipelineDesc` (76), `RawPassDesc` (48).
+ABI-matched structs read directly by JS via DataView: `BindGroupLayoutEntry` (40 bytes), `BindGroupEntry` (32), `VertexBufferLayout` / `VertexAttribute` (16), `RawPipelineDesc` (116), `RawPassDesc` (64).
 
 ### web/ui.zig -- HTML UI Overlay
 
@@ -297,7 +303,7 @@ Each generator function produces the exact JS needed for that operation, setting
 
 **Tier 5 -- Stub Generation.** Fallback: generates `console.warn('[zunk] unresolved: ...')` and returns a zero/undefined. The build report lists all stubs so the developer knows exactly what to fix.
 
-**Category** -- Categories for grouping: console, performance, dom, canvas2d, webgpu, audio, input, asset, fetch, websocket, storage, timer, clipboard, lifecycle, zunk_internal, unknown.
+**Category** -- Categories for grouping: console, performance, dom, canvas2d, webgpu, audio, input, fetch, websocket, asset, storage, clipboard, fx, ime, ui, a11y, lifecycle, timer, zunk_internal, unknown.
 
 ### gen/js_gen.zig -- JS + HTML Code Generator
 
@@ -306,7 +312,8 @@ Takes an `Analysis` and `GenOptions`, produces complete JS + HTML output.
 **GenOptions**:
 - `wasm_filename` -- filename of the .wasm binary
 - `public_url` -- URL prefix for assets (default: "/")
-- `bridge_js` -- optional custom JS to merge in
+- `bridge_js_chunks` -- custom JS chunks to merge in, each with its origin
+- `fonts`, `fonts_blocking` -- `@font-face` declarations and whether startup waits for them
 - `js_filename` -- output JS filename (default: "app.js", deploy uses hashed names)
 - `wasm_preload` -- emit `<link rel="preload">` for the WASM file (deploy mode)
 - `js_integrity` -- SRI hash for the script tag (deploy mode)
@@ -323,17 +330,17 @@ Takes an `Analysis` and `GenOptions`, produces complete JS + HTML output.
 6. Wire up lifecycle exports (init, frame, resize, cleanup)
 7. Generate HTML with canvas element, meta tags, styles, script tag
 
-**Adaptive output** -- The generated JS includes only what the WASM binary actually uses. A console-only app gets ~1KB of JS. A full game with canvas, input, and audio is still under 10KB.
+**Adaptive output** -- The generated JS includes only the scaffolding the WASM binary's imports need. Measured, unminified: about 2 KB for a console-only app, about 12 KB for canvas + input, about 21 KB for a WebGPU app.
 
 ### main.zig -- CLI Entry Point
 
 Supports: `build`, `run`, `deploy`, `init`, `doctor`, `help`, `version`.
 
 Shared infrastructure via `prepareBuild()`:
-1. Parses CLI args (--wasm, --output-dir, --port, --proxy, --no-watch, --verbose, --report-json, --force)
+1. Parses CLI args (--wasm, --output-dir, --port, --proxy, --no-watch, --hmr, --bridge-dep, --font, --font-nowait, --verbose, --report-json, --force)
 2. Reads the .wasm binary
 3. Runs `wasm_analyze.analyze()` to parse imports/exports/types
-4. Auto-discovers `bridge.js` from project root or `js/` directory
+4. Reads each `--bridge-dep` file, then auto-discovers `bridge.js` from project root or `js/` directory
 
 The `build` command:
 1. Checks build cache (mtime fingerprint of src/*.zig, build.zig*, wasm, bridge.js); skips if up-to-date (unless `--force`)
@@ -360,7 +367,7 @@ The `init` command:
 3. Scaffolds 4 files from comptime templates: `build.zig`, `build.zig.zon`, `src/main.zig`, `.gitignore`
 
 The `doctor` command:
-1. Checks zig version (spawns `zig version`, parses semver, validates >= 0.17.0)
+1. Checks zig version (spawns `zig version`, parses semver, validates >= 0.17.1)
 2. Reports wasm32 target availability (bundled with zig)
 3. Checks project structure (`build.zig`, `build.zig.zon`, `src/main.zig`)
 4. Checks `.gitignore` presence (warns about dist/ being committed)
@@ -516,7 +523,7 @@ Ship custom JavaScript alongside your project or library. zunk merges it into th
 |--------|---------------------|------------|
 | Binding definition | Proc macro attributes | Comptime descriptors + extern fn |
 | When JS is generated | Post-processing step on .wasm | During zunk build (reads .wasm imports) |
-| JS output size | ~50KB+ for hello-world | ~1KB for hello-world |
+| JS output size | ~50KB+ for hello-world | ~2KB for hello-world |
 | Complex types | Serde-based serialization | Shared memory + handles |
 | String passing | Copies through JS heap | Direct linear memory reads |
 | Callback model | Complex closure wrapping | Simple callback table (id -> fn ptr) |

@@ -83,7 +83,7 @@ async function __zunkHmrSwap(wasmUrl) {
     if (exports && exports.__zunk_hmr_serialize) {
       const len = exports.__zunk_hmr_serialize();  // writes into exchange buf
       if (len > 0) {
-        const ptr = exports.__zunk_string_buf_ptr.value;
+        const ptr = exports.__zunk_string_buf_ptr();
         snapshot = new Uint8Array(memory.buffer, ptr, len).slice();  // copy out
       }
     }
@@ -105,7 +105,7 @@ async function __zunkHmrSwap(wasmUrl) {
     // 6. Initialize the new module.
     if (snapshot && exports.__zunk_hmr_hydrate) {
       // Copy snapshot into new module's exchange buffer, then call hydrate.
-      const ptr = exports.__zunk_string_buf_ptr.value;
+      const ptr = exports.__zunk_string_buf_ptr();
       new Uint8Array(memory.buffer, ptr, snapshot.length).set(snapshot);
       exports.__zunk_hmr_hydrate(ptr, snapshot.length);
     } else if (exports.init) {

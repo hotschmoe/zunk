@@ -411,7 +411,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
 
         .{ "create_buffer", "return H.store(H.get(1).createBuffer({size:arguments[0],usage:arguments[1],mappedAtCreation:false}));", false, false, true },
         .{ "buffer_write", "H.get(1).queue.writeBuffer(H.get(arguments[0]),arguments[1],new Uint8Array(memory.buffer,arguments[2],arguments[3]));", false, true, true },
-        .{ "buffer_destroy", "H.get(arguments[0]).destroy();zunkGPU.maps.delete(arguments[0]);H.release(arguments[0]);", false, false, true },
+        .{ "buffer_destroy", "zunkGPU.maps.delete(arguments[0]);zunkGPU.destroy(arguments[0]);", false, false, true },
         .{ "buffer_map_read", "zunkGPU.mapRead(arguments[0]);", false, false, true },
         .{ "buffer_map_state", "return zunkGPU.mapState(arguments[0]);", false, false, true },
         .{ "buffer_read_mapped", "zunkGPU.readMapped(arguments[0],arguments[1],arguments[2]);", false, true, true },
@@ -428,7 +428,7 @@ fn genWebGPU(allocator: std.mem.Allocator, method: []const u8, sig: ?wa.FuncType
         .{ "create_texture", "return H.store(H.get(1).createTexture({size:[arguments[0],arguments[1]]," ++
             "format:zunkGPU.textureFormats[arguments[2]],usage:arguments[3],sampleCount:arguments[4]}));", false, false, true },
         .{ "create_texture_view", "return H.store(H.get(arguments[0]).createView());", false, false, true },
-        .{ "destroy_texture", "H.get(arguments[0]).destroy();H.release(arguments[0]);", false, false, true },
+        .{ "destroy_texture", "zunkGPU.destroy(arguments[0]);", false, false, true },
         .{ "write_texture_region", "const tex=H.get(arguments[0]);" ++
             "const src=new Uint8Array(memory.buffer,arguments[1],arguments[2]);" ++
             "H.get(1).queue.writeTexture({texture:tex,origin:[arguments[4],arguments[5]]},src," ++

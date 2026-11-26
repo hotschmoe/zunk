@@ -303,7 +303,7 @@ fn globals(model: math.Mat4, eye: math.Vec3, w: f32, h: f32, edge_px: f32) Globa
 }
 
 // Draw opaque geometry before quads that depend on its depth.
-fn drawScene(pass: gpu.RenderPassEncoder, group: gpu.BindGroup) void {
+fn drawScene(pass: gpu.RenderPassEncoder, group: gpu.BindGroup, cube: gpu.Buffer) void {
     gpu.renderPassSetBindGroup(pass, 0, group);
     gpu.renderPassSetStencilReference(pass, 1);
 
@@ -312,7 +312,7 @@ fn drawScene(pass: gpu.RenderPassEncoder, group: gpu.BindGroup) void {
     gpu.renderPassDraw(pass, grid_vertices.len, 1, 0, 0);
 
     gpu.renderPassSetPipeline(pass, mesh_pipeline);
-    gpu.renderPassSetVertexBuffer(pass, 0, vertex_buf, 0, @sizeOf(@TypeOf(cube_vertices)));
+    gpu.renderPassSetVertexBuffer(pass, 0, cube, 0, @sizeOf(@TypeOf(cube_vertices)));
     gpu.renderPassSetIndexBuffer(pass, index_buf, .uint16, 0, @sizeOf(@TypeOf(cube_indices)));
     gpu.renderPassDrawIndexed(pass, cube_indices.len, 1, 0, 0, 0);
 
@@ -342,17 +342,27 @@ export fn frame(dt: f32) void {
     const inset_g = globals(model, .{ 0, 4.0, 3.0 }, inset_size, inset_size, 2.0);
     gpu.bufferWriteTyped(Globals, inset_uniform, 0, &.{inset_g});
 
+    const probe = frame_count == 3 and readback_state == .idle;
+    var scratch_target: Target = .{};
+    if (probe) scratch_target.resize(inset_size, inset_size);
+    const target = if (probe) &scratch_target else &inset_target;
+    const cube = if (probe) createWith(gpu.BufferUsage.VERTEX, MeshVertex, &cube_vertices) else vertex_buf;
+
     const ipass = gpu.beginRenderPassDesc(.{
-        .color = inset_target.msaa_view,
+        .color = target.msaa_view,
         .resolve = inset_view,
         .color_store = .discard,
         .clear = .{ 0.16, 0.12, 0.10, 1 },
-        .depth = inset_target.depth_view,
+        .depth = target.depth_view,
         .depth_store = .discard,
         .stencil = .{ .store = .discard },
     });
-    drawScene(ipass, inset_group);
+    drawScene(ipass, inset_group, cube);
     gpu.renderPassEnd(ipass);
+    if (probe) {
+        gpu.bufferDestroy(cube);
+        scratch_target.destroy();
+    }
 
     const pass = gpu.beginRenderPassDesc(.{
         .color = main_target.msaa_view,
@@ -363,7 +373,7 @@ export fn frame(dt: f32) void {
         .depth_store = .discard,
         .stencil = .{ .store = .discard },
     });
-    drawScene(pass, main_group);
+    drawScene(pass, main_group, vertex_buf);
 
     const iw: f32 = 256 * dpr;
     const margin: f32 = 16 * dpr;
@@ -373,11 +383,11 @@ export fn frame(dt: f32) void {
     gpu.renderPassDraw(pass, 6, 1, 0, 0);
     gpu.renderPassEnd(pass);
 
-    if (frame_count == 3 and readback_state == .idle) {
+    if (probe) {
         for (readbacks) |rb| rb.encode(gpu.frameEncoder(), inset_texture);
     }
     gpu.present();
-    if (frame_count == 3 and readback_state == .idle) {
+    if (probe) {
         for (readbacks) |rb| rb.request();
         readback_state = .requested;
     }
@@ -390,6 +400,7 @@ fn pollReadback() void {
     const b = readbacks[1].poll();
     if (a == .failed or b == .failed) {
         app.logWarn("readback failed");
+        app.setTitle("zunk mesh-3d: readback failed");
         for (readbacks) |rb| rb.deinit();
         readback_state = .done;
     } else if (a == .mapped and b == .mapped) {
@@ -400,6 +411,8 @@ fn pollReadback() void {
         var buf: [160]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "readback 1x1 centre={any} corner={any}", .{ center, corner }) catch "readback ok";
         app.logInfo(msg);
+        const drawn = center[3] == 255 and corner[3] == 255 and !std.mem.eql(u8, &center, &corner);
+        app.setTitle(if (drawn) "zunk mesh-3d: readback ok" else "zunk mesh-3d: readback empty");
         for (readbacks) |rb| rb.deinit();
         readback_state = .done;
     }
