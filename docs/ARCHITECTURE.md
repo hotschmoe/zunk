@@ -65,7 +65,7 @@ src/
     js_resolve.zig          5-tier auto-resolution engine
     js_gen.zig              JS + HTML code generator
     source_map.zig          Source maps for bridge.js chunks
-    serve.zig               Dev server, file watcher, live reload, WebSocket
+    dev_server.zig          Dev server entry; serve_loop/serve_io/serve_os own logic/IO
     js/                     Embedded JS for a11y, fx and ime
 ```
 

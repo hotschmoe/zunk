@@ -393,13 +393,313 @@ generated lines outside these spans remain unmapped. Span ends are exclusive
 and cannot precede their starts. Callers skip map generation when there are no
 spans. A trailing partial line counts as a line.
 
-## src/gen/serve.zig
+## src/gen/dev_server.zig
 
-The dev server expects bodyless GET requests to fit in the first read. The
-WebSocket read loop assumes the dev client sends no data frames; watcher
-threads broadcast while connection threads wait for closure, and the mutex
-protects the slot list. HMR swaps only when enabled and only wasm changed;
-other changes trigger a full reload. Normal peer disconnects are not logged.
+Startup claims the loop and real IO adapter once from the caller's allocator,
+using `rawAlloc` to avoid the Debug allocator API's undefined-byte poisoning.
+Control fields are initialized in place; payload arrays are neither assigned
+from aggregate literals nor cleared. `rawFree` releases the reservations after
+shutdown without poisoning them. The four snapshots reserve 200 MiB plus
+script space, but only bytes actually read for responses become resident.
+Keeping four independent sparse reservations preserves four simultaneous
+validated responses; a small streaming buffer cannot validate the complete
+file before sending its first body byte. A single snapshot would reduce
+address space at the cost of that concurrency, without improving idle RSS.
+Connection buffers, socket task buffers and traversal storage also have fixed
+startup capacity. The caller owns configuration slices for the server lifetime.
+
+Server-owned state never allocates after startup. The portable std IO backend
+can allocate task records and worker threads for `io.concurrent`, and std
+process spawning constructs temporary argv/environment and platform resources.
+Those allocations belong to std, not growable server containers. Shutdown
+cancels and joins socket tasks, terminates/reaps the child tree, joins file IO,
+then releases storage. The prior server is archived in `.archive/serve.zig`.
+
+## src/gen/serve_io.zig
+
+`Interface` is the only outside-world boundary of `Loop`: listen, accept,
+nonblocking read/write, close, proxy connect/status, file snapshot submission,
+watch submission, build submission/cancellation, wait and diagnostic sink.
+Socket handles are opaque u32 values (adapter slot indices in real IO); no OS
+types cross this interface.
+Transfers return pending, a positive short count, closed, or failed. File,
+watch, listen, connect and submission errors have the `Failure` error set.
+Build completion carries success/cancellation, bounded output, truncation and
+IO failure. The terminal sink cannot affect the state machine's decisions;
+a failed sink returns `System` and shuts down the server.
+
+The interface combines socket readiness with completions for blocking work.
+The real adapter implements readiness with tasks: an empty transfer slot is
+ready to accept an operation; a working slot is not ready; a completed slot
+is ready to return its result. Reads and writes return pending while their
+task works on adapter-owned bytes. Closing cancels and joins those tasks
+before recycling the slot. No socket task borrows a connection's live storage.
+`wait` receives bounded interests, whether admission is enabled, and an absolute
+deadline in monotonic milliseconds. It returns one ready token, admission,
+file/watch/build completion, timer, or stop, stamped with monotonic time. It
+may return a timer early; it must wait rather than repeatedly return empty
+events without advancing time. Each readiness token describes the interests
+from that particular wait; it is not retained after a slot is reused.
+
+File submissions are open/stat, positional read, verify/stat-and-close, or
+close. Results carry size/inode/mtime/ctime, a possibly short read count, both
+verification metadata records, or closure. An open failure retains no handle;
+verification closes even on error. Each index owns at most one open file and
+one outstanding operation. Each read borrows a slice of the fixed snapshot
+buffer until exactly one completion with its index. The adapter must not
+access that slice after delivering completion. The loop compares metadata,
+decides which read follows, probes EOF, and decides whether to serve or reject.
+Watch and build each permit one outstanding submission; builds remain
+outstanding until termination/reaping and completion delivery, including after
+cancellation. Close is synchronous and invalidates the handle. No cancellation
+can release a borrowed file buffer early. These ownership rules let a simulator
+delay and reorder completions without accessing live server state.
+
+A simulator can implement this table directly: readiness, short transfers,
+reset/EOF, short file reads and independently changed metadata, watch observations, child output
+and result, timer advancement and stop. It chooses event order and virtual
+times from its seed. No simulator, seed generator or checker is implemented in
+this step. OS metadata, fingerprint collisions, kernel behavior and webzocket
+internals remain outside that future simulation boundary.
+
+## src/gen/serve_loop.zig
+
+One thread owns all connections, snapshot ownership, timers, revisions, build
+state and browser notification state. It holds no locks and calls no OS API.
+Every turn handles at most one completion/readiness event, then bounded timer
+and notification work, then waits. Socket writes are at most 64 KiB per turn.
+
+| Connection state | Event | Next state / action |
+|---|---|---|
+| free | accept | request; reserve slot and request deadline |
+| request | short read | accumulate until complete headers |
+| request | complete GET | file, handshake, proxy_connect, or error header |
+| file | open/stat completion | reject oversize, or begin bounded positional reads |
+| file | read completion | advance cursor; at expected end probe one extra byte |
+| file | EOF probe | verify metadata and close handle |
+| file | stable verification completion | header; retain immutable snapshot |
+| file | changed/read error/limit | error header; release snapshot |
+| header | header fully written | body |
+| body | partial write | body; advance cursor |
+| body | body fully written | free; close and release snapshot |
+| handshake | fully written | websocket |
+| websocket | received frame | package decode; ping gets pong; close frees slot |
+| websocket | status/reload due | queue one frame; track target generation |
+| websocket | frame fully written | advance delivered status/build generation |
+| proxy_connect | upstream writable | check connection; proxy_request or 502 |
+| proxy_request | request fully written | proxy_read |
+| proxy_read | upstream bytes | proxy_write |
+| proxy_write | client chunk fully written | proxy_read |
+| any live state | reset/EOF/deadline | free; close handles; forget client |
+
+An in-flight snapshot whose client disappears becomes ownerless until its
+completion arrives; it cannot write into storage reused by another request.
+The client slot itself is immediately reusable. Proxy upstream interests are
+disabled while buffered bytes are being sent to the client, so upstream EOF
+cannot discard those buffered bytes.
+
+| Rebuild state | Event | Next state / action |
+|---|---|---|
+| idle | source observation | increment change revision; debounce 100 ms |
+| idle | debounce deadline | running; record revision and submit one child |
+| running | source observation | pending; remember latest revision |
+| pending | further source observation | pending; coalesce into the same follow-up |
+| running/pending | 120 s deadline | terminate child tree; await completion |
+| pending | child completion | idle; start follow-up after completion |
+| running | failed/crashed/cancelled child | idle; publish error status |
+| running | successful child | idle; request a fresh watcher observation |
+| idle, publication pending | fresh observation without a newer source change | publish build |
+| idle, publication pending | newer source observation | withhold publication; rebuild again |
+
+An outstanding watch at child completion is consumed but cannot authorize
+publication; another watch is requested. Dist changes accumulated during a
+build plus the fresh observation decide whether HMR is wasm-only. Every
+successful final build publishes even if its output metadata did not change.
+External dist changes while idle also publish. Failed build output is not
+announced as reloadable. A subsequent success clears the browser overlay.
+
+`change_revision`, `started_change` and `completed_change` order observed
+source changes and builds. `published_build` orders browser notifications.
+Each client keeps `notified_build` and an in-flight `sending_build`; only a
+fully written frame advances notification state. A later publication while a
+frame is partly written remains due afterward. Status/error delivery has its
+own revision, so an error or clear cannot overwrite an in-flight reload.
+Joining clients start at the publication current when accepted and receive
+any later publication, including one completed during their handshake.
+
+Local assertions check that file cursors reach the initial size before
+verification, no build starts while one is running, completed
+source revisions match publication, notified generations cannot exceed the
+published generation, transfers fit their buffers, and snapshots cannot be
+reused while IO owns them. The remaining properties are temporal:
+
+- A response is an immutable, validated snapshot, never a stream from a file
+  changing length while read. A failed validation sends 503 with no file bytes.
+- After the last *observed* source change, eventual successful rebuild and fair
+  writable IO deliver a reload/HMR to every still-connected reload client for
+  a build started after that observation. Persistent failures instead deliver
+  error status; no implementation can promise a successful reload if every
+  build fails or never exits. Polling cannot see changes between observations
+  that restore identical metadata. Delivery means the socket accepted every
+  frame byte, not an application acknowledgement from the browser.
+- A disconnect clears the entire connection record. Snapshot IO ownership is
+  retired separately; it cannot prevent reuse of the connection slot.
+- Each turn advances a bounded cursor/state, submits work, or waits on IO.
+  Deadlines bound slow clients and hung builds; there is no retry spin.
+
+| Limit | Result |
+|---|---|
+| 16 ordinary connections | 17th uses refusal slot, sends 503 and closes |
+| one refusal in progress | disable accept until sent/closed; kernel backlog provides backpressure |
+| accept failure | visible diagnostic; disable admission for 500 ms before retrying |
+| 4 simultaneous snapshots | 503 and visible counted diagnostic |
+| 50 MiB file | larger file gets 413 and visible counted diagnostic |
+| 4,096 request bytes | incomplete headers get 431; requests accumulate short reads |
+| 1,024 target/path bytes | 414; watched paths get PathLimit; startup config is rejected |
+| one pending source change | coalesce further observations; latest revision retained and logged |
+| one child | new observations become pending; no concurrent rebuild |
+| 60,000 combined child output bytes | retain prefix, drain remainder, count and report truncation |
+| 60,512 output bytes/client | occupied pong slot closes with counted diagnostic |
+| 256 incoming bytes; 125 payload | unmasked, fragmented, extended frames close with diagnostic |
+| 30 s request deadline / transfer inactivity | close and report; idle WebSockets have no timeout |
+| 120 s rebuild | kill child tree, reap, deliver error; then process pending change |
+| u64 revision/event lifetime | bounded loop / typed `System` at revision or clock exhaustion |
+
+The connection limit includes reload clients. The injected script is bounded
+at 1,536 bytes. HTTP headers reserve 512 bytes;
+their formats and MIME vocabulary have bounded lengths. The extra script
+space is reserved in every snapshot. Refusal and error responses retain the
+same isolation and no-cache headers as successful files.
+Clock events above `maxInt(u64) - build_timeout_ms` return `System` before
+deadline arithmetic can overflow. Diagnostic text has a 60,064-byte limit and
+a fixed 60,065-byte sink buffer including its newline.
+
+## src/gen/serve_http.zig
+
+HTTP accepts bodyless GETs and closes after one response. Short reads accumulate;
+query strings are excluded from file lookup. Traversal and backslash paths are
+forbidden. Missing extensionless paths fall back to index.html; favicon has an
+embedded fallback. HTML receives the reload script; other file bytes are exact.
+The proxy forwards the original complete GET headers and streams its response
+through bounded connection storage. It does not parse or rewrite the backend's
+response. Only plain HTTP proxy targets are supported.
+
+Webzocket remains unchanged. `Handshake.createReply` performs the response
+handshake, `proto.writeFrameHeader` encodes outgoing frames, and
+`proto.Reader.read/done/deinit` decodes input from a caller-owned static buffer.
+The package owns neither a socket nor a thread here. A provider with maximum
+zero and failing allocator disables fallback allocation; compressed, fragmented
+and extended-length incoming frames are rejected before package decoding.
+Input is read one frame at a time, including a separately accumulated two-byte
+prefix, so following frames cannot bypass the input policy. This is sufficient
+for the reload client, which sends no application messages, and supports ping.
+There are no required webzocket changes for this use. General fragmented or
+large-message support would need a bounded package reader/provider contract;
+it is not a second parser implemented in zunk. Rich_zig remains the CLI console
+package; the loop's diagnostic sink uses bounded raw text through IO.
+
+## src/gen/serve_files.zig
+
+The file adapter opens and stats regular files, performs one positional read
+per job, and returns handle/path metadata while closing at verification. The
+loop tolerates short reads, probes one byte beyond the expected end, then
+compares the metadata. Size, inode, mtime and ctime must agree; replacement,
+growth, shrinkage and observed same-size rewrites return `Changed`. A writer
+that pauses with an apparently stable incomplete file cannot be identified
+without its cooperation. Requests during an owned rebuild get 503. Atomic
+publication by other writers is outside the server's control.
+
+The adapter polls on requests from the loop, normally 500 ms after the previous
+watch completion. Sources are all regular files recursively under configured
+watch paths (default src), plus configured watch files (build.zig and
+build.zig.zon). Dist watches regular files directly in the served root, as
+before. No symlink traversal occurs during recursive discovery. Order-independent
+fingerprints include path, inode, size, mtime and ctime, separated into wasm and
+other output. The lexicographically first wasm name makes HMR selection stable.
+
+Traversal uses a 1,024-directory queue and a 65,536-entry budget per source/dist
+scan, plus at most 65,536 explicit watch files. Exhaustion reports `WatchLimit`;
+paths exceeding 1,024 bytes report `PathLimit`; failed scans report their typed
+error and retry after the polling interval. The prior successful fingerprint
+remains the comparison point for a failed individual scan. Fingerprints are
+observations, not a filesystem transaction or a collision-free change journal.
+
+## src/gen/serve_os.zig
+
+One adapter serves Linux, macOS and Windows using blocking `std.Io` networking,
+files, directories, clocks, mutexes and conditions. Blocking operations run in
+`io.concurrent` tasks. One persistent task serializes file jobs and watcher
+scans; one accept task, at most one connect task per upstream, and at most one
+read and one write task per socket post completions to adapter storage. Rebuilds
+use a supervisor task with separate pipe-drain and child-wait tasks. The std
+Threaded backend supplies the threads and may retain idle workers for reuse.
+The number of live operations is bounded by the slots, not by request count.
+Workers never access `Loop`, connection records or rebuild/notification state.
+A mutex and condition protect only the adapter mailbox and its IO buffers.
+
+There are 34 socket slots, each with independent 64 KiB input/output buffers,
+four file job/result slots with persistent handles, one watch slot and one
+child slot. Each file job reads at most 64 KiB before yielding a completion.
+The loop owns the borrowed file slice until completion; shutdown joins file IO
+before releasing it. An occupied submission slot returns `Busy`. Bounded
+cursors select completions and readiness fairly. The mailbox lock covers both
+predicate checks and condition waiting, preventing lost wakeups. Waits end at
+the next loop deadline or within 50 ms to observe shutdown signals; spurious
+wakeups recheck predicates rather than returning empty events in a busy loop.
+`Future.cancel` requests cancellation at std IO cancellation points and joins
+the task. Close waits for this before closing a stream or reusing its buffers.
+
+## src/gen/serve_process.zig and src/gen/serve_child.zig
+
+Startup validates at most 32 arguments totaling 8,192 bytes; empty executable
+names and embedded NULs return `InvalidConfig`. `std.process.spawn` supplies
+portable executable lookup, inherited environment, null stdin and output pipes.
+The prior adapter's separate environment and PATH-candidate limits no longer
+apply because std owns that transient storage.
+
+The supervisor detaches stdout/stderr from `Child` so its waiter cannot close
+pipes while drain tasks still use them. Two tasks drain 4 KiB chunks even
+after the combined 60,000-byte retained prefix fills. A capture mutex protects
+that IO result only. A separate waiter owns `Child.wait` and signals an event.
+Canceling the supervisor interrupts its event wait; it terminates the child
+tree, awaits the uncanceled waiter to reap, then cancels/joins drain tasks.
+Normal exit also terminates remaining descendants before draining to EOF.
+This avoids canceling POSIX `Child.wait`, which cleans up its child record even
+when interrupted. Each drain has a u32-maximum read-count bound; exhaustion
+marks IO failure. Combined output order is the observed capture-lock order.
+
+All OS selection is in `serve_process.zig`, at comptime. Linux and macOS use
+std process spawn with `pgid = 0`, POSIX group KILL and saved/restored INT/TERM
+sigactions. Windows uses suspended std spawn, a Job Object with kill-on-close,
+assignment before ResumeThread, and TerminateJobObject. Windows console Ctrl-C
+and Ctrl-Break use SetConsoleCtrlHandler. These handlers only store a lock-free
+atomic stop flag; the loop sees a stop event within 50 ms. The handler owner
+is single-instance process state, guarded by lifecycle assertions. There are
+no Linux-specific syscalls, OS-specific socket adapters or fallback servers.
+
+## Dev server build and end-to-end gates
+
+`zig build check-size` installs the host CLI and fails above 64 MiB. The Linux
+Debug binary is about 20 MiB; the budget is loose because size differs by OS and
+optimize mode, and what it guards against is fixed-capacity state being emitted
+into the binary (one draft of the dev server was 776 MB). It is a lint in the
+blocking gate, alongside tidy. The blocking end-to-end list is CLI build,
+version, help, example build, deploy, 512-case generation, and dev server.
+The dev-server check fetches page/JS/wasm and compares them with disk (HTML
+after removing its injected reload script), opens Node's built-in WebSocket,
+changes the example source, waits for successful rebuild/reload, restores the
+source in finally, awaits server exit and checks PID disappearance/port release.
+Initial watcher completion (`watch: ready`), socket events and bounded requests
+synchronize it; no startup/debounce sleeps stand in for completion. Node kills
+processes directly on Windows, so this check cannot exercise console Ctrl-C
+there. Job kill-on-close still handles an interrupted rebuild.
+
+`zig build check-cross` compiles and links without installing or running six
+CLIs: x86_64/aarch64 Linux, Windows GNU and macOS. Each instantiates webzocket
+and rich_zig for its own target. `test-heavy` depends on this step in addition
+to its browser examples. Build configuration does not launch processes.
+The simulator remains unimplemented; cross compilation does not verify macOS
+or Windows runtime IO/cancellation. Their blocking CI runs exercise those paths.
 
 ## src/main.zig
 

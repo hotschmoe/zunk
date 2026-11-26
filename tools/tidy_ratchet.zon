@@ -7,6 +7,14 @@
         "src/gen/wasm_reader.zig",
         "src/gen/wasm_analyze.zig",
         "src/gen/js_identifier.zig",
+        "src/gen/dev_server.zig",
+        "src/gen/serve_io.zig",
+        "src/gen/serve_http.zig",
+        "src/gen/serve_files.zig",
+        "src/gen/serve_child.zig",
+        "src/gen/serve_process.zig",
+        "src/gen/serve_os.zig",
+        "src/gen/serve_loop.zig",
         "tools/tidy.zig",
     },
     .metrics = .{
@@ -33,7 +41,7 @@
         .{
             .name = "build.zig",
             .counts = .{
-                1, 1, 74, 8, 0, 0,
+                1, 0, 46, 8, 0, 0,
                 0, 0, 3,  0, 0, 0,
                 0, 0, 0,  0, 0, 0,
             },
@@ -97,9 +105,9 @@
         .{
             .name = "src/gen",
             .counts = .{
-                187, 7,  249, 123, 4, 1,
-                0,   6,  70,  40,  3, 0,
-                2,   14, 1,   0,   0, 0,
+                167, 7, 249, 69, 2, 0,
+                0,   1, 45,  36, 0, 0,
+                0,   0, 0,   0,  0, 0,
             },
         },
         .{
@@ -111,11 +119,75 @@
             },
         },
         .{
+            .name = "src/gen/dev_server.zig",
+            .counts = .{
+                0, 0, 16, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
             .name = "src/gen/js_identifier.zig",
             .counts = .{
                 0, 0, 54, 0, 0, 0,
                 0, 0, 0,  0, 0, 0,
                 0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_child.zig",
+            .counts = .{
+                0, 0, 40, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_files.zig",
+            .counts = .{
+                0, 0, 42, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 5, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_http.zig",
+            .counts = .{
+                0, 0, 19, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_io.zig",
+            .counts = .{
+                0, 0, 9, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_loop.zig",
+            .counts = .{
+                0, 0, 47, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_os.zig",
+            .counts = .{
+                0, 0, 34, 0, 0, 0,
+                0, 0, 0,  0, 1, 0,
+                0, 4, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_process.zig",
+            .counts = .{
+                0, 0, 18, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 2,  2, 0, 0,
             },
         },
         .{

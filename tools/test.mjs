@@ -1,15 +1,18 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
+import {
+    mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, statSync,
+} from 'node:fs';
 import { createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 
-const [mode, binary, optimize = 'debug'] = process.argv.slice(2);
+const [mode, binaryArg, optimize = 'debug'] = process.argv.slice(2);
+const binary = resolve(binaryArg);
 const root = resolve('.');
 const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' });
 assert.equal(commit.status, 0, commit.stderr);
 mkdirSync(join(root, '.zig-cache'), { recursive: true });
-const work = mkdtempSync(join(root, '.zig-cache', 'e2e-'));
+const work = mkdtempSync(join(process.env.ZIG_LOCAL_CACHE_DIR ?? join(root, '.zig-cache'), 'e2e-'));
 
 function run(command, args, cwd = root, timeout) {
     const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout });
@@ -34,6 +37,118 @@ function example(name) {
 
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
+async function bounded(promise, timeoutMs, description) {
+    let timer;
+    try {
+        return await Promise.race([promise, new Promise((_, fail) => {
+            timer = setTimeout(() => fail(new Error(`Timed out: ${description}`)), timeoutMs);
+        })]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function freePort() {
+    const probe = createServer();
+    await new Promise((ok, fail) => probe.once('error', fail).listen(0, '127.0.0.1', ok));
+    const port = probe.address().port;
+    await new Promise((ok, fail) => probe.close((err) => err ? fail(err) : ok()));
+    return port;
+}
+
+function socketEvent(socket, event) {
+    return new Promise((ok, fail) => {
+        socket.addEventListener(event, ok, { once: true });
+        socket.addEventListener('error', () => fail(new Error(`WebSocket ${event} failed`)),
+            { once: true });
+        if (event !== 'close') socket.addEventListener('close', () =>
+            fail(new Error(`WebSocket closed before ${event}`)), { once: true });
+    });
+}
+
+async function stopServer(server, exited, port) {
+    if (server.exitCode === null && server.signalCode === null) server.kill('SIGINT');
+    try {
+        const status = await bounded(exited, 15000, 'dev server exit and closed output pipes');
+        if (process.platform !== 'win32') {
+            assert.deepEqual(status, { code: 0, signal: null }, 'dev server did not exit cleanly');
+        }
+    } catch (error) {
+        server.kill('SIGKILL');
+        await bounded(exited, 5000, 'forced dev server exit');
+        throw error;
+    }
+    assert.throws(() => process.kill(server.pid, 0), { code: 'ESRCH' },
+        'dev server process remains alive');
+    const probe = createServer();
+    await bounded(new Promise((ok, fail) =>
+        probe.once('error', fail).listen(port, '127.0.0.1', ok)), 5000, 'server port release');
+    await new Promise((ok, fail) => probe.close((err) => err ? fail(err) : ok()));
+}
+
+async function devServerCheck(wasm) {
+    const started = performance.now();
+    const cwd = join(root, 'examples', 'vertex-triangle');
+    const source = join(cwd, 'src', 'main.zig');
+    const original = readFileSync(source);
+    const output = join(cwd, 'dist');
+    const port = await freePort();
+    const server = spawn(binary, ['run', '--wasm', wasm, '--output-dir', output,
+        '--port', String(port)], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const exited = new Promise((ok, fail) => {
+        server.once('error', fail);
+        server.once('close', (code, signal) => ok({ code, signal }));
+    });
+    let log = '';
+    let socket;
+    let changed = false;
+    const ready = new Promise((ok, fail) => {
+        const collect = (bytes) => {
+            log = (log + bytes).slice(-120000);
+            if (log.includes('watch: ready')) ok();
+        };
+        server.stdout.on('data', collect);
+        server.stderr.on('data', collect);
+        exited.then(({ code, signal }) =>
+            fail(new Error(`server exited before watching: ${code ?? signal}`)), fail);
+    });
+    try {
+        await bounded(ready, 30000, 'dev server listener and initial source observation');
+        const url = `http://127.0.0.1:${port}`;
+        for (const name of ['index.html', 'app.js', 'vertex-triangle.wasm']) {
+            const response = await fetch(`${url}/${name}`, { signal: AbortSignal.timeout(10000) });
+            assert.equal(response.status, 200, `${name}: HTTP ${response.status}`);
+            let bytes = Buffer.from(await response.arrayBuffer());
+            if (name === 'index.html') bytes = Buffer.from(bytes.toString().replace(
+                /<script>\s*\(\(\)=>\{const ws=new WebSocket\([\s\S]*?<\/script>/, ''));
+            assert.ok(bytes.equals(readFileSync(join(output, name))), `${name}: bytes differ`);
+        }
+        socket = new WebSocket(`${url.replace('http:', 'ws:')}/__zunk_ws`);
+        await bounded(socketEvent(socket, 'open'), 10000, 'reload WebSocket handshake');
+        const reload = new Promise((ok, fail) => {
+            socket.addEventListener('message', ({ data }) => {
+                if (data === 'reload') ok();
+                if (String(data).startsWith('error:')) fail(new Error(String(data)));
+            });
+            socket.addEventListener('error', () => fail(new Error('reload socket failed')));
+            socket.addEventListener('close', () => fail(new Error('reload socket closed early')));
+        });
+        assert.deepEqual(readFileSync(source), original, 'source changed during server startup');
+        changed = true;
+        writeFileSync(source, Buffer.concat([original, Buffer.from('\n')]));
+        await bounded(reload, 60000, 'successful rebuild and reload after source change');
+        assert.match(log, /build: success/, 'reload arrived without a successful build');
+    } catch (error) {
+        throw new Error(`${error.message}\nDev server output:\n${log}`, { cause: error });
+    } finally {
+        if (changed) writeFileSync(source, original);
+        if (socket) socket.close();
+        await stopServer(server, exited, port);
+    }
+    console.log(`Dev server: page, JS, wasm, WebSocket reload, cleanup ` +
+        `(${((performance.now() - started) / 1000).toFixed(3)}s)`);
+}
+
 function findBrowser() {
     const candidates = [process.env.CHROME_BIN, 'google-chrome', 'chromium', 'chromium-browser'].filter(Boolean);
     const browser = candidates.find((name) => spawnSync(name, ['--version'], { stdio: 'ignore' }).status === 0);
@@ -42,25 +157,33 @@ function findBrowser() {
 }
 
 async function withServer(wasm, name, visit) {
-    const probe = createServer();
-    await new Promise((ok, fail) => probe.once('error', fail).listen(0, '127.0.0.1', ok));
-    const port = probe.address().port;
-    await new Promise((ok, fail) => probe.close((err) => err ? fail(err) : ok()));
+    const port = await freePort();
     const output = join(work, name);
-    const server = spawn(binary, ['run', '--wasm', wasm, '--output-dir', output, '--port', String(port), '--no-watch'], { stdio: 'ignore' });
+    const server = spawn(binary, ['run', '--wasm', wasm, '--output-dir', output,
+        '--port', String(port), '--no-watch'], { stdio: 'ignore' });
+    const exited = new Promise((ok, fail) => {
+        server.once('error', fail);
+        server.once('close', (code, signal) => ok({ code, signal }));
+    });
     const url = `http://127.0.0.1:${port}/`;
     try {
         let ready = false;
         for (let i = 0; i < 200; i++) {
             if (server.exitCode !== null) throw new Error(`dev server exited: ${server.exitCode}`);
-            try { ready = (await fetch(url)).ok; } catch {}
+            try {
+                ready = (await fetch(url, { signal: AbortSignal.timeout(1000) })).ok;
+            } catch (error) {
+                const retryable = error.cause?.code === 'ECONNREFUSED' ||
+                    error.name === 'TimeoutError';
+                if (!retryable) throw error;
+            }
             if (ready) break;
             await sleep(100);
         }
         assert.ok(ready, 'dev server did not start');
         await visit(url, output);
     } finally {
-        server.kill();
+        await stopServer(server, exited, port);
     }
 }
 
@@ -126,7 +249,15 @@ async function gpuSmoke(wasm) {
     });
 }
 
-if (mode === 'blocking') {
+if (mode === 'size') {
+    const bytes = statSync(binary).size;
+    const budget = 64 * 1024 * 1024;
+    assert.ok(bytes <= budget, `installed CLI: ${bytes} bytes exceeds ${budget} byte budget`);
+    console.log(`Installed CLI: ${bytes} bytes; budget ${budget}`);
+} else if (mode === 'serve') {
+    await devServerCheck(join(root, 'examples', 'vertex-triangle',
+        'zig-out', 'bin', 'vertex-triangle.wasm'));
+} else if (mode === 'blocking') {
     console.log(run('zig', [
         'build', 'fuzz', '-j4', `-Dcommit=${commit.stdout.trim()}`, `-Doptimize=${optimize}`,
         '--', '--seed', '1', '--iterations', '512',
@@ -142,6 +273,7 @@ if (mode === 'blocking') {
     assert.ok(files.some((f) => f.endsWith('.js') && html.includes(f)), 'deploy JS is not referenced');
     assert.ok(files.some((f) => f.endsWith('.wasm') && WebAssembly.validate(readFileSync(join(output, f)))));
     console.log('Blocking: CLI build, version, help, example build, deploy');
+    await devServerCheck(wasm);
 } else if (mode === 'browser') {
     await browserSmoke(join(root, 'examples', 'input-demo', 'zig-out', 'bin', 'input-demo.wasm'));
 } else if (mode === 'heavy') {
