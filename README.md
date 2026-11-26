@@ -218,53 +218,53 @@ If you export `frame`, zunk generates a render loop. If you export `resize`, zun
 
 ```
 zunk/
-├── build.zig                     # CLI build, test steps, installApp() for consumers
-├── src/
-│   ├── root.zig                  # The "zunk" module: bind, web.*, version
-│   ├── main.zig                  # CLI (build/run/deploy/init/doctor/help/version)
-│   ├── bind/
-│   │   └── bind.zig              # Handle, callback table, string exchange buffer
-│   ├── web/                      # Layer 2: typed Web API wrappers
-│   │   ├── canvas.zig            #   Canvas 2D
-│   │   ├── input.zig             #   Keyboard, mouse, touch, wheel, typed text (polling)
-│   │   ├── audio.zig             #   Web Audio
-│   │   ├── asset.zig             #   URL-based asset loading
-│   │   ├── app.zig               #   Title, cursor, timing, logging, clipboard
-│   │   ├── gpu.zig               #   WebGPU
-│   │   ├── fx.zig                #   Host services (fetch, downloads, file pick, storage, paste/drop)
-│   │   ├── ime.zig               #   IME composition
-│   │   ├── ui.zig                #   HTML overlay UI (panels, sliders, checkboxes, buttons)
-│   │   ├── imgui.zig             #   Immediate-mode canvas UI (comptime backend)
-│   │   └── render_backend.zig    #   Canvas2DBackend for imgui
-│   └── gen/                      # Build tool: WASM analysis + JS generation
-│       ├── wasm_analyze.zig      #   WASM binary parser (imports, exports, types, names)
-│       ├── js_resolve.zig        #   Resolution engine + Web API knowledge base
-│       ├── js_gen.zig            #   JS + HTML generator, build report
-│       ├── source_map.zig        #   Source maps for bridge.js chunks
-│       ├── serve.zig             #   Dev server, file watcher, live reload, HMR
-│       └── js/                   #   Embedded JS: a11y mirror, host services, IME
-├── examples/
-│   ├── input-demo/               # Keyboard, mouse, touch input
-│   ├── imgui-demo/               # Canvas-based immediate-mode UI
-│   ├── a11y-demo/                # Accessibility DOM mirror
-│   ├── file-dialog-demo/         # Async file picker
-│   ├── audio-demo-1-assets-bundled/  # Web Audio with bundled assets
-│   ├── audio-demo-2-assets-cached/   # Web Audio with fetched assets
-│   ├── vertex-triangle/          # Smallest WebGPU app: one vertex buffer, one draw
-│   ├── texture-demo/             # Texture upload and sampling
-│   ├── text-demo/                # Canvas-rasterized text as a WebGPU texture
-│   ├── atlas-upload/             # R8 atlas sub-rect uploads, cluster raster, instanced quads
-│   ├── mesh-3d/                  # Depth + stencil, MSAA, instancing, offscreen target, readback
-│   └── particle-life/            # WebGPU compute + render, HTML overlay UI
-├── tools/
-│   ├── test.mjs                  # Blocking and background end-to-end gates
-│   └── release.sh                # Cut a release
-├── docs/
-│   ├── ARCHITECTURE.md           # Design decisions
-│   ├── ROADMAP.md                # What is open
-│   └── VERSIONING.md             # Version source and release procedure
-├── SRC.md                        # Per-module notes the code cannot say
-└── README.md
+  build.zig                     # CLI build, test steps, installApp() for consumers
+  src/
+    root.zig                    # The "zunk" module: bind, web.*, version
+    main.zig                    # CLI (build/run/deploy/init/doctor/help/version)
+    bind/
+      bind.zig                  # Handle, callback table, string exchange buffer
+    web/                        # Layer 2: typed Web API wrappers
+      canvas.zig                #   Canvas 2D
+      input.zig                 #   Keyboard, mouse, touch, wheel, typed text (polling)
+      audio.zig                 #   Web Audio
+      asset.zig                 #   URL-based asset loading
+      app.zig                   #   Title, cursor, timing, logging, clipboard
+      gpu.zig                   #   WebGPU
+      fx.zig                    #   Host services (fetch, downloads, file pick, storage, paste/drop)
+      ime.zig                   #   IME composition
+      ui.zig                    #   HTML overlay UI (panels, sliders, checkboxes, buttons)
+      imgui.zig                 #   Immediate-mode canvas UI (comptime backend)
+      render_backend.zig        #   Canvas2DBackend for imgui
+    gen/                        # Build tool: WASM analysis + JS generation
+      wasm_analyze.zig          #   WASM binary parser (imports, exports, types, names)
+      js_resolve.zig            #   Resolution engine + Web API knowledge base
+      js_gen.zig                #   JS + HTML generator, build report
+      source_map.zig            #   Source maps for bridge.js chunks
+      serve.zig                 #   Dev server, file watcher, live reload, HMR
+      js/                       #   Embedded JS: a11y mirror, host services, IME
+  examples/
+    input-demo/                 # Keyboard, mouse, touch input
+    imgui-demo/                 # Canvas-based immediate-mode UI
+    a11y-demo/                  # Accessibility DOM mirror
+    file-dialog-demo/           # Async file picker
+    audio-demo-1-assets-bundled/  # Web Audio with bundled assets
+    audio-demo-2-assets-cached/   # Web Audio with fetched assets
+    vertex-triangle/            # Smallest WebGPU app: one vertex buffer, one draw
+    texture-demo/               # Texture upload and sampling
+    text-demo/                  # Canvas-rasterized text as a WebGPU texture
+    atlas-upload/               # R8 atlas sub-rect uploads, cluster raster, instanced quads
+    mesh-3d/                    # Depth + stencil, MSAA, instancing, offscreen target, readback
+    particle-life/              # WebGPU compute + render, HTML overlay UI
+  tools/
+    test.mjs                    # Blocking and background end-to-end gates
+    release.sh                  # Cut a release
+  docs/
+    ARCHITECTURE.md             # Design decisions
+    ROADMAP.md                  # What is open
+    VERSIONING.md               # Version source and release procedure
+  SRC.md                        # Per-module notes the code cannot say
+  README.md
 ```
 
 ---
