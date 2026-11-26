@@ -25,16 +25,10 @@ export fn frame(dt: f32) void {
 ```
 
 ```
-$ zunk run
-⚡ zunk building...
-  → compiling zig to wasm...
-  → resolving 18 imports (18 exact, 0 stubs)
-  → generating js (3.2KB) + html
-✓ built in 340ms
-⚡ zunk serving at http://127.0.0.1:8080
+$ zig build run
 ```
 
-That's it. One file. One command.
+`zunk init` writes the `build.zig` that wires this up. `zig build run` compiles the wasm, generates `dist/`, serves it, and rebuilds and reloads when the source changes.
 
 ---
 
@@ -44,7 +38,7 @@ That's it. One file. One command.
 
 - **Pure Zig web development.** A developer should be able to build a complete browser application — games, tools, visualizations, creative apps — writing only Zig. No JavaScript, no HTML templates, no config files required.
 
-- **Zero-config by default, full control when needed.** Running `zunk run` on a directory with a `src/main.zig` should just work. But every layer is overridable for advanced use cases.
+- **One call to set up, full control when needed.** A project needs one `zunk.installApp(...)` call in its `build.zig`; `zig build run` does the rest. Every layer is overridable.
 
 - **Automatic JS generation from WASM analysis.** Zunk reads the compiled `.wasm` binary, inspects every `extern "env" fn` import, and auto-generates the matching JavaScript implementations using a multi-tier resolution engine. No manual binding descriptors needed for common Web APIs.
 
@@ -52,11 +46,11 @@ That's it. One file. One command.
 
 ### Secondary
 
-- **Serve the Zig WebGPU ecosystem.** Zunk is designed to pair with native Zig WebGPU UI libraries. A developer pulls in a GPU rendering library and zunk, writes their app in pure Zig, and `zunk run` handles the entire browser deployment pipeline.
+- **Serve the Zig WebGPU ecosystem.** Zunk pairs with native Zig WebGPU UI libraries. [teak](https://github.com/hotschmoe/teak) builds its web backend on `zunk.web.gpu`, and its needs drive most of the WebGPU surface here.
 
-- **Ship small.** A hello-world should produce ~1KB of JavaScript. Zunk only emits scaffolding code for features the WASM actually imports — no dead code. The generated JS for a full game with canvas, input, and audio is still under 10KB.
+- **Ship small.** Zunk only emits scaffolding for features the WASM actually imports. Measured, unminified: a console-only hello-world generates about 2 KB of JavaScript, the canvas + input example about 12 KB, a WebGPU example about 21 KB.
 
-- **Fast iteration.** `zunk run` compiles, bundles, serves, and live-reloads. File changes trigger a rebuild and the browser refreshes automatically. The goal is sub-second rebuild times for typical projects.
+- **Fast iteration.** `zig build run` builds, serves, and watches `src/` and `build.zig*`. A change reruns `zig build` and the browser reloads; compile errors show as an overlay in the page. `--hmr` swaps the wasm in place instead of reloading.
 
 - **Production-ready output.** `zunk deploy` produces a `dist/` directory with content-hashed filenames, subresource integrity attributes, and preload hints — ready to drop onto any static file server (nginx, S3, Cloudflare Pages, etc.).
 
@@ -64,13 +58,13 @@ That's it. One file. One command.
 
 [CyberEther](https://github.com/luigifcruz/cyberether) is a case study for what WebAssembly, WebUSB, and WebGPU can achieve together: a GPU-accelerated signal processing framework with a flowgraph editor, real-time visualization, and cross-platform deployment -- all running in the browser via WebGPU without installation. It targets Vulkan, Metal, and WebGPU from one codebase.
 
-A developer should be able to write something that ambitious and beautiful in 100% Zig, and zunk should handle the JS/HTML generation. The planned WebGPU UI framework (immediate-mode, Zig-native, likely extracted to its own repo) is designed to make this possible.
+A developer should be able to write something that ambitious and beautiful in 100% Zig, and zunk should handle the JS/HTML generation.
 
 ### Non-Goals (for now)
 
 - Server-side rendering or SSR
 - Package registry or dependency resolution (use Zig's build system)
-- Framework opinions — zunk is a build tool + platform layer, not a UI framework (the WebGPU UI framework will be a separate project)
+- Framework opinions — zunk is a build tool + platform layer, not a UI framework (that is teak)
 - Support for languages other than Zig
 
 ---
@@ -119,8 +113,8 @@ A developer should be able to write something that ambitious and beautiful in 10
            ▼
      dist/
      ├── index.html              (generated)
-     ├── app-[hash].js           (generated)
-     └── app-[hash].wasm         (compiled)
+     ├── app.js                  (generated; app-[hash].js with `zunk deploy`)
+     └── <name>.wasm             (compiled; <name>-[hash].wasm with `zunk deploy`)
 ```
 
 ### Three Usage Paths
@@ -130,7 +124,7 @@ All three coexist in the same project. Use whichever fits your needs:
 **Path 1 — Zero config (raw extern fns)**
 ```zig
 // Just declare what you need. Zunk figures out the JS.
-extern "env" fn canvas_fill_rect(ctx: i32, x: f32, y: f32, w: f32, h: f32) void;
+extern "env" fn ctx2d_fill_rect(ctx: i32, x: f32, y: f32, w: f32, h: f32) void;
 extern "env" fn performance_now() f64;
 extern "env" fn console_log(ptr: [*]const u8, len: u32) void;
 ```
@@ -176,18 +170,19 @@ const teak = b.dependency("teak", .{ .target = wasm_target, .optimize = optimize
 |--------|--------|---------|
 | Console | `console_*`, `log_*` | `console_log`, `log_i32`, `log_f64` |
 | DOM | `dom_*` | `dom_set_text`, `dom_set_html`, `dom_query`, `dom_create_element` |
-| Canvas 2D | `canvas_*`, `ctx2d_*`, `c2d_*` | `canvas_get_2d`, `c2d_fill_rect`, `c2d_arc` |
-| WebGPU | `gpu_*` | `gpu_request_adapter`, `gpu_request_device`, `gpu_create_shader` |
+| Canvas 2D | `canvas_*`, `ctx2d_*` | `canvas_get_2d`, `ctx2d_fill_rect`, `ctx2d_arc` |
+| WebGPU | `gpu_*` | `gpu_create_buffer`, `gpu_create_shader_module`, `gpu_begin_render_pass` |
 | Web Audio | `audio_*` | `audio_init`, `audio_load`, `audio_play` |
 | Input | `input_*` | `input_init`, `input_poll` |
 | Fetch | `fetch_*` | `fetch_get`, `fetch_get_response_ptr` |
 | WebSocket | `ws_*` | `ws_connect`, `ws_send`, `ws_close` |
 | Storage | `storage_*` | `storage_set`, `storage_get`, `storage_remove` |
+| HTML overlay UI | `ui_*` | `ui_create_panel`, `ui_add_slider`, `ui_get_float` |
 | Timers | — | `setTimeout`, `setInterval`, `requestAnimationFrame` |
 | Clipboard | `clipboard_*` | `clipboard_write` |
 | Performance | — | `performance_now`, `random`, `date_now` |
 
-Any import not matching these patterns generates a stub with a diagnostic telling you exactly how to fix it.
+The Layer 2 modules use the same names behind a `zunk_` prefix. An import that matches nothing gets a stub that warns at runtime, and the build report lists it with a "did you mean" suggestion.
 
 ### Lifecycle Protocol
 
@@ -200,7 +195,7 @@ Zunk detects these exports from your WASM and wires them up automatically:
 | `resize` | `fn (w: u32, h: u32) void` | On window resize |
 | `cleanup` | `fn () void` | On `beforeunload` |
 
-If you export `frame`, zunk generates a render loop. If you don't, it doesn't. If you export `resize`, zunk generates a resize handler and a fullscreen canvas. Everything is adaptive.
+If you export `frame`, zunk generates a render loop. If you export `resize`, zunk generates a resize handler. An app that draws (canvas or WebGPU imports) and exports `frame` gets a full-window canvas.
 
 ### Host services and web fonts
 
@@ -223,39 +218,52 @@ If you export `frame`, zunk generates a render loop. If you don't, it doesn't. I
 
 ```
 zunk/
+├── build.zig                     # CLI build, test steps, installApp() for consumers
 ├── src/
-│   ├── root.zig                  # Root module -- the single import for developers
-│   ├── main.zig                  # CLI entry point (build/run/deploy/init/doctor/help/version)
+│   ├── root.zig                  # The "zunk" module: bind, web.*, version
+│   ├── main.zig                  # CLI (build/run/deploy/init/doctor/help/version)
 │   ├── bind/
-│   │   └── bind.zig              # Core binding system: Handle, CallbackFn, string exchange,
-│   │                             #   callback table, comptime manifest serializer
-│   ├── web/                      # Layer 2: Ergonomic Web API wrappers
-│   │   ├── canvas.zig            #   Canvas 2D (27 extern fns)
-│   │   ├── input.zig             #   Keyboard, mouse, touch, gamepad (polling model)
-│   │   ├── audio.zig             #   Web Audio API
-│   │   ├── asset.zig             #   Generic URL-based asset loading
-│   │   ├── app.zig               #   Lifecycle, timing, clipboard, window control
-│   │   ├── gpu.zig               #   WebGPU bindings (33 extern fns, typed handles)
+│   │   └── bind.zig              # Handle, callback table, string exchange buffer
+│   ├── web/                      # Layer 2: typed Web API wrappers
+│   │   ├── canvas.zig            #   Canvas 2D
+│   │   ├── input.zig             #   Keyboard, mouse, touch, wheel, typed text (polling)
+│   │   ├── audio.zig             #   Web Audio
+│   │   ├── asset.zig             #   URL-based asset loading
+│   │   ├── app.zig               #   Title, cursor, timing, logging, clipboard
+│   │   ├── gpu.zig               #   WebGPU
+│   │   ├── fx.zig                #   Host services (fetch, downloads, file pick, storage, paste/drop)
+│   │   ├── ime.zig               #   IME composition
 │   │   ├── ui.zig                #   HTML overlay UI (panels, sliders, checkboxes, buttons)
-│   │   ├── imgui.zig             #   Immediate-mode canvas UI (comptime generic backend)
-│   │   └── render_backend.zig    #   Render backend abstraction (Canvas2DBackend)
+│   │   ├── imgui.zig             #   Immediate-mode canvas UI (comptime backend)
+│   │   └── render_backend.zig    #   Canvas2DBackend for imgui
 │   └── gen/                      # Build tool: WASM analysis + JS generation
-│       ├── wasm_analyze.zig      #   Full WASM binary parser (imports, exports, types, names)
-│       ├── js_resolve.zig        #   5-tier auto-resolution engine + Web API knowledge base
-│       ├── js_gen.zig            #   JS + HTML code generator (minimal, adaptive output)
-│       └── serve.zig             #   Dev server, file watcher, live reload, WebSocket
+│       ├── wasm_analyze.zig      #   WASM binary parser (imports, exports, types, names)
+│       ├── js_resolve.zig        #   Resolution engine + Web API knowledge base
+│       ├── js_gen.zig            #   JS + HTML generator, build report
+│       ├── source_map.zig        #   Source maps for bridge.js chunks
+│       ├── serve.zig             #   Dev server, file watcher, live reload, HMR
+│       └── js/                   #   Embedded JS: a11y mirror, host services, IME
 ├── examples/
 │   ├── input-demo/               # Keyboard, mouse, touch input
 │   ├── imgui-demo/               # Canvas-based immediate-mode UI
+│   ├── a11y-demo/                # Accessibility DOM mirror
+│   ├── file-dialog-demo/         # Async file picker
 │   ├── audio-demo-1-assets-bundled/  # Web Audio with bundled assets
-│   ├── audio-demo-2-assets-cached/   # Web Audio with cached asset loading
-│   ├── particle-life/            # WebGPU compute + render pipeline
-│   ├── atlas-upload/             # R8 atlas sub-rect uploads + canvas2D cluster raster, instanced quads
-│   └── mesh-3d/                  # Depth-tested lit mesh, MSAA, instanced edges, offscreen inset + readback
+│   ├── audio-demo-2-assets-cached/   # Web Audio with fetched assets
+│   ├── vertex-triangle/          # Smallest WebGPU app: one vertex buffer, one draw
+│   ├── texture-demo/             # Texture upload and sampling
+│   ├── text-demo/                # Canvas-rasterized text as a WebGPU texture
+│   ├── atlas-upload/             # R8 atlas sub-rect uploads, cluster raster, instanced quads
+│   ├── mesh-3d/                  # Depth + stencil, MSAA, instancing, offscreen target, readback
+│   └── particle-life/            # WebGPU compute + render, HTML overlay UI
+├── tools/
+│   ├── test.mjs                  # Blocking and background end-to-end gates
+│   └── release.sh                # Cut a release
 ├── docs/
-│   ├── ARCHITECTURE.md           # Deep dive on design decisions
-│   └── ROADMAP.md                # Development roadmap
-├── LICENSE
+│   ├── ARCHITECTURE.md           # Design decisions
+│   ├── ROADMAP.md                # What is open
+│   └── VERSIONING.md             # Version source and release procedure
+├── SRC.md                        # Per-module notes the code cannot say
 └── README.md
 ```
 
@@ -263,10 +271,12 @@ zunk/
 
 ## Quick Start
 
+Requires Zig 0.17.
+
 ### Install
 
 ```bash
-git clone https://github.com/your-org/zunk.git
+git clone https://github.com/hotschmoe/zunk.git
 cd zunk
 zig build -Doptimize=ReleaseSafe
 # Binary at zig-out/bin/zunk
@@ -279,34 +289,28 @@ zunk init my-app
 cd my-app
 ```
 
-This creates `build.zig`, `build.zig.zon`, `src/main.zig`, and `.gitignore`. Or create files manually:
+This creates `build.zig`, `build.zig.zon`, `src/main.zig` (a canvas hello-world), and `.gitignore`. The generated `build.zig.zon` points the `zunk` dependency at `../..`, which is right for a project created under `examples/` of a zunk checkout; anywhere else, change that path or replace it with a `zig fetch --save` of this repository.
 
-```zig
-// src/main.zig -- this is the ONLY file you need
-extern "env" fn console_log(ptr: [*]const u8, len: u32) void;
-
-fn log(msg: []const u8) void {
-    console_log(msg.ptr, msg.len);
-}
-
-export fn init() void {
-    log("Hello from Zig!");
-}
-```
+The `build.zig` compiles `src/main.zig` to `wasm32-freestanding` and hands the result to `zunk.installApp`, which runs the zunk CLI as a build step.
 
 ### Run
 
 ```bash
-zunk run
-# → compiles, generates JS + HTML, serves at localhost:8080
+zig build run
+# compiles, generates dist/, serves at http://127.0.0.1:8080
 ```
 
-### Deploy
+### Build or deploy
 
 ```bash
-zunk deploy
-# → produces dist/ with hashed assets, ready for any static server
+zig build
+# dist/ with index.html, app.js and the .wasm
+
+zunk deploy --wasm zig-out/bin/app.wasm
+# dist/ with content-hashed filenames, SRI and a wasm preload hint
 ```
+
+`zunk build`, `zunk run` and `zunk deploy` take a compiled `.wasm` through `--wasm`; they do not compile Zig themselves.
 
 ---
 
@@ -322,11 +326,11 @@ Zunk takes a fundamentally different approach: it reads the WASM import table (w
 |---|---|---|
 | Binding definition | Proc macro attributes | Naming convention + type signatures |
 | JS generation | Post-process `.wasm` binary | Read `.wasm` imports during build |
-| Build steps | `cargo build` → `wasm-bindgen` → bundler | `zunk run` (one command) |
-| JS output size | ~50KB+ hello-world | ~1KB hello-world |
+| Build steps | `cargo build` → `wasm-bindgen` → bundler | `zig build run` (one command) |
+| JS output size | ~50KB+ hello-world | ~2KB hello-world |
 | String passing | Copies through JS heap | Direct linear memory reads |
 | Input model | Per-event callbacks (async) | Polling (shared memory, game-friendly) |
-| Requires | Rust nightly features | Stable Zig |
+| Requires | Rust nightly features | Zig 0.17 |
 
 ### vs Emscripten
 
@@ -342,14 +346,13 @@ trunk is the direct inspiration for zunk's build tool. It uses an HTML-driven as
 
 ## Status
 
-Phases 1-3 (Foundation, Build Pipeline, Developer Experience) and Phase 4.1 (WebGPU) are complete. The WASM analyzer, 5-tier resolution engine, JS/HTML code generator, binding system, Layer 2 web modules (canvas, input, audio, asset, app, gpu, ui), dev server with live reload, `bridge.js` auto-discovery, and `zunk deploy` (content-hashed filenames, SRI, WASM preload) are all working. Five example projects compile and run end-to-end, including a WebGPU particle simulation with compute shaders.
+Working today: the WASM analyzer, the resolution engine, the JS/HTML generator, the binding system, the Layer 2 modules (canvas, input, audio, asset, app, gpu, fx, ime, ui, imgui), the dev server with live reload and opt-in HMR, `bridge.js` merging with source maps, web font registration, and `zunk deploy` (content-hashed filenames, SRI, wasm preload). `zunk init` scaffolds a project, `zunk doctor` checks the environment, builds are cached, and the resolution report has "did you mean" suggestions (`--verbose`, `--report-json`).
 
-Developer experience tooling is in place: `zunk init` scaffolds new projects, `zunk doctor` diagnoses environment issues, build caching skips unchanged rebuilds, and the resolution report has color-coded output with fuzzy "did you mean?" suggestions (`--verbose` and `--report-json` flags available).
+The WebGPU surface covers what teak and a CAD viewer needed: vertex and index buffers, instancing, samplers, depth and stencil, MSAA, offscreen targets, blend modes, compute, sub-rect texture uploads, and buffer readback. There are twelve examples under `examples/`.
 
-The `kerf` branch adds what a real CAD app needed: the WebGPU 3D surface (depth attachments, index and instanced draws, MSAA, offscreen render targets, buffer readback; `examples/mesh-3d`), the `web.fx` host-services bridge (fetch with headers/bodies/timeouts, downloads, file pick, localStorage, clock, clipboard, paste/drop with in-JS image downscale), `--font` registration (`@font-face` + wait-for-load) and canvas `letterSpacing`, UTF-8 typed text, modifiers, horizontal wheel, and a stricter `preventDefault` policy.
+The blocking gate (`zig build test`) builds the CLI, builds one example, and checks `build` and `deploy` output. The background gate (`zig build test-heavy`) builds six more examples and runs `input-demo` in headless Chrome.
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the full roadmap.
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deep dive on design decisions.
+See [docs/ROADMAP.md](docs/ROADMAP.md) for what is open and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for design decisions.
 
 ---
 
@@ -359,7 +362,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deep dive on design decis
 
 2. **Explicit over implicit.** Following Zig's philosophy, there's no hidden magic. Every `extern fn` maps to exactly one JavaScript function. The resolution report tells you exactly what was generated and why.
 
-3. **Minimal output.** The generated JavaScript includes only what's needed. No framework, no polyfills, no dead code. A console-only app gets ~1KB of JS.
+3. **Minimal output.** The generated JavaScript includes only the scaffolding the app's imports need. No framework, no polyfills. A console-only app gets about 2 KB of JS.
 
 4. **Progressive disclosure.** Start with raw `extern fn` declarations. Graduate to the Layer 2 ergonomic wrappers when you want nicer types. Use `bridge.js` when you need something custom. Each level adds convenience without requiring the previous one.
 
@@ -369,13 +372,14 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for a deep dive on design decis
 
 ## Contributing
 
-Phases 1-3 and 4.1 (WebGPU) are complete. The highest-impact contributions right now:
+The highest-impact contributions right now:
 
-1. **More Web API coverage** -- WebXR, WebRTC, Web Workers, IndexedDB, Gamepad, WebMIDI
-2. **WebGPU gaps** -- sampler support, vertex buffer layouts, depth/stencil state, error handling
-3. **Source maps** -- mapping generated JS back to Zig source via DWARF debug info
-4. **Auto-compilation** -- detect `build.zig`, run `zig build` automatically, locate `.wasm` output
-5. **Automated smoke tests** -- compile examples and validate generated JS in CI
+1. **More Web API coverage** -- Web Workers, IndexedDB, WebRTC, WebMIDI, WebXR; the gamepad fields in the input block are reserved but not filled
+2. **WebGPU gaps** -- multiple color targets, render bundles, timestamp queries, device-lost and validation-error reporting
+3. **Compile from the CLI** -- `zunk build` and `zunk run` need a pre-built `--wasm`; they could run `zig build` and find the output themselves
+4. **WASM-to-Zig source maps** -- today's source maps cover `bridge.js` chunks only
+
+Testing follows the owner's [ENGINEERING.md](https://github.com/hotschmoe/hotschmoe-setup/blob/master/ENGINEERING.md): no unit tests, a small blocking end-to-end gate, everything else in the background gate.
 
 ---
 

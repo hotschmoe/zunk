@@ -1,5 +1,7 @@
 # zunk Roadmap
 
+Checked items are in the code at master. Unchecked items are not implemented.
+
 ## Phase 1 -- Foundation (DONE)
 
 The core architecture is implemented and functional.
@@ -22,45 +24,39 @@ The CLI works end-to-end on pre-compiled WASM. One-command builds are achieved v
 **Done:**
 - [x] `ServeConfig.build_cmd` field defined (defaults to `{ "zig", "build" }`) -- `gen/serve.zig`
 - [x] `sourceWatcherThread` runs `zig build` as child process on file changes -- `gen/serve.zig`
-- [x] All 5 example projects have working `build.zig` + `build.zig.zon`
+- [x] All 12 example projects have working `build.zig` + `build.zig.zon`
 - [x] `installApp()` helper in zunk's `build.zig` wires up the full pipeline as a build step
 - [x] Compiler error capture and display in browser error overlay
 - [x] Helpful error message when `--wasm` is missing, guiding users to `installApp()`
 
-**Deferred to Phase 3 (nice-to-have):**
+**Not implemented (the CLI still needs `--wasm`; `installApp` supplies it):**
 - [ ] Detect user project structure (look for `build.zig` or `src/main.zig`) in `buildCommand()`
 - [ ] Initial auto-compilation: run `zig build` before WASM analysis instead of requiring `--wasm`
 - [ ] If only `src/main.zig` exists (no `build.zig`), invoke zig directly with wasm32-freestanding target
 - [ ] Locate the compiled `.wasm` output automatically (scan `zig-out/`)
 - [ ] Pass the zunk runtime library as a module dependency so `@import("zunk")` works (for no-build.zig case)
 
-### 2.2 End-to-end validation -- DONE (manual), NEEDS POLISH (automated)
+### 2.2 End-to-end validation -- DONE
 
-**Priority: Critical**
+- [x] 12 examples under `examples/`
+- [x] Blocking gate (`zig build test`, `tools/test.mjs blocking`): CLI `version` and `help`, build `vertex-triangle`, validate its wasm, `node --check` the generated JS, `deploy` and check the hashed files are referenced
+- [x] Background gate (`zig build test-heavy`): the same build check for six more examples, `--font` handling, and a headless Chrome run of `input-demo` (dev server, wasm startup, canvas pixels)
+- [x] CI runs `zig build` + `zig build test` on pull requests (Linux, macOS, Windows; Debug and ReleaseSafe, plus ReleaseFast and ReleaseSmall on Linux) and the background gate nightly
 
-**Done:**
-- [x] 5 working examples: input-demo, imgui-demo, audio-demo-1, audio-demo-2, particle-life
-- [x] All compile to WASM and produce correct JS+HTML output via `zunk build`
-- [x] 0 stubs in resolution for all examples (full auto-resolution works)
-- [x] Examples verified running in browser (manual testing)
-- [x] CI runs `zig build` + `zig build test` across 3 platforms x 5 optimization levels
-
-**Remaining:**
-- [ ] Automated smoke test: compile an example and validate the generated JS is syntactically correct
-- [ ] Consider headless browser validation (Playwright/Puppeteer) for CI -- nice-to-have, not blocking
+**Not covered by any gate:** `a11y-demo`, `atlas-upload`, `audio-demo-2-assets-cached`, `file-dialog-demo` and `imgui-demo` are not built by either gate.
 
 ### 2.3 Dev server -- DONE
 
 **Done:**
 - [x] HTTP server on localhost with configurable port (default 8080) -- `gen/serve.zig`
-- [x] Correct MIME types: html, js, wasm, css, json, png, svg, ico, woff2, mp3, ogg, wav, wgsl
+- [x] MIME types: html, js, wasm, css, json, map, png, svg, ico, woff2, mp3, ogg, wav, wgsl
 - [x] URL printed to stdout with rich formatted banner
 - [x] SPA fallback (routes without extensions serve index.html)
 - [x] Embedded favicon fallback
 - [x] Directory traversal protection
 - [x] COOP/COEP headers for SharedArrayBuffer support
 - [x] HTTP proxy support (`--proxy prefix=url`)
-- [x] Platform-specific socket I/O (Windows + POSIX)
+- [x] Socket I/O through `std.Io`
 
 ### 2.4 File watcher + live reload -- DONE
 
@@ -81,9 +77,10 @@ The CLI works end-to-end on pre-compiled WASM. One-command builds are achieved v
 - [x] Build report suggests `bridge.js` or `js/bridge.js` paths when stubs are present
 - [x] Auto-discover `bridge.js` or `js/bridge.js` from user project root in `buildCommand()`
 
-**Deferred to Phase 4.3:**
-- [ ] Scan Zig package dependencies for `bridge.js` files
-- [ ] Document the format: bridge.js should export an object whose keys become env imports
+- [x] Dependency-provided `bridge.js` files, listed explicitly through `installApp`'s `bridge_deps` (see 4.3); dependencies are not scanned
+
+**Not implemented:**
+- [ ] Document the format. Today a chunk is pasted after the generated `env` object, inside the same function, and provides an import by assigning `env.<name>`. The build report does not see that assignment and still lists the import as unresolved.
 
 ### 2.6 `zunk deploy` -- DONE
 
@@ -114,7 +111,7 @@ Build errors are displayed in the browser via WebSocket. The server captures `zi
 
 ### 3.3 Build caching -- DONE
 
-Mtime-based fingerprinting of `src/*.zig`, `build.zig`, `build.zig.zon`, the WASM binary, and `bridge.js`. Fingerprint stored as 16-byte i128 in `{output_dir}/.zunk_cache`. Skips rebuild when fingerprint matches. `--force` flag bypasses cache. Applied to both `build` and `deploy` commands.
+Mtime-based fingerprinting of the zunk executable, `src/**/*.zig`, `build.zig`, `build.zig.zon`, the WASM binary, `bridge.js`, bridge deps and fonts. Fingerprint stored as 16-byte i128 in `{output_dir}/.zunk_cache`. Skips rebuild when fingerprint matches. `--force` flag bypasses cache. Applied to `build` and `deploy`; `run` always rebuilds.
 
 ### 3.4 `zunk doctor` -- DONE
 
@@ -133,7 +130,7 @@ Checks zig version (spawns `zig version`, parses semver, validates >= 0.17.0), w
 
 ### 4.1 WebGPU bindings -- DONE
 
-Full WebGPU bindings are implemented and working. The particle-life example uses them end-to-end with compute shaders and render pipelines.
+The particle-life example uses these end-to-end with compute shaders and render pipelines.
 
 **Done:**
 - [x] Adapter and device acquisition (auto-init in generated JS when WebGPU imports detected)
@@ -147,21 +144,24 @@ Full WebGPU bindings are implemented and working. The particle-life example uses
 - [x] Pipeline layout creation -- `gpu_create_pipeline_layout`
 - [x] Compute pipeline creation -- `gpu_create_compute_pipeline`
 - [x] Render pipeline creation (with alpha blending) -- `gpu_create_render_pipeline`
-- [x] HDR render pipeline creation (configurable format + blend modes) -- `gpu_create_render_pipeline_hdr`
+- [x] HDR render pipeline creation (configurable format + blend modes) -- `gpu.createRenderPipelineHDR` over `gpu_create_render_pipeline`
 - [x] Command encoder creation and submission -- `gpu_create_command_encoder`, `gpu_encoder_finish`, `gpu_queue_submit`
 - [x] Compute pass encoding (set pipeline, set bind group, dispatch, end) -- 5 functions
 - [x] Render pass encoding (begin with clear color, set pipeline, set bind group, draw, end) -- 5 functions
-- [x] HDR render pass (render to texture view) -- `gpu_begin_render_pass_hdr`
+- [x] HDR render pass (render to texture view) -- `gpu.beginRenderPassHDR` over `gpu_begin_render_pass`
 - [x] Present (flush command encoder to screen) -- `gpu_present`
 - [x] DPR-aware resize handler for WebGPU canvas
-- [x] Layer 2 ergonomic wrappers with typed handles in `web/gpu.zig` (50 extern fns, typed Device/Buffer/Texture/Pipeline aliases, convenience constructors)
+- [x] Layer 2 ergonomic wrappers in `web/gpu.zig` (55 extern fns, Device/Buffer/Texture/Pipeline aliases of `bind.Handle`, convenience constructors)
 - [x] ABI-matched struct layouts (`BindGroupLayoutEntry` = 40 bytes, `BindGroupEntry` = 32 bytes)
 - [x] Texture format enum (rgba16float, rgba32float, bgra8unorm, rgba8unorm, rgba8unorm_srgb, depth24plus, depth32float, r8unorm, depth24plus_stencil8) + StencilState in pipelines, stencil load/store in passes, region readback
 - [x] Usage flag constants matching WebGPU spec (`BufferUsage`, `TextureUsage`, `ShaderVisibility`)
+- [x] Vertex buffer layouts on pipelines and `renderPassSetVertexBuffer`
+- [x] Samplers (`createSampler`: filter and address modes) with sampler and texture bind group entries
+- [x] `gpu.release` for handles that have no GPU-side destroy (texture views, bind groups, layouts, pipelines)
 
 ### 4.1b 3D rendering surface -- DONE
 
-Added for the kerf/teak 3D work; demonstrated by `examples/mesh-3d` (verified in headless Chromium/SwiftShader).
+Added for the kerf/teak 3D work; demonstrated by `examples/mesh-3d`.
 
 - [x] Depth attachment (`RenderPassDescriptor.depth`) and pipeline depth state (`DepthState`: format, write, compare, bias)
 - [x] Index buffers (`BufferUsage.INDEX`, `renderPassSetIndexBuffer`, `renderPassDrawIndexed`)
@@ -172,11 +172,13 @@ Added for the kerf/teak 3D work; demonstrated by `examples/mesh-3d` (verified in
 - [x] Viewport / scissor
 - [x] Readback (`copyTextureToBuffer`, `bufferMapRead` polling, `Readback`)
 - [x] Frame-scoped handles released automatically (render passes, encoders, command buffers, canvas view)
-- [x] WebGPU lifecycle documented in one place (`src/web/gpu.zig` header); multi-line JS moved into a named `zunkGPU` helper
+- [x] Stencil: `depth24plus_stencil8`, `StencilState` on pipelines, stencil load/store/clear on passes, `renderPassSetStencilReference`
+- [x] WebGPU lifecycle documented in one place (`SRC.md`, "src/web/gpu.zig"); multi-line JS lives in the `zunkGPU` helper in `gen/js_gen.zig`
 
 **Not yet implemented:**
-- [ ] Stencil formats / ops
 - [ ] Multiple color attachment targets
+- [ ] Mipmaps, texture arrays and cube maps (textures are single-level 2D)
+- [ ] Comparison samplers, anisotropy, LOD clamps
 - [ ] Render bundles
 - [ ] Timestamp queries / pipeline statistics
 - [ ] Error handling (device lost, validation errors)
@@ -191,6 +193,9 @@ Added for the kerf/teak 3D work; demonstrated by `examples/mesh-3d` (verified in
 - [x] Pointer Lock -- `input_lock_pointer`, `input_unlock_pointer`
 - [x] Fullscreen -- `ui_request_fullscreen`
 - [x] HTML UI system -- panels, sliders, checkboxes, buttons, separators, status bar (full `web/ui.zig` + resolution support)
+- [x] Host services (`web/fx.zig`): fetch with headers, bodies and timeout, downloads, file picker, localStorage, clock, query parameters, clipboard, paste and drop
+- [x] IME composition (`web/ime.zig`)
+- [x] Async file dialog (`__zunk_request_file_dialog`) and accessibility DOM mirror (`__zunk_publish_a11y_tree`, `__zunk_poll_a11y_actions`)
 
 **Not yet implemented:**
 - [ ] WebXR (VR/AR headset access)
@@ -198,7 +203,7 @@ Added for the kerf/teak 3D work; demonstrated by `examples/mesh-3d` (verified in
 - [ ] Web Workers (background threads)
 - [ ] IndexedDB (structured storage)
 - [ ] WebMIDI (musical instruments)
-- [ ] Gamepad API (beyond current basic support -- gamepad section exists in InputState but JS flush skips it)
+- [ ] Gamepad API (the gamepad fields exist in `InputState` and `input.getGamepad()` reads them, but the generated JS never fills them)
 
 ### 4.3 Library convention for bridge.js -- DONE
 
@@ -210,18 +215,18 @@ Zig packages ship a `bridge.js` at their package root. Consumers opt in via `zun
 
 **Deferred:** DWARF -> Zig source line mapping (browsers already render WASM function names from the `name` custom section, so this is less urgent). Category-level sections (one source per Web API category like canvas / audio / webgpu) -- follow-up when the current bridge sections prove out.
 
-### 4.5 WASM size optimization
+### 4.5 WASM size optimization -- NOT STARTED
 
-Integrate wasm-opt or implement custom optimization passes:
+zunk copies the `.wasm` unchanged; consumers strip it in their own `build.zig` (`root_module.strip`). Ideas:
 - Strip debug sections for release builds
 - Remove unused function types
 - Optimize memory layout
 
 ---
 
-## Phase 4.5 -- Canvas-based Immediate-Mode UI (IN PROGRESS)
+## Phase 4.5 -- Canvas-based Immediate-Mode UI (PARTIAL)
 
-A WebGPU/Canvas2D immediate-mode UI system for building debug panels and tools, rendered entirely from WASM. Separate from the HTML-based `web/ui.zig` overlay system.
+A Canvas2D immediate-mode UI system for building debug panels and tools, rendered entirely from WASM. Separate from the HTML-based `web/ui.zig` overlay system. For a full UI framework on WebGPU, use teak.
 
 **Done:**
 - [x] `web/imgui.zig` -- generic `Ui(Backend)` with comptime backend selection
@@ -229,9 +234,10 @@ A WebGPU/Canvas2D immediate-mode UI system for building debug panels and tools, 
 - [x] Theme system with configurable colors, sizes, fonts
 - [x] Layout system (vertical/horizontal, nested up to 16 levels)
 
-**Needs polish:**
-- [ ] Widget coverage: verify slider, checkbox, button, text, separator all work end-to-end
-- [ ] The imgui-demo example exists -- verify it runs correctly
+- [x] `examples/imgui-demo` builds with zero unresolved imports
+
+**Not done:**
+- [ ] No gate builds or runs `imgui-demo`, so widget behavior is unverified
 - [ ] WebGPU render backend (for rendering UI on GPU canvas instead of Canvas2D overlay)
 
 ---
@@ -242,9 +248,9 @@ A WebGPU/Canvas2D immediate-mode UI system for building debug panels and tools, 
 
 `zunk run --hmr` swaps the WASM module in place when only the `.wasm` changed (any other `dist/` change still triggers a full reload). JS-side state survives (handle table, WebGPU device & pipelines, audio context, WebSocket connections, etc.). Zig-side state is reset unless the app exports `__zunk_hmr_serialize` / `__zunk_hmr_hydrate`, which round-trip through the existing 64 KB exchange buffer.
 
-Flag stays opt-in until teak validates the protocol end-to-end and reports back (see `docs/hmr.md`). Next steps: a `zunk.bind.exposeHmr` comptime helper, then flip the flag default-on.
+Flag stays opt-in until teak validates the protocol end-to-end and reports back (see `docs/hmr.md`). Not implemented: a `zunk.bind.exposeHmr` comptime helper, and making the flag the default.
 
-### 5.2 Multi-page app support
+### 5.2 Multi-page app support -- NOT STARTED
 
 Generate multiple HTML pages from a single project, each with its own WASM entry point. Useful for apps with distinct views (editor, preview, settings).
 
@@ -252,7 +258,7 @@ Generate multiple HTML pages from a single project, each with its own WASM entry
 
 The dev server supports `--proxy prefix=url` to forward matching requests to a backend server. Implemented in `gen/serve.zig`.
 
-### 5.4 Asset pipeline
+### 5.4 Asset pipeline -- PARTIAL
 
 The foundation is in place: `zunk.web.asset` provides generic URL-based
 fetching, and the build tool copies `src/assets/` to `dist/assets/`.
@@ -266,7 +272,7 @@ Remaining work beyond the current simple file copying:
 - Image optimization
 - Font subsetting
 
-### 5.5 `Zunk.toml` configuration
+### 5.5 `Zunk.toml` configuration -- NOT STARTED
 
 Optional configuration file for projects that need to customize behavior:
 - Canvas size and mode (fixed vs fullscreen)

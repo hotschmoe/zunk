@@ -107,35 +107,44 @@ we love you, Claude! do your best today
 
 ### What is zunk
 
-zunk is a build tool and runtime library for writing browser applications entirely in Zig, compiled to WebAssembly. It auto-generates all HTML and JavaScript -- the developer never writes either. One command (`zunk run`) compiles Zig to WASM, analyzes the binary's imports/exports, generates minimal JS bridge code, and serves the result.
+zunk is a build tool and runtime library for writing browser applications entirely in Zig, compiled to WebAssembly. It generates all HTML and JavaScript from the compiled `.wasm`: it reads the binary's imports and exports, emits only the JS bridge code those imports need, and serves or deploys the result. Its main consumer is [teak](https://github.com/hotschmoe/teak), which uses `zunk.web.gpu`, `web.input`, `web.fx` and `web.ime` for its web backend.
 
 ### Toolchain
 
-- **Language**: Zig (minimum 0.17.0, see `build.zig.zon`)
-- **Build**: `zig build` (native CLI), `zig build test` (tests), `zig build run` (run CLI)
-- **Target**: The zunk CLI is a native executable; user projects compile to `wasm32-freestanding`
+- **Language**: Zig 0.17 (`minimum_zig_version` in `build.zig.zon`; CI pins `ZIG_VERSION` in `.github/workflows/ci.yml`)
+- **Build**: `zig build` (native CLI), `zig build run -- <args>` (run the CLI)
+- **Gates**: `zig build test -j4` is the blocking end-to-end gate (needs Node); `zig build test-heavy -j4` is the background gate (needs Node and Chrome/Chromium). Both run `tools/test.mjs`. There are no unit tests; see ENGINEERING.md.
+- **Target**: the zunk CLI is a native executable; user projects compile to `wasm32-freestanding`
+- **Dependencies**: `webzocket` (dev-server WebSocket) and `rich_zig` (CLI output), both pinned in `build.zig.zon`
 
 ### Project Structure
 
 ```
+build.zig              -- CLI build, test steps, and installApp() for consumer build.zig files
 src/
-  root.zig       -- library root (public API, the "zunk" module)
-  main.zig       -- CLI entry point (imports "zunk" module)
-ref/              -- reference material and prior art (read-only)
-```
-
-**Planned structure** (from README, not yet implemented):
-
-```
-src/
-  zunk.zig                -- root module
-  bind/bind.zig           -- Handle, CallbackFn, string exchange, comptime manifest
-  web/                    -- Layer 2 ergonomic Web API wrappers
-    canvas.zig, input.zig, audio.zig, asset.zig, app.zig
-  gen/                    -- build tool: WASM analysis + JS generation
-    wasm_analyze.zig      -- WASM binary parser
-    js_resolve.zig        -- 5-tier auto-resolution engine
-    js_gen.zig            -- JS + HTML code generator
+  root.zig             -- the "zunk" module: bind, web.*, version
+  main.zig             -- CLI: build, run, deploy, init, doctor, help, version
+  bind/bind.zig        -- Handle, callback table, 64 KB string exchange buffer
+  web/                 -- typed wrappers imported by wasm apps
+    app.zig, asset.zig, audio.zig, canvas.zig, input.zig
+    gpu.zig            -- WebGPU
+    fx.zig             -- host services (fetch, downloads, file pick, storage, clipboard, paste/drop)
+    ime.zig            -- IME composition bridge
+    ui.zig             -- HTML overlay controls
+    imgui.zig, render_backend.zig -- immediate-mode canvas UI
+  gen/                 -- the build tool (native only)
+    wasm_analyze.zig   -- WASM binary parser
+    js_resolve.zig     -- import name -> JS body resolution
+    js_gen.zig         -- JS + HTML generator, build report
+    source_map.zig     -- source maps for bridge.js chunks
+    serve.zig          -- dev server, watcher, live reload, HMR
+    js/                -- embedded JS for a11y, fx and ime
+examples/              -- 12 example apps, each with its own build.zig
+tools/test.mjs         -- both gates
+tools/release.sh       -- cut a release
+docs/                  -- ARCHITECTURE.md, ROADMAP.md, VERSIONING.md, design notes
+SRC.md                 -- per-module notes the code cannot say
+ref/                   -- prior art (read-only)
 ```
 
 ### Architecture Overview
@@ -144,35 +153,38 @@ src/
 Zig source --> zig build (wasm32) --> .wasm binary
                                         |
                                    WASM Analyzer
-                                   (read imports, exports, types, names)
+                                   (imports, exports, types, names)
                                         |
-                                   5-Tier Resolution Engine
-                                   T1: Exact match (known Web API name)
+                                   Resolution Engine
+                                   T1: Exact match (known name)
                                    T2: Prefix match (namespace convention)
                                    T3: Signature (types + name keywords)
                                    T4: Param names (debug section hints)
                                    T5: Stub (warning + build report)
                                         |
                                    JS Code Generator
-                                   (emit only what WASM actually imports)
+                                   (emit only what the WASM imports)
                                         |
                                    dist/
-                                     index.html, app-[hash].js, app-[hash].wasm
+                                     index.html, app.js, <name>.wasm
+                                     (deploy: app-<hash>.js, <name>-<hash>.wasm, SRI)
 ```
+
+A new browser binding has two halves that must change together: the `extern "env" fn` and wrapper in `src/web/*.zig`, and its JS body in `src/gen/js_resolve.zig` (or the `zunkGPU` helper in `src/gen/js_gen.zig`). Descriptor layouts and enum orders are shared by position.
 
 ### Key Design Decisions
 
 - **No JavaScript, no HTML** -- everything is generated from WASM analysis
-- **Polling-based input** -- shared memory struct, not event callbacks (game-friendly)
-- **Handle table** for opaque JS objects (integer ID <-> JS object Map)
-- **Strings**: ptr+len into WASM linear memory (Zig->JS), shared 64KB exchange buffer (JS->Zig)
-- **Adaptive output** -- only emit JS scaffolding for features the WASM actually uses
+- **Polling-based input** -- shared memory struct, not event callbacks
+- **Handle table** for opaque JS objects (integer ID <-> JS object)
+- **Strings**: ptr+len into WASM linear memory (Zig->JS), shared 64 KB exchange buffer (JS->Zig)
+- **Adaptive output** -- only emit JS scaffolding for features the WASM uses
 
 ### Three Usage Paths (all coexist)
 
 1. **Raw extern fns** -- declare `extern "env" fn` with naming conventions, zunk auto-resolves
 2. **Layer 2 modules** -- `@import("zunk").web.canvas` etc., typed Zig wrappers
-3. **bridge.js escape hatch** -- ship custom JS alongside your project for unsupported APIs
+3. **bridge.js escape hatch** -- custom JS appended to the generated output; a library ships one via `installApp`'s `bridge_deps`
 
 ### WASM Lifecycle Exports
 
@@ -183,17 +195,9 @@ Zig source --> zig build (wasm32) --> .wasm binary
 | `resize`  | `fn (w: u32, h: u32) void` | On window resize          |
 | `cleanup` | `fn () void`          | On beforeunload                |
 
-### Inspiration: CyberEther
-
-[CyberEther](https://github.com/luigifcruz/cyberether) is the north-star case study. It is a GPU-accelerated signal processing framework that runs in the browser via WebGPU/WebAssembly -- real-time flowgraph editing, visualization, cross-platform from one codebase (Vulkan/Metal/WebGPU). A zunk developer should be able to build something equally ambitious in 100% Zig. The planned WebGPU UI framework (immediate-mode, Zig-native) will be extracted to its own repo once mature.
-
 ### Current Status
 
-Phase 1 (Foundation) -- project is freshly initialized. `src/root.zig` and `src/main.zig` are still zig-init boilerplate. The core modules (bind/, web/, gen/) described in the README are not yet implemented. `ref/` contains prior art and conversation dumps for reference.
-
-### Versioning
-
-The version lives only in `build.zig.zon` and is exposed as `zunk.version` (the CLI `version`/`--version` prints it). Releases are explicit: `tools/release.sh <semver>`. See `docs/VERSIONING.md`.
+Everything above is implemented. `docs/ROADMAP.md` lists what is open; `SRC.md` holds the invariants.
 
 ## Versioning
 `build.zig.zon` `.version` is the single source of truth; code reads `zunk.version` (from `build_options`). Never write a version literal elsewhere, never bump it in a feature PR. Releases are cut explicitly with `tools/release.sh <semver>`. See [`docs/VERSIONING.md`](docs/VERSIONING.md).
