@@ -1084,7 +1084,8 @@ fn generateReport(
         try w.writeAll("[red]WARNING: UNRESOLVED IMPORTS[/] -- these need a bridge.js or zunk naming convention:\n");
         for (analysis.imports, 0..) |imp, i| {
             if (resolutions[i].confidence == .stub) {
-                try w.print("   [red]*[/] {s}.{s}", .{ imp.module, imp.name });
+                try w.writeAll("   [red]*[/] ");
+                try write_import_name(w, imp.module, imp.name);
                 if (analysis.get_import_signature(&imp)) |ft| {
                     try w.print(" (", .{});
                     for (ft.params, 0..) |p, j| {
@@ -1117,14 +1118,13 @@ fn generateReport(
         try w.writeAll("All resolutions:\n");
         for (std.enums.values(resolver.Category)) |cat| {
             if (counts[@backingInt(cat)] == 0) continue;
-            try w.print("\n  [{s}] {s}:\n", .{ categoryColor(cat), @tagName(cat) });
+            try w.print("\n  [{s}]{s}[/]:\n", .{ categoryColor(cat), @tagName(cat) });
             for (analysis.imports, 0..) |imp, i| {
                 const r = &resolutions[i];
                 if (r.category != cat) continue;
                 const conf_color = confidenceColor(r.confidence);
-                try w.print("    [{s}]{s}[/] {s}.{s}", .{
-                    conf_color, @tagName(r.confidence), imp.module, imp.name,
-                });
+                try w.print("    [{s}]{s}[/] ", .{ conf_color, @tagName(r.confidence) });
+                try write_import_name(w, imp.module, imp.name);
                 if (r.description.len > 0) {
                     try w.print(" -- {s}", .{r.description});
                 }
@@ -1155,6 +1155,16 @@ fn generateReport(
 
 const import_kinds = [_][]const u8{ "function", "table", "memory", "global" };
 
+// The report is console markup: a bracket in a name from the wasm file must not open a tag.
+fn write_import_name(w: *std.Io.Writer, module: []const u8, name: []const u8) !void {
+    for ([_][]const u8{ module, ".", name }) |part| {
+        for (part) |byte| {
+            if (byte == '[' or byte == ']') try w.writeByte('\\');
+            try w.writeByte(byte);
+        }
+    }
+}
+
 fn report_missing(
     w: *std.Io.Writer,
     analysis: *const wa.Analysis,
@@ -1174,9 +1184,9 @@ fn report_missing(
     for (analysis.imports, resolutions) |imp, resolution| {
         if (resolution.confidence != .missing) continue;
         assert(imp.kind < import_kinds.len);
-        try w.print("  {s}.{s}: {s}; generated JS supplies only env functions\n", .{
-            imp.module, imp.name, import_kinds[imp.kind],
-        });
+        try w.writeAll("  ");
+        try write_import_name(w, imp.module, imp.name);
+        try w.print(": {s}; generated JS supplies only env functions\n", .{import_kinds[imp.kind]});
     }
     try w.writeAll("Provide these through the import object before instantiation.\n\n");
 }
