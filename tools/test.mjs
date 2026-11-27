@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import {
     mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, statSync,
 } from 'node:fs';
-import { createServer } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { join, resolve } from 'node:path';
 import assert from 'node:assert/strict';
 
@@ -86,6 +86,78 @@ async function stopServer(server, exited, port) {
     await new Promise((ok, fail) => probe.close((err) => err ? fail(err) : ok()));
 }
 
+function maskedFrame(opcode, text) {
+    const mask = Buffer.from([0x12, 0x34, 0x56, 0x78]);
+    const body = Buffer.from(text);
+    assert.ok(body.length < 126, 'test frames are short');
+    const masked = Buffer.from(body.map((byte, index) => byte ^ mask[index % 4]));
+    return Buffer.concat([Buffer.from([0x80 | opcode, 0x80 | body.length]), mask, masked]);
+}
+
+function serverFrames(buffer) {
+    const frames = [];
+    let offset = 0;
+    while (buffer.length - offset >= 2) {
+        let length = buffer[offset + 1] & 127;
+        let header = 2;
+        if (length === 126) {
+            if (buffer.length - offset < 4) break;
+            length = buffer.readUInt16BE(offset + 2);
+            header = 4;
+        }
+        assert.ok((buffer[offset + 1] & 127) < 127, 'server frames stay below 64 KiB');
+        if (buffer.length - offset < header + length) break;
+        const text = buffer.subarray(offset + header, offset + header + length).toString();
+        frames.push({ opcode: buffer[offset] & 15, text });
+        offset += header + length;
+    }
+    return { frames, rest: buffer.subarray(offset) };
+}
+
+// The server reads frames through webzocket's reader from a static buffer with the provider maximum at 0.
+async function webSocketTextAndPing(port) {
+    const socket = createConnection({ host: '127.0.0.1', port });
+    let received = Buffer.alloc(0);
+    let closed = false;
+    socket.on('data', (chunk) => { received = Buffer.concat([received, chunk]); });
+    socket.on('close', () => { closed = true; });
+    socket.on('error', () => { closed = true; });
+    const until = async (done, what) => {
+        for (let i = 0; i < 200; i++) {
+            if (done()) return;
+            assert.equal(closed, false, `raw WebSocket closed before ${what}`);
+            await sleep(25);
+        }
+        assert.fail(`raw WebSocket: no ${what}`);
+    };
+    try {
+        await bounded(new Promise((ok, fail) => socket.once('connect', ok).once('error', fail)), 10000, 'raw WebSocket connect');
+        socket.write(`GET /__zunk_ws HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\n` +
+            'Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n');
+        await until(() => received.includes('\r\n\r\n'), 'handshake reply');
+        const end = received.indexOf('\r\n\r\n') + 4;
+        const head = received.subarray(0, end).toString();
+        assert.match(head, /^HTTP\/1\.1 101 /, 'handshake status');
+        assert.match(head, /sec-websocket-accept: s3pPLMBiTxaQ9kYGzzhZRbK\+xOo=/i, 'handshake accept key');
+        received = received.subarray(end);
+        socket.write(maskedFrame(1, 'text frame from the client'));
+        for (const text of ['first ping', 'second ping after more traffic']) {
+            socket.write(maskedFrame(9, text));
+            let pong;
+            await until(() => {
+                const parsed = serverFrames(received);
+                received = parsed.rest;
+                pong = parsed.frames.find((frame) => frame.opcode === 10);
+                return pong !== undefined;
+            }, 'pong');
+            assert.equal(pong.text, text, 'pong echoes the ping payload');
+        }
+        assert.equal(closed, false, 'raw WebSocket stays open after a text frame and two pings');
+    } finally {
+        socket.destroy();
+    }
+}
+
 async function devServerCheck(wasm) {
     const started = performance.now();
     const cwd = join(root, 'examples', 'vertex-triangle');
@@ -133,6 +205,8 @@ async function devServerCheck(wasm) {
             socket.addEventListener('error', () => fail(new Error('reload socket failed')));
             socket.addEventListener('close', () => fail(new Error('reload socket closed early')));
         });
+        reload.catch(() => {});
+        await webSocketTextAndPing(port);
         assert.deepEqual(readFileSync(source), original, 'source changed during server startup');
         changed = true;
         writeFileSync(source, Buffer.concat([original, Buffer.from('\n')]));
@@ -262,6 +336,15 @@ if (mode === 'size') {
         'build', 'fuzz', '-j4', `-Dcommit=${commit.stdout.trim()}`, `-Doptimize=${optimize}`,
         '--', '--seed', '1', '--iterations', '512',
     ]));
+    const simArgs = ['build', 'sim', '-j4', '-Doptimize=ReleaseSafe', '--',
+        '--seed', '1', '--seeds', '32', '--steps', '700'];
+    const simFirst = run('zig', simArgs);
+    const simSecond = run('zig', simArgs);
+    const simHash = (output) => /campaign_hash=([0-9a-f]+)/.exec(output)?.[1];
+    assert.match(simFirst, /failures=0 /, simFirst);
+    assert.ok(simHash(simFirst), 'simulation printed no campaign hash');
+    assert.equal(simHash(simFirst), simHash(simSecond), 'simulation trace hash differs between two processes');
+    console.log(`Blocking: dev-server simulation, 32 seeds, hash ${simHash(simFirst)} in two processes`);
     assert.match(run(binary, ['version']), /\d+\.\d+\.\d+/);
     assert.match(run(binary, ['help']), /deploy/);
     const wasm = example('vertex-triangle');

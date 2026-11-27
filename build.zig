@@ -52,7 +52,14 @@ pub fn build(b: *std.Build) void {
     heavy_step.dependOn(&heavy_cmd.step);
     heavy_step.dependOn(add_cross(b, optimize, version_options));
 
+    add_tools(b, optimize, heavy_step);
+}
+
+fn add_tools(b: *std.Build, optimize: std.builtin.OptimizeMode, heavy_step: *std.Build.Step) void {
     add_fuzz(b, optimize);
+    if (b.pkg_hash.len == 0) add_sim(b, optimize, heavy_step);
+    assert(b.pkg_hash.len > 0 or b.top_level_steps.contains("sim"));
+    assert(b.top_level_steps.contains("fuzz"));
 }
 
 fn add_cli(
@@ -99,7 +106,7 @@ fn add_cross(
     optimize: std.builtin.OptimizeMode,
     version_options: *std.Build.Step.Options,
 ) *std.Build.Step {
-    const step = b.step("check-cross", "Compile the CLI for Linux, Windows and macOS on both CPUs");
+    const step = b.step("check-cross", "Compile the CLI and simulator for Linux, Windows, macOS");
     const targets: []const []const u8 = &.{
         "x86_64-linux",        "aarch64-linux", "x86_64-windows-gnu",
         "aarch64-windows-gnu", "x86_64-macos",  "aarch64-macos",
@@ -112,6 +119,11 @@ fn add_cross(
         const exe = add_cli(b, b.resolveTargetQuery(query), optimize, version_options);
         _ = exe.getEmittedBin();
         step.dependOn(&exe.step);
+        if (b.pkg_hash.len == 0) {
+            const sim = sim_exe(b, b.resolveTargetQuery(query), optimize);
+            _ = sim.getEmittedBin();
+            step.dependOn(&sim.step);
+        }
     }
     return step;
 }
@@ -138,6 +150,50 @@ fn add_fuzz(b: *std.Build, optimize: std.builtin.OptimizeMode) void {
     const fuzz_long = b.addRunArtifact(fuzz);
     fuzz_long.addArgs(&.{ "--iterations", "200000" });
     b.step("fuzz-heavy", "Run the random background build-path gate").dependOn(&fuzz_long.step);
+}
+
+fn sim_exe(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Compile {
+    assert(b.pkg_hash.len == 0);
+    const webzocket = b.dependency("webzocket", .{
+        .target = target,
+        .optimize = optimize,
+    }).module("webzocket");
+    const sim = b.addExecutable(.{
+        .name = "zunk-sim",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/sim.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "webzocket", .module = webzocket }},
+        }),
+    });
+    assert(sim.root_module.resolved_target.?.result.os.tag == target.result.os.tag);
+    assert(sim.root_module.resolved_target.?.result.cpu.arch == target.result.cpu.arch);
+    return sim;
+}
+
+fn add_sim(
+    b: *std.Build,
+    optimize: std.builtin.OptimizeMode,
+    heavy_step: *std.Build.Step,
+) void {
+    assert(b.pkg_hash.len == 0);
+    const sim = sim_exe(b, b.graph.host, optimize);
+    assert(sim.kind == .exe);
+    const run = b.addRunArtifact(sim);
+    run.setCwd(b.path("."));
+    run.addPassthruArgs();
+    b.step("sim", "Run the seeded dev-server simulation").dependOn(&run.step);
+    const heavy = b.addRunArtifact(sim);
+    heavy.setCwd(b.path("."));
+    heavy.addArgs(&.{ "--budget", "120", "--steps", "20000" });
+    b.step("sim-heavy", "Run the dev-server simulation for a time budget").dependOn(&heavy.step);
+    heavy_step.dependOn(&heavy.step);
+    assert(b.top_level_steps.contains("sim-heavy"));
 }
 
 fn add_tidy(b: *std.Build, optimize: std.builtin.OptimizeMode) *std.Build.Step.Run {

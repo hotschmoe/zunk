@@ -138,6 +138,7 @@ zunk is a build tool and runtime library for writing browser applications entire
 - **Build**: `zig build` (native CLI), `zig build run -- <args>` (run the CLI)
 - **Style**: `zig build tidy`; `zig build tidy -- --table`; `zig build tidy -- --update` to tighten. Report packages with `zig build tidy -- --table --root <path>`.
 - **Gates**: `zig build test -j4` is the blocking end-to-end gate (needs Node); `zig build test-heavy -j4` is the background gate (needs Node and Chrome/Chromium). Both run `tools/test.mjs`. There are no unit tests; see ENGINEERING.md.
+- **Dev-server simulation**: `zig build sim -- --seed N --steps M [--seeds K] [--replay file]` runs the real `serve_loop` against a seeded simulated IO; `zig build sim-heavy` runs it for a time budget. See SRC.md.
 - **Build-path generation**: `zig build fuzz -- --seed 1`; `zig build fuzz-heavy` for the long background run. The blocking gate includes a 512-case fixed-seed run.
 - **Target**: the zunk CLI is a native executable; user projects compile to `wasm32-freestanding`
 - **Dependencies**: `webzocket` (dev-server WebSocket) and `rich_zig` (CLI output), both pinned in `build.zig.zon`
@@ -163,6 +164,7 @@ src/
     js_gen.zig         -- JS + HTML generator, build report
     source_map.zig     -- source maps for bridge.js chunks
     dev_server.zig     -- dev server entry; serve_loop/serve_io/serve_os own the loop and IO
+    serve_sim*.zig     -- the simulated IO and checkers for serve_loop (runner: src/sim.zig)
     js/                -- embedded JS for a11y, fx and ime
 examples/              -- 12 example apps, each with its own build.zig
 tools/test.mjs         -- both gates
