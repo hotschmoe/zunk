@@ -301,7 +301,9 @@ fn printReport(console: *rich.Console, allocator: std.mem.Allocator, report: []c
         return;
     }
     try console.print("");
-    const panel = rich.Panel.fromText(allocator, report)
+    var text = rich.Text.fromMarkup(allocator, report) catch rich.Text.fromPlain(allocator, report);
+    defer text.deinit();
+    const panel = rich.Panel.fromStyledText(allocator, text)
         .withTitle(title)
         .withBorderStyle(rich.Style.empty.foreground(rich.Color.cyan));
     try console.printRenderable(panel);
