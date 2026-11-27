@@ -3,6 +3,7 @@
         "src/assert.zig",
         "src/fuzz.zig",
         "src/fuzz_generate.zig",
+        "src/sim.zig",
         "src/gen/build_path.zig",
         "src/gen/wasm_reader.zig",
         "src/gen/wasm_analyze.zig",
@@ -15,6 +16,17 @@
         "src/gen/serve_process.zig",
         "src/gen/serve_os.zig",
         "src/gen/serve_loop.zig",
+        "src/gen/serve_sim.zig",
+        "src/gen/serve_sim_client.zig",
+        "src/gen/serve_sim_files.zig",
+        "src/gen/serve_sim_jobs.zig",
+        "src/gen/serve_sim_oracle.zig",
+        "src/gen/serve_sim_plan.zig",
+        "src/gen/serve_sim_proxy.zig",
+        "src/gen/serve_sim_rx.zig",
+        "src/gen/serve_sim_state.zig",
+        "src/gen/serve_sim_types.zig",
+        "src/gen/serve_sim_ws.zig",
         "tools/tidy.zig",
     },
     .metrics = .{
@@ -41,7 +53,7 @@
         .{
             .name = "build.zig",
             .counts = .{
-                1, 0, 46, 8, 0, 0,
+                1, 0, 46, 6, 0, 0,
                 0, 0, 3,  0, 0, 0,
                 0, 0, 0,  0, 0, 0,
             },
@@ -191,6 +203,94 @@
             },
         },
         .{
+            .name = "src/gen/serve_sim.zig",
+            .counts = .{
+                0, 0, 43, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_sim_client.zig",
+            .counts = .{
+                0, 0, 34, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_sim_files.zig",
+            .counts = .{
+                0, 0, 27, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_sim_jobs.zig",
+            .counts = .{
+                0, 0, 36, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_sim_oracle.zig",
+            .counts = .{
+                0, 0, 27, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_sim_plan.zig",
+            .counts = .{
+                0, 0, 40, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_sim_proxy.zig",
+            .counts = .{
+                0, 0, 22, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_sim_rx.zig",
+            .counts = .{
+                0, 0, 37, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_sim_state.zig",
+            .counts = .{
+                0, 0, 19, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_sim_types.zig",
+            .counts = .{
+                0, 0, 15, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/gen/serve_sim_ws.zig",
+            .counts = .{
+                0, 0, 25, 0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+                0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
             .name = "src/gen/wasm_analyze.zig",
             .counts = .{
                 0, 0, 36, 0,  0, 0,
@@ -204,6 +304,14 @@
                 0, 0, 14, 0, 0, 0,
                 0, 0, 0,  0, 0, 0,
                 0, 0, 0,  0, 0, 0,
+            },
+        },
+        .{
+            .name = "src/sim.zig",
+            .counts = .{
+                0, 0, 33, 0, 0, 0,
+                0, 0, 0,  1, 3, 0,
+                0, 6, 0,  1, 0, 0,
             },
         },
         .{

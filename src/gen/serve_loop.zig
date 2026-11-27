@@ -234,6 +234,7 @@ pub const Loop = struct {
                     try loop.changed(value);
                     try loop.publish();
                 } else |err| {
+                    loop.publish_skip_watch = false;
                     if (err == error.WatchLimit or err == error.PathLimit) {
                         try loop.limit("watch: scan limit reached; retry after 500ms");
                     }

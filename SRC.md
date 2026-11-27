@@ -46,7 +46,8 @@ exist, be in scope and not be skipped or generated. Duplicate and noncanonical
 paths fail. Updates preserve the entire list, including when a file is missing;
 they never remove entries. Zunk holds `src/assert.zig`, `src/fuzz.zig`,
 `src/fuzz_generate.zig`, `src/gen/build_path.zig`, `src/gen/wasm_reader.zig`,
-`src/gen/wasm_analyze.zig`, `src/gen/js_identifier.zig` and `tools/tidy.zig`.
+`src/gen/wasm_analyze.zig`, `src/gen/js_identifier.zig`, `tools/tidy.zig` and
+the simulator (`src/sim.zig`, `src/gen/serve_sim*.zig`).
 Seam inventories and globals may be nonzero; style targets are zero, with
 longest function at most 70. Moving a held file
 out of a group also moves its assertion demand and surplus credit.
@@ -458,12 +459,12 @@ cancellation. Close is synchronous and invalidates the handle. No cancellation
 can release a borrowed file buffer early. These ownership rules let a simulator
 delay and reorder completions without accessing live server state.
 
-A simulator can implement this table directly: readiness, short transfers,
-reset/EOF, short file reads and independently changed metadata, watch observations, child output
-and result, timer advancement and stop. It chooses event order and virtual
-times from its seed. No simulator, seed generator or checker is implemented in
-this step. OS metadata, fingerprint collisions, kernel behavior and webzocket
-internals remain outside that future simulation boundary.
+The simulator (src/sim.zig and src/gen/serve_sim*.zig) implements this table
+directly: readiness, short transfers, reset/EOF, short file reads and
+independently changed metadata, watch observations, child output and result,
+timer advancement and stop. It chooses event order and virtual times from its
+seed. OS metadata, fingerprint collisions, kernel behavior and webzocket
+internals remain outside the simulation boundary.
 
 ## src/gen/serve_loop.zig
 
@@ -514,8 +515,8 @@ cannot discard those buffered bytes.
 | idle, publication pending | fresh observation without a newer source change | publish build |
 | idle, publication pending | newer source observation | withhold publication; rebuild again |
 
-An outstanding watch at child completion is consumed but cannot authorize
-publication; another watch is requested. Dist changes accumulated during a
+An outstanding watch at child completion is consumed, by its result or by its
+error, but cannot authorize publication; another watch is requested. Dist changes accumulated during a
 build plus the fresh observation decide whether HMR is wasm-only. Every
 successful final build publishes even if its output metadata did not change.
 External dist changes while idle also publish. Failed build output is not
@@ -680,6 +681,117 @@ atomic stop flag; the loop sees a stop event within 50 ms. The handler owner
 is single-instance process state, guarded by lifecycle assertions. There are
 no Linux-specific syscalls, OS-specific socket adapters or fallback servers.
 
+## src/sim.zig and src/gen/serve_sim*.zig
+
+The dev-server simulator is the second implementation of `serve_io.Interface`
+and the checkers that judge the real `serve_loop` run against it. `src/sim.zig`
+is the runner and the only file of the set that touches the clock, files,
+arguments or allocation; it reserves the loop and the simulator once with
+`page_allocator` (the loop's snapshots are 200 MiB of sparse address space) and
+runs the real loop in the same process. The other files are pure: no clock,
+file, thread, environment or global state, static storage only.
+
+- `serve_sim.zig`: the thirteen interface calls, the world scheduler and
+  `wait`. Every call validates its contract (handle open, one outstanding job
+  per index, one watch, one build, `connected` only after completion, buffer
+  bounds) and records a trace entry.
+- `serve_sim_client.zig`, `serve_sim_plan.zig`: the clients. A client is a
+  request byte stream (whole or in pieces, with gaps), a reading speed (prompt,
+  slow, stalled), a disconnect plan (half close, FIN or RST at a time or after
+  N received bytes) and, for WebSocket clients, a plan of masked frames. The
+  seventeen request kinds cover files, fallback, favicon, missing, path and
+  header edges, 414/431/413, traversal, bad requests, stalled and dribbled
+  requests, proxy, reload clients and bad handshakes.
+- `serve_sim_rx.zig`, `serve_sim_ws.zig`: response parsing. Bytes are checked
+  as the server writes them: status line and reason, the six fixed headers,
+  content length, and for a file the 16-byte stamp at the start of the body
+  names (file, inode, version, size) so every later byte can be checked against
+  the content function without storing the body.
+- `serve_sim_files.zig`, `serve_sim_jobs.zig`: the file tree, whose files are
+  rewritten, replaced, deleted and created, and the file, watch and build jobs
+  with their delays, errors and short reads. Content is a pure function of
+  (file, inode, version, offset). A transaction is clean when open, every read
+  and verify saw one version; a 200 must carry the bytes of a clean transaction.
+- `serve_sim_proxy.zig`: the proxy target (accepts, refuses, stalls; response
+  length, reset, hang).
+- `serve_sim_oracle.zig`: build, debounce, publication and snapshot-occupancy
+  state computed only from the events the simulator delivered, not from the loop.
+
+The simulator draws everything from one `Xoshiro256` seeded by the seed and
+advances only virtual time. `wait` runs the world at the current time, collects
+what is deliverable (accept, readiness per interest, completions), delivers one
+chosen by the generator, and otherwise advances time to the earliest of the
+world's next action and the loop's deadline. It never passes the deadline, and it
+sometimes returns a timer early. Reads and writes return partial counts (1, a
+few, hundreds, all), pending, closed or failed; readiness is sometimes spurious
+and `closed` is sometimes set for a peer that went away.
+
+Checkers, each derived from what the simulator delivered or observed:
+
+- every accepted handle is closed once, never used after close, and none remains
+  at exit; an open connection missing from the interests is a violation; a
+  connection that must close in this dispatch (response complete, peer EOF or
+  reset, write failure, unsupported or close frame, pong with output pending)
+  and is still open at the next `wait` is a violation;
+- the 17th connection is refused exactly when 16 are open;
+- responses are well formed and complete; 4xx and 5xx statuses and bodies must be
+  justified by simulator facts (a build outstanding, four snapshots possibly
+  held, a file mutated since accept, an injected error); 414, 431, 413, 403 and
+  400 are exact;
+- the idle deadline: an unexplained close happens at exactly the last reset plus
+  30,000 ms, where the resets the loop can make are visible (accept, a write that
+  moved bytes, the first write interest of a response, a WebSocket frame
+  becoming pending); a connection still open at that time is a violation; idle
+  WebSockets have no deadline and closing one without pending output is a
+  violation; an unanswered valid request is a violation unless a file job was
+  stalled past 30 s;
+- `cancel_build` is called exactly 120,000 ms after `build`; `build` is called
+  exactly 100 ms after the last observed source change, or at the completion that
+  followed a change seen during the build; none without a change;
+- publications are computed from build completions, watch observations and their
+  submission order (stale and fresh watch, withheld when a newer change is
+  observed, none for failed or cancelled builds). A reload client receives, for
+  publications after its join, one reload each when it reads promptly; publications
+  between accept and join coalesce into one; slow readers get at least one and at
+  most the count; no client receives more than the publications since its accept;
+  the last status frame (clear or error) matches the last build;
+- pings are answered in order with their payload, unless output was pending;
+- snapshots held (outstanding IO plus connections serving a 200) never exceed
+  four, and a snapshot-limit response needs four possibly held at some moment
+  since accept (a snapshot stays held until its connection closes);
+- proxy: the request reaches the target byte for byte, the response is the
+  target's bytes, a refused or failed connect is a 502;
+- liveness: after the world goes quiet (no new clients, edits or frames; slow
+  readers speed up) the loop reaches no pending work within 4,096 steps;
+- determinism: the runner runs every fourth seed twice and compares the trace
+  hash; `tools/test.mjs` compares the campaign hash of two processes.
+
+A second run per seed injects one hard failure into a call (listen, file, watch,
+build, wait, log, or a clock past the overflow bound) with an error chosen from
+the eight `Failure` values by `seed % 56`; the loop must return exactly that
+error and close everything. Soft errors (accept, read, write, connect, file
+results, watch results, build results) occur in the main runs.
+
+Coverage counters (request kinds, errors, limits, timeouts, failure variants)
+are printed and enforced when a campaign has at least 8 seeds: a zero counter
+fails it. The blocking gate runs seeds 1 to 32 of 700 steps with ReleaseSafe
+(about a third of a second); the loop copies its 60 KB `Event` several times
+per turn, which dominates the cost of a step. A failing run prints its seed, saves
+`zig-out/sim/seed-<seed>-<fault>.trace` (header with seed, steps, fault and
+hash, then the last 16,384 interface events) and `--replay <file>` reruns from
+the header and compares the hash. A panic in the loop saves the trace too.
+`zig build sim -- --seed N --steps M [--seeds K] [--replay file] [--budget S]`;
+`sim-heavy` runs 120 s of fresh seeds and is part of `test-heavy`.
+
+Not modelled: HTTP pipelining and bodies, HEAD and other methods beyond the 400
+path, IPv6, metadata equality after a restored rewrite, kernel buffering, the
+adapter's task machinery, and webzocket internals beyond its reader. Turned
+down: running the loop against real sockets under the simulator (not
+deterministic), a checker that reads the loop's own state (it would agree with
+the loop by construction), and injecting a hard failure at a random call of a
+long run (one in two seeds would end early; the paired fault run keeps the
+main runs long).
+
 ## Dev server build and end-to-end gates
 
 `zig build check-size` installs the host CLI and fails above 64 MiB. The Linux
@@ -687,9 +799,14 @@ Debug binary is about 20 MiB; the budget is loose because size differs by OS and
 optimize mode, and what it guards against is fixed-capacity state being emitted
 into the binary (one draft of the dev server was 776 MB). It is a lint in the
 blocking gate, alongside tidy. The blocking end-to-end list is CLI build,
-version, help, example build, deploy, 512-case generation, and dev server.
+version, help, example build, deploy, 512-case generation, a fixed-seed
+dev-server simulation (run in two processes, which must print equal campaign
+hashes) and dev server.
 The dev-server check fetches page/JS/wasm and compares them with disk (HTML
 after removing its injected reload script), opens Node's built-in WebSocket,
+opens a raw second WebSocket, sends a text frame and two pings and expects both
+pongs on the still open connection (the reader runs from a static buffer with the
+provider maximum at 0, which a webzocket change once nearly broke),
 changes the example source, waits for successful rebuild/reload, restores the
 source in finally, awaits server exit and checks PID disappearance/port release.
 Initial watcher completion (`watch: ready`), socket events and bounded requests
@@ -701,8 +818,9 @@ there. Job kill-on-close still handles an interrupted rebuild.
 CLIs: x86_64/aarch64 Linux, Windows GNU and macOS. Each instantiates webzocket
 and rich_zig for its own target. `test-heavy` depends on this step in addition
 to its browser examples. Build configuration does not launch processes.
-The simulator remains unimplemented; cross compilation does not verify macOS
-or Windows runtime IO/cancellation. Their blocking CI runs exercise those paths.
+The simulator replaces the OS adapter, so it does not exercise macOS or Windows
+runtime IO/cancellation; cross compilation does not verify those either. Their
+blocking CI runs exercise those paths.
 
 ## src/main.zig
 
